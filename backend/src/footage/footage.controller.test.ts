@@ -230,3 +230,59 @@ describe('pair', () => {
     expect(await bad({ lang: 'ARA' })).toBe(1); expect(await bad({ lang: 'e' })).toBe(1);
   });
 });
+
+describe('editor data: words, look, retry', () => {
+  const mk = async (role: string, extra: any = {}) => { const { id } = await ctl.create(user, dto({ role, name: role + Math.random() + '.mp4' })); Object.assign(model.rows.find((r: any) => r._id === id), { status: 'processing', ...extra }); return id; };
+  it('words: [] when absent or unreadable, the array otherwise; 404 for an unknown id', async () => {
+    const id = await mk('original');
+    expect(await ctl.words(id)).toEqual([]);
+    await fs.mkdir(join(root, id), { recursive: true });
+    await fs.writeFile(join(root, id, 'words.json'), '{not json');
+    expect(await ctl.words(id)).toEqual([]);
+    await fs.writeFile(join(root, id, 'words.json'), JSON.stringify([{ t: 'مرحبا', s: 0, e: 400, p: 0.9 }]));
+    expect(await ctl.words(id)).toEqual([{ t: 'مرحبا', s: 0, e: 400, p: 0.9 }]);
+    await expect(ctl.words('f'.repeat(24))).rejects.toMatchObject({ status: 404 });
+    await expect(ctl.words('../x')).rejects.toMatchObject({ status: 404 });
+  });
+  it('look: the cube text, 404 while absent', async () => {
+    const id = await mk('original');
+    await expect(ctl.look(id)).rejects.toMatchObject({ status: 404 });
+    await fs.mkdir(join(root, id), { recursive: true });
+    await fs.writeFile(join(root, id, 'look.cube'), 'LUT_3D_SIZE 2\n0 0 0\n');
+    expect(await ctl.look(id)).toBe('LUT_3D_SIZE 2\n0 0 0\n');
+  });
+  it('retry re-requests a failed step and puts a finished record back to processing', async () => {
+    const id = await mk('original', { status: 'ready', pair: { lookId: 'l1' }, jobs: { transcribe: { state: 'done' }, grade: { state: 'failed', error: 'x' } } });
+    const rec = await ctl.retry(id, { step: 'grade' });
+    expect(enqueue.mock.calls).toEqual([[id, 'grade']]);
+    expect(rec.status).toBe('processing');
+  });
+  it('retrying a fatal step of a paired original also requests its unfinished transcribe and grade', async () => {
+    // the transcribe the pair requested stays persisted queued after the fatal failure, but no runner holds it any more
+    const id = await mk('original', { status: 'failed', error: 'boom', pair: { lookId: 'l1' }, jobs: { proxy: { state: 'failed' }, transcribe: { state: 'queued' }, grade: { state: 'done' } } });
+    await ctl.retry(id, { step: 'proxy' });
+    expect(enqueue.mock.calls).toEqual([[id, 'proxy'], [id, 'transcribe']]);
+    expect(model.rows.find((r: any) => r._id === id)).toMatchObject({ status: 'processing', error: null });
+  });
+  it('a step already queued or running is left alone', async () => {
+    const id = await mk('original', { pair: { lookId: 'l1' }, jobs: { grade: { state: 'running' } } });
+    await ctl.retry(id, { step: 'grade' });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it('rejects steps that do not apply', async () => {
+    const o = await mk('original'), r = await mk('reference'), up = await mk('original', { status: 'uploading' });
+    await expect(ctl.retry(o, { step: 'grade' })).rejects.toMatchObject({ status: 400 }); // not paired
+    await expect(ctl.retry(r, { step: 'transcribe' })).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.retry(o, { step: 'caption-style' })).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.retry(up, { step: 'probe' })).rejects.toMatchObject({ status: 409 });
+    await expect(ctl.retry(o, { step: 'nope' as any })).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.retry('f'.repeat(24), { step: 'probe' })).rejects.toMatchObject({ status: 404 });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it('the DTO only accepts pipeline steps', async () => {
+    const { validate } = await import('class-validator'); const { plainToInstance } = await import('class-transformer');
+    const { RetryFootageDto } = await import('./footage.controller');
+    expect((await validate(plainToInstance(RetryFootageDto, { step: 'caption-style' }))).length).toBe(0);
+    expect((await validate(plainToInstance(RetryFootageDto, { step: 'rm -rf' }))).length).toBe(1);
+  });
+});

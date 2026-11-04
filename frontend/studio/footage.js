@@ -2,9 +2,10 @@
    Footage style match: copy a reference video's look and subtitles onto a raw clip.
    installFootage(ctx) is called once from the engine and registers the footage actions.
    Sections: 1. helpers, 2. upload modal and design creation, 3. actions and the FT object.
-   Tasks 10-13 add the footage editor in new sections of this file. No DOM use at module level.
+   The footage editor (player, panels, transport) lives in footage-editor.js. No DOM use at module level.
    ============================================================ */
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
+import { installFootageEditor } from './footage-editor.js';
 
 /* ---------- 1. helpers ---------- */
 /** The brand's language is stored as a name ('English'); the server takes ISO 639-1 */
@@ -18,13 +19,13 @@ export function outSize(probe) {
   const w = Math.round(+(probe && probe.w) / 2) * 2, h = Math.round(+(probe && probe.h) / 2) * 2;
   return w >= 2 && h >= 2 && w <= 9999 && h <= 9999 ? { w, h } : { ...DEFAULT_SIZE };
 }
-/** The reference's probe lands a moment after /complete (a queued job): poll once a second, up to 20 s. Resolves null on timeout, failure or abort. */
+/** The reference's probe (`meta` on the record) lands a moment after /complete (a queued job): poll once a second, up to 20 s. Resolves null on timeout, failure or abort. */
 export async function readProbe(api, id, { signal, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), tries = 20 } = {}) {
   for (let i = 0; i < tries; i++) {
     if (signal && signal.aborted) return null;
     try {
       const rec = await api('/footage/' + id, { signal });
-      if (rec && rec.probe) return rec.probe;
+      if (rec && rec.meta && rec.meta.w) return rec.meta; // the record exposes the probe result as `meta`
       if (rec && rec.status === 'failed') return null;
     } catch (e) { if (isAbort(e)) return null; }
     await sleep(1000);
@@ -126,8 +127,9 @@ export function installFootage(ctx) {
   }
 
   /* ---------- 3. actions and the FT object ---------- */
-  /** Opens a footage design in the editor (Task 10 renders the footage editor there) */
+  /** Opens a footage design in the editor; footage-editor.js takes the editor over for designs with d.footage */
   FT.open = (d) => { location.hash = '#/editor/' + d.id; };
+  installFootageEditor(ctx, FT);
   ACT.ftNew = () => openNew();
   return FT;
 }

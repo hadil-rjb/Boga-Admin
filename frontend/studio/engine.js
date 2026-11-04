@@ -2116,9 +2116,9 @@ const dim = () => RATIOS[ED.d.ratio];
 const curP = () => ED.d.pages[ED.pi];
 const curL = () => ED.sel && curP().layers.find((l) => l.id === ED.sel);
 const elOf = (id) => $(`#poster .ly[data-id="${id}"]`);
-/** Undo history: pages and canvas size (Magic resize changes the ratio) */
-const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages });
-const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
+/** Undo history: pages and canvas size (Magic resize changes the ratio), and a footage design's footage (subtitles, look) */
+const snap = () => JSON.stringify(ED.d.footage ? { r: ED.d.ratio, p: ED.d.pages, f: ED.d.footage } : { r: ED.d.ratio, p: ED.d.pages });
+const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
 const hex = (v) => {
   v = String(v || '').trim();
   if (/^#[0-9a-f]{6}$/i.test(v)) return v;
@@ -11033,7 +11033,13 @@ function clipCss(l, frames) {
 })();
 
 /* ============ footage style match: Match a reference tile, upload modal, footage designs (see footage.js) ============ */
-installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule });
+installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
+  /* the footage editor wraps the editor's drawing like the blocks above do: wrapEd({ edStage: (orig) => fn, ... }) */
+  wrapEd: (w) => {
+    if (w.edStage) edStage = w.edStage(edStage); if (w.edPanel) edPanel = w.edPanel(edPanel); if (w.edProps) edProps = w.edProps(edProps);
+    if (w.edPages) edPages = w.edPages(edPages); if (w.edRail) edRail = w.edRail(edRail);
+  },
+  ed: { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() } });
 
 /* ============ v39 · select several designs in the Studio and delete them at once ============ */
 /* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a

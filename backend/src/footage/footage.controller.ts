@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Header, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from "class-validator";
 import { createReadStream, promises as fs } from "fs";
@@ -10,6 +10,7 @@ import { FootageRefs } from "./footage.refs";
 import { parseRange } from "./footage.range";
 import { signFile, verifyFile } from "./footage.sign";
 import { FootageStore } from "./footage.store";
+import { STEP_ORDER, Step } from "./footage.recovery";
 import { JobsService } from "./jobs.service";
 
 export const CHUNK_SIZE = 8 * 1024 * 1024;
@@ -27,6 +28,10 @@ export class PairFootageDto {
   @IsOptional() @IsString() @Matches(/^[0-9a-f]{24}$/) ref?: string;
   @IsOptional() @IsString() @Matches(/^[\w-]{1,64}$/) lookId?: string;
   @IsOptional() @IsString() @Matches(/^[a-z]{2}$/) lang?: string;
+}
+
+export class RetryFootageDto {
+  @IsIn([...STEP_ORDER]) step: Step;
 }
 
 const MIME_EXT: Record<string, string> = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "video/x-matroska": "mkv", "video/x-m4v": "m4v" };
@@ -146,6 +151,47 @@ export class FootageController {
 
   @Get(":id")
   async get(@Param("id") id: string) { return this.view(await this.find(id)); }
+
+  /** The transcript's words ([] until the transcribe step has written them, or when the video has no audio) */
+  @Get(":id/words")
+  async words(@Param("id") id: string) {
+    await this.find(id);
+    const text = await fs.readFile(this.store.file(id, "words.json"), "utf8").catch(() => null);
+    if (text == null) return [];
+    try { const v = JSON.parse(text); return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+
+  /** The matched grade as a .cube file (404 until the grade step has written it) */
+  @Get(":id/look") @Header("Content-Type", "text/plain; charset=utf-8") @Header("Cache-Control", "no-store")
+  async look(@Param("id") id: string) {
+    await this.find(id);
+    const text = await fs.readFile(this.store.file(id, "look.cube"), "utf8").catch(() => null);
+    if (text == null) throw new NotFoundException("No colour grade yet");
+    return text;
+  }
+
+  /**
+   * Runs a pipeline step again (the editor's Retry). A step already queued or running is left alone. Retrying probe or proxy of a
+   * paired original also requests its unfinished transcribe and grade: a fatal failure dropped them from the queue.
+   */
+  @Roles("admin", "editor") @Post(":id/retry") @HttpCode(200)
+  async retry(@Param("id") id: string, @Body() d: RetryFootageDto) {
+    const doc = await this.find(id), step = d.step;
+    if (!STEP_ORDER.includes(step)) throw new BadRequestException("Unknown step");
+    if (doc.status === "uploading" || doc.status === "assembling") throw new ConflictException("Finish uploading this video first");
+    const jobs: Record<string, any> = doc.jobs || {}, busy = (s: Step) => ["queued", "running"].includes(jobs[s]?.state);
+    if ((step === "transcribe" || step === "grade") && (doc.role !== "original" || !doc.pair)) throw new BadRequestException("Pair this video with a reference or a brand look first");
+    if (step === "caption-style" && doc.role !== "reference") throw new BadRequestException("Only a reference video has a subtitle style");
+    if (busy(step)) return this.view(doc);
+    const steps: Step[] = [step];
+    if ((step === "probe" || step === "proxy") && doc.role === "original" && doc.pair) {
+      // a fatal failure cleared the runner's queue, so a transcribe or grade still persisted as queued is orphaned: request it too (harmless if not)
+      for (const s of ["transcribe", "grade"] as Step[]) if (!["done", "skipped", "running"].includes(jobs[s]?.state)) steps.push(s);
+    }
+    if (doc.status === "ready" || doc.status === "failed") await this.model.updateOne({ _id: id }, { $set: { status: "processing", error: null } });
+    for (const s of steps) await this.jobs.enqueue(id, s);
+    return this.view(await this.find(id));
+  }
 
   @Roles("admin", "editor") @Delete(":id") @HttpCode(200)
   async remove(@Param("id") id: string) {

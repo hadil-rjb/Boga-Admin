@@ -97,8 +97,8 @@ describe('uploadFootage failures', () => {
 });
 
 describe('readProbe', () => {
-  it('polls until the probe appears and returns it', async () => {
-    let n = 0; const a = vi.fn(async () => (++n < 3 ? { status: 'processing' } : { status: 'processing', probe: { w: 720, h: 1280 } }));
+  it('polls until the probe appears (as meta) and returns it', async () => {
+    let n = 0; const a = vi.fn(async () => (++n < 3 ? { status: 'processing' } : { status: 'processing', probe: { w: 1, h: 1 }, meta: { w: 720, h: 1280 } }));
     const sleep = vi.fn(async () => {});
     expect(await readProbe(a, 'r', { sleep })).toEqual({ w: 720, h: 1280 });
     expect(a).toHaveBeenCalledTimes(3); expect(sleep).toHaveBeenCalledWith(1000);
