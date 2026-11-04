@@ -5,6 +5,7 @@ import { existsSync, promises as fs } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { Model } from "mongoose";
+import { PyWorker } from "../ai/local-tts.service";
 import { buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
 import { planRecovery, Step } from "./footage.recovery";
 import { Footage, FootageDocument } from "./footage.schema";
@@ -13,9 +14,35 @@ import { FootageStore } from "./footage.store";
 export type { Step } from "./footage.recovery";
 
 export const PQ_UNSUPPORTED = "HDR10 footage is not supported yet. Record in HLG or SDR, or convert it first.";
-/** Steps implemented so far, in order. Later tasks append transcribe / grade / caption-style. */
-const CHAIN: Step[] = ["probe", "proxy", "frames"];
+/** Pipeline order. Task 8 appends caption-style. */
+const CHAIN: Step[] = ["probe", "proxy", "frames", "transcribe", "grade"];
+/** Steps that follow each other automatically after probe. transcribe and grade are requested by the pair endpoint (originals only). */
+const AUTO: Step[] = ["probe", "proxy", "frames"];
+/** The step that follows automatically; none after frames, and none for steps outside the auto chain */
+const autoNext = (s: Step): Step | undefined => (AUTO.includes(s) ? AUTO[AUTO.indexOf(s) + 1] : undefined);
 const FATAL: Step[] = ["probe", "proxy"];
+const NOT_DONE = ["queued", "running"];
+/** Thrown by a step that has to wait for another footage; the step stays queued and is requested again when that footage is ready */
+class Wait extends Error {}
+export const REF_UNREADABLE = "The reference video could not be read";
+export const LOOK_MISSING = "This brand look no longer exists";
+export type Word = { t: string; s: number; e: number; p: number };
+
+/** Whisper words: stripped text, integer ms, never empty, starts and ends increasing */
+export function normalizeWords(raw: any[]): Word[] {
+  const out: Word[] = []; let prev = 0;
+  for (const w of Array.isArray(raw) ? raw : []) {
+    const t = String(w?.t ?? "").trim();
+    if (!t) continue;
+    const s = Math.max(Math.round(Number(w.s) || 0), prev), e = Math.max(Math.round(Number(w.e) || 0), s);
+    out.push({ t, s, e, p: Math.round((Number(w.p) || 0) * 1000) / 1000 });
+    prev = s;
+  }
+  return out;
+}
+
+/** grade.py reports failures as a JSON line on stdout: {"ok": false, "error": "..."} */
+const jsonError = (out: string): string => { try { return String(JSON.parse(out.trim().split("\n").pop() ?? "").error ?? ""); } catch { return ""; } };
 
 export type RunOpts = { onLine?: (line: string) => void; timeoutMs?: number };
 export type Runner = (cmd: string, args: string[], opts?: RunOpts) => Promise<{ stdout: string; stderr: string }>;
@@ -47,7 +74,7 @@ export function runProcess(cmd: string, args: string[], opts: RunOpts = {}, live
       done();
       if (timedOut) fail(new Error(`${cmd} timed out after ${Math.round((opts.timeoutMs ?? 0) / 1000)} s and was stopped`));
       else if (code === 0) ok({ stdout: out, stderr: err });
-      else fail(new Error(err.trim() || `${cmd} exited with code ${code}`));
+      else fail(new Error(err.trim() || jsonError(out) || `${cmd} exited with code ${code}`));
     });
   });
 }
@@ -73,12 +100,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private ffmpegLock: Promise<void> = Promise.resolve(); // one ffmpeg process at a time overall
   private root = [process.cwd(), resolve(__dirname, "..", ".."), resolve(__dirname, "..", "..", "..")].find((d) => existsSync(join(d, "tts", "footage", "grade.py"))) ?? process.cwd();
   private python = process.env.TTS_PYTHON || join(this.root, ".tts", "venv", "bin", "python");
+  private whisperWorker?: PyWorker;
+  /** Shared, lazily started, stopped after 10 minutes without a request. Replaceable in tests. */
+  whisper: { ask(req: Record<string, unknown>, timeoutMs?: number): Promise<any>; stop?(): void } = {
+    ask: (req, timeoutMs) => (this.whisperWorker ??= new PyWorker(this.log, "Transcription", this.python, join(this.root, "tts", "footage", "whisper_worker.py"),
+      { HF_HOME: join(this.root, ".tts", "hf") }, 180_000, 600_000, 10 * 60_000)).ask(req, timeoutMs),
+  };
 
   constructor(@InjectModel(Footage.name) private model: Model<FootageDocument>, private store: FootageStore) {}
 
   get cube(): string { return join(this.store.root, HLG_CUBE_NAME); }
 
-  onModuleDestroy() { for (const c of this.children) c.kill("SIGKILL"); }
+  onModuleDestroy() { for (const c of this.children) c.kill("SIGKILL"); this.whisperWorker?.stop(); }
 
   async onModuleInit() {
     await this.ensureCube().catch((e) => this.log.warn(`hlg2709.cube not generated: ${e?.message ?? e}`));
@@ -99,7 +132,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const recs = await this.model.find({ status: { $in: ["assembling", "processing"] } }).select("_id status jobs updatedAt").lean();
     const plan = planRecovery(recs as any, now);
     if (plan.reset.length) await this.model.updateMany({ _id: { $in: plan.reset }, status: "assembling" }, { $set: { status: "uploading" } });
-    for (const r of plan.requeue) await this.enqueue(r.id, r.step);
+    for (const r of plan.requeue) {
+      await this.enqueue(r.id, r.step);
+      // later requested steps (transcribe, grade) that were interrupted or still waiting
+      const jobs = (recs as any[]).find((x) => String(x._id) === r.id)?.jobs ?? {};
+      for (const s of CHAIN) if (s !== r.step && NOT_DONE.includes(jobs[s]?.state) && CHAIN.indexOf(s) > CHAIN.indexOf(r.step)) await this.enqueue(r.id, s);
+    }
     if (plan.reset.length || plan.requeue.length) this.log.log(`recovered ${plan.reset.length} upload(s), re-queued ${plan.requeue.length} job(s)`);
   }
 
@@ -124,6 +162,20 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   private async set(id: string, fields: Record<string, any>) { await this.model.updateOne({ _id: id }, { $set: fields }); }
 
+  /** True while some step is persisted queued/running although nothing is pending: a grade waiting for its reference */
+  private async hasWaiting(id: string): Promise<boolean> {
+    const doc = await this.model.findById(id).select("jobs").lean();
+    return Object.values((doc?.jobs ?? {}) as Record<string, any>).some((j) => NOT_DONE.includes(j?.state));
+  }
+
+  /** The footage's own frames step ended (or the footage failed): originals paired with it that wait in `grade` look again */
+  private async wake(refId: string) {
+    try {
+      const rows = await this.model.find({ "pair.ref": refId }).select("_id jobs").lean();
+      for (const r of rows as any[]) if (r.jobs?.grade?.state === "queued") this.request(String(r._id), "grade");
+    } catch (e: any) { this.log.warn(`wake ${refId}: ${e?.message ?? e}`); }
+  }
+
   /** Runs pending steps lowest pipeline position first; a finished step requests the next one. Exits only when nothing is pending, checked synchronously. */
   private async drain(id: string) {
     const pending = this.pending.get(id)!;
@@ -131,7 +183,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     for (;;) {
       const step = CHAIN.find((s) => pending.has(s));
       if (!step) {
-        if (!failed) await this.set(id, { status: "ready" }); // Task 7 extends the chain and this rule
+        if (!failed && !(await this.hasWaiting(id))) await this.set(id, { status: "ready" }); // every requested step is done, skipped or failed non-fatally
         if (CHAIN.some((s) => pending.has(s))) continue; // requested while we were saving
         this.running.delete(id); this.pending.delete(id); // same tick as the check above: a concurrent request() either saw us running (and is in `pending`, handled above) or starts a new runner
         return;
@@ -140,18 +192,20 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.set(id, { [`jobs.${step}`]: { state: "running", progress: 0 }, ...(step === "probe" ? { status: "processing" } : {}) });
       if (FATAL.includes(step)) failed = false;
       try {
-        await this.runStep(id, step);
-        await this.set(id, { [`jobs.${step}`]: { state: "done", progress: 1 } });
-        const next = CHAIN[CHAIN.indexOf(step) + 1];
+        const outcome = await this.runStep(id, step);
+        await this.set(id, { [`jobs.${step}`]: { state: outcome === "skipped" ? "skipped" : "done", progress: 1 } });
+        const next = autoNext(step);
         if (next && !pending.has(next)) { pending.add(next); await this.set(id, { [`jobs.${next}`]: { state: "queued", progress: 0 } }); }
       } catch (e: any) {
+        if (e instanceof Wait) { await this.set(id, { [`jobs.${step}`]: { state: "queued", progress: 0 } }); continue; }
         const error = String(e?.message ?? e).slice(-600);
         this.log.warn(`${step} failed for ${id}: ${error}`);
         await this.set(id, { [`jobs.${step}`]: { state: "failed", progress: 0, error }, ...(FATAL.includes(step) ? { status: "failed", error } : {}) });
-        if (FATAL.includes(step)) { failed = true; pending.clear(); continue; }
-        const next = CHAIN[CHAIN.indexOf(step) + 1];
+        if (FATAL.includes(step)) { failed = true; pending.clear(); await this.wake(id); continue; }
+        const next = autoNext(step);
         if (next) pending.add(next);
       }
+      if (step === "frames") await this.wake(id);
     }
   }
 
@@ -174,7 +228,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return doc.meta as Probe;
   }
 
-  private async runStep(id: string, step: Step) {
+  private async runStep(id: string, step: Step): Promise<"skipped" | void> {
     const dir = this.store.dir(id);
     if (step === "probe") {
       const { stdout } = await this.runner("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", await this.sourcePath(id)], { timeoutMs: STEP_TIMEOUT.probe });
@@ -205,6 +259,41 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await fs.rm(frames, { recursive: true, force: true });
       await fs.mkdir(frames, { recursive: true });
       await this.withFfmpeg(() => this.runner("ffmpeg", buildFramesArgs(this.store.file(id, "proxy.mp4"), join(frames, "%03d.png"), meta.dur), { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
+    } else if (step === "transcribe") {
+      const doc = await this.model.findById(id).select("meta pair").lean();
+      const meta = await this.metaOf(id);
+      if (!meta.audio) return "skipped";
+      const wav = join(dir, `audio.${randomBytes(6).toString("hex")}.tmp.wav`);
+      try {
+        await this.withFfmpeg(async () => this.runner("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", await this.sourcePath(id), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", wav], { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
+        const lang = (doc as any)?.pair?.lang;
+        const res = await this.whisper.ask({ audio: wav, ...(lang ? { lang } : {}) }, 2 * meta.dur * 1000 + 60_000);
+        const words = normalizeWords(res?.words);
+        const out = this.store.file(id, "words.json"), tmp = `${out}.${randomBytes(6).toString("hex")}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify(words));
+        await fs.rename(tmp, out);
+      } finally {
+        await fs.rm(wav, { force: true });
+      }
+    } else if (step === "grade") {
+      const doc: any = await this.model.findById(id).select("pair jobs").lean();
+      const pair = doc?.pair ?? {}, look = this.store.file(id, "look.cube"), stats = this.store.file(id, "stats.json");
+      if (pair.ref) {
+        if (doc?.jobs?.frames?.state !== "done") throw new Error("The video frames could not be read");
+        const ref: any = /^[0-9a-f]{24}$/.test(String(pair.ref)) ? await this.model.findById(String(pair.ref)).select("status jobs").lean() : null;
+        if (!ref || ref.status === "failed" || ref.jobs?.frames?.state === "failed") throw new Error(REF_UNREADABLE);
+        if (ref.jobs?.frames?.state !== "done") throw new Wait(); // the reference's frames step wakes this one up
+        try {
+          await this.runner(this.python, [join(this.root, "tts", "footage", "grade.py"), "transfer", "--src", join(dir, "frames"), "--ref", join(this.store.dir(String(pair.ref)), "frames"), "--out", look, "--stats", stats], { timeoutMs: 600_000 });
+        } catch (e) {
+          await Promise.all([fs.rm(look, { force: true }), fs.rm(stats, { force: true })]);
+          throw e;
+        }
+      } else if (pair.lookId && /^[\w-]{1,64}$/.test(String(pair.lookId))) {
+        const src = join(this.store.root, "looks", `${pair.lookId}.cube`), tmp = `${look}.${randomBytes(6).toString("hex")}.tmp`;
+        if (!existsSync(src)) throw new Error(LOOK_MISSING);
+        try { await fs.copyFile(src, tmp); await fs.rename(tmp, look); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
+      } else throw new Error("No reference video or brand look is set for this video");
     }
   }
 }

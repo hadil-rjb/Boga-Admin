@@ -19,6 +19,8 @@ export class Footage {
   @Prop({ type: mongoose.Schema.Types.Mixed, default: {} }) jobs: Record<string, any>;
   /** probe result, filled by the pipeline */
   @Prop({ type: mongoose.Schema.Types.Mixed }) meta?: Record<string, any>;
+  /** Original only: the reference video to match (ref) or a saved brand look (lookId), and the spoken language (lang) */
+  @Prop({ type: mongoose.Schema.Types.Mixed }) pair?: { ref?: string; lookId?: string; lang?: string };
   createdAt?: Date;
   updatedAt?: Date;
 }

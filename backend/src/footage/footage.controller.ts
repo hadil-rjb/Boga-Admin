@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
-import { IsIn, IsInt, IsString, Max, MaxLength, Min } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from "class-validator";
 import { createReadStream, promises as fs } from "fs";
 import { Model } from "mongoose";
 import { Public } from "../common/public.decorator";
@@ -21,6 +21,12 @@ export class CreateFootageDto {
   @IsString() @MaxLength(100) mime: string;
   @IsIn(["original", "reference"]) role: string;
   @IsString() @MaxLength(64) brand: string;
+}
+
+export class PairFootageDto {
+  @IsOptional() @IsString() @Matches(/^[0-9a-f]{24}$/) ref?: string;
+  @IsOptional() @IsString() @Matches(/^[\w-]{1,64}$/) lookId?: string;
+  @IsOptional() @IsString() @Matches(/^[a-z]{2}$/) lang?: string;
 }
 
 const MIME_EXT: Record<string, string> = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "video/x-matroska": "mkv", "video/x-m4v": "m4v" };
@@ -103,6 +109,30 @@ export class FootageController {
     // chunks are no longer needed; a failure here only leaves disk garbage, the record is already processing
     await this.store.clearChunks(id).catch(() => undefined);
     await this.jobs.enqueue(id, "probe");
+    return this.view(await this.find(id));
+  }
+
+  /**
+   * Called by the client after both uploads are complete: stores the pairing on the original and starts the transcript and
+   * the grade. The grade waits by itself until the reference's frames exist.
+   */
+  @Roles("admin", "editor") @Post(":id/pair") @HttpCode(200)
+  async pair(@Param("id") id: string, @Body() d: PairFootageDto) {
+    const doc = await this.find(id);
+    if (doc.role !== "original") throw new BadRequestException("Only an original video can be paired");
+    if (doc.status === "uploading" || doc.status === "assembling") throw new ConflictException("Finish uploading this video first");
+    if (doc.status === "failed") throw new ConflictException("This video could not be processed");
+    if (!d.ref && !d.lookId) throw new BadRequestException("Choose a reference video or a brand look");
+    if (d.ref) {
+      const ref = d.ref === id ? null : await this.model.findById(d.ref);
+      if (!ref || ref.role !== "reference") throw new BadRequestException("The reference video was not found");
+    }
+    const pair: Record<string, string> = {};
+    if (d.ref) pair.ref = d.ref; else pair.lookId = d.lookId!; // a reference wins over a saved look
+    if (d.lang) pair.lang = d.lang;
+    await this.model.updateOne({ _id: id }, { $set: { pair, ...(doc.status === "ready" ? { status: "processing" } : {}) } });
+    await this.jobs.enqueue(id, "transcribe");
+    await this.jobs.enqueue(id, "grade");
     return this.view(await this.find(id));
   }
 

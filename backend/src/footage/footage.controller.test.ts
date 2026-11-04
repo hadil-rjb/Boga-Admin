@@ -194,3 +194,37 @@ describe('signed file serving', () => {
     await expect(ctl.exported(id, 'nope', tok('exports/nope.mp4'), { headers: {} }, r)).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe('pair', () => {
+  const mk = async (role: string, status = 'processing') => { const { id } = await ctl.create(user, dto({ role, name: role + '.mp4' })); model.rows.find((r: any) => r._id === id).status = status; return id; };
+  it('stores the pair on the original and requests transcribe and grade', async () => {
+    const o = await mk('original'), r = await mk('reference');
+    const rec = await ctl.pair(o, { ref: r, lang: 'ar' });
+    expect(model.rows.find((x: any) => x._id === o).pair).toEqual({ ref: r, lang: 'ar' });
+    expect(enqueue.mock.calls).toEqual([[o, 'transcribe'], [o, 'grade']]);
+    expect(rec.pair).toEqual({ ref: r, lang: 'ar' });
+  });
+  it('a brand look without a reference, language left to auto-detect; a ready original goes back to processing', async () => {
+    const o = await mk('original', 'ready');
+    await ctl.pair(o, { lookId: 'brand-1' });
+    const row = model.rows.find((x: any) => x._id === o);
+    expect(row.pair).toEqual({ lookId: 'brand-1' }); expect(row.status).toBe('processing');
+  });
+  it('rejects bad pairings', async () => {
+    const o = await mk('original'), r = await mk('reference'), up = await mk('original', 'uploading');
+    await expect(ctl.pair(o, {})).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.pair(r, { lookId: 'x' })).rejects.toMatchObject({ status: 400 }); // a reference cannot be paired
+    await expect(ctl.pair(o, { ref: o })).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.pair(o, { ref: 'f'.repeat(24) })).rejects.toMatchObject({ status: 400 });
+    await expect(ctl.pair(up, { ref: r })).rejects.toMatchObject({ status: 409 });
+    await expect(ctl.pair('nope', { ref: r })).rejects.toMatchObject({ status: 404 });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+  it('validates ids, look id and language in the DTO', async () => {
+    const { validate } = await import('class-validator'); const { plainToInstance } = await import('class-transformer');
+    const bad = async (o: any) => (await validate(plainToInstance((await import('./footage.controller')).PairFootageDto, o))).length;
+    expect(await bad({ ref: 'a'.repeat(24), lookId: 'a-b_1', lang: 'ar' })).toBe(0);
+    expect(await bad({ ref: '../x' })).toBe(1); expect(await bad({ lookId: '../x' })).toBe(1); expect(await bad({ lookId: 'x'.repeat(65) })).toBe(1);
+    expect(await bad({ lang: 'ARA' })).toBe(1); expect(await bad({ lang: 'e' })).toBe(1);
+  });
+});

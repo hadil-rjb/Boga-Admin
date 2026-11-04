@@ -50,7 +50,7 @@ export const F5_MODELS: { id: string; group: string; dir: string; file: string }
 const F5_REFS = [{ id: "silma", name: "Silma voice", file: "builtin:silma" }];
 
 /** A Python worker answering one JSON line per request (tts/voice_worker.py, tts/f5_worker.py) */
-class PyWorker {
+export class PyWorker {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<any> | null = null;
   private hello: any = null;
@@ -100,6 +100,24 @@ class PyWorker {
         this.proc!.stdin.write(JSON.stringify({ ...req, id, out }) + "\n");
       });
       try { return { wav: await fs.readFile(out), ms: res.ms }; } finally { fs.unlink(out).catch(() => {}); this.rest(); }
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p;
+  }
+
+  /** One request whose raw reply message is returned (no WAV). Runs in the same queue as `call`. */
+  ask(req: Record<string, unknown>, timeoutMs = this.callMs): Promise<any> {
+    const run = async () => {
+      await this.start();
+      const id = randomUUID();
+      try {
+        return await new Promise<any>((ok, fail) => {
+          const timer = setTimeout(() => { this.waiting.delete(id); fail(new Error("The worker took too long")); }, timeoutMs);
+          this.waiting.set(id, { ok, fail, timer });
+          this.proc!.stdin.write(JSON.stringify({ ...req, id }) + "\n");
+        });
+      } finally { this.rest(); }
     };
     const p = this.queue.then(run, run);
     this.queue = p.catch(() => {});
