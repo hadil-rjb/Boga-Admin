@@ -11,7 +11,7 @@ export class Footage {
   @Prop({ type: String, required: true }) mime: string;
   /** "original" (the user's raw video) or "reference" (the style to match) */
   @Prop({ type: String, required: true, enum: ["original", "reference"] }) role: string;
-  @Prop({ type: String, default: "uploading", enum: ["uploading", "processing", "ready", "failed"] }) status: string;
+  @Prop({ type: String, default: "uploading", enum: ["uploading", "assembling", "processing", "ready", "failed"] }) status: string;
   @Prop({ type: String }) ext?: string;
   @Prop({ type: String }) createdBy?: string;
   @Prop({ type: String }) error?: string;

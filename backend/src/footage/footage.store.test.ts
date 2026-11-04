@@ -23,7 +23,14 @@ describe('FootageStore', () => {
     const p = await store.assemble(id, 'mp4');
     expect(p).toBe(join(root, id, 'source.mp4'));
     expect(await fs.readFile(p, 'utf8')).toBe('abc');
+    expect(await store.received(id)).toEqual([0, 1, 10]); // kept until clearChunks
+    await store.clearChunks(id);
     expect(await store.received(id)).toEqual([]);
+  });
+  it('concurrent writes of one chunk index leave a whole chunk', async () => {
+    await Promise.all([1, 2, 3, 4].map(() => store.writeChunk(id, 0, Buffer.alloc(100000, 7))));
+    expect((await fs.readFile(join(root, id, 'chunks', '0'))).length).toBe(100000);
+    expect(await store.received(id)).toEqual([0]);
   });
   it('lists received chunks for resume', async () => {
     await store.writeChunk(id, 0, Buffer.from('a'));

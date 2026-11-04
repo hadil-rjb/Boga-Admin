@@ -66,20 +66,42 @@ export class FootageController {
     return { ok: true, i: n };
   }
 
+  /**
+   * Atomic claim (uploading -> assembling) so a double click or retry cannot assemble twice. Chunks are only deleted after the
+   * record is saved as processing; any failure before that puts the record back to uploading (chunks intact), so it never sticks.
+   */
   @Roles("admin", "editor") @Post(":id/complete") @HttpCode(200)
   async complete(@Param("id") id: string) {
-    const doc = await this.find(id);
-    if (doc.status !== "uploading") return this.view(doc); // already completed: idempotent
-    const got = await this.store.received(id), want = Math.ceil(doc.size / CHUNK_SIZE);
-    if (got.length !== want || got.some((v, k) => v !== k)) throw new BadRequestException(`Missing chunks: received ${got.length} of ${want}`);
-    const path = await this.store.assemble(id, doc.ext || "mp4");
-    if ((await fs.stat(path)).size !== doc.size) {
-      await fs.rm(path, { force: true });
-      throw new BadRequestException("The assembled file does not match the declared size; upload it again");
+    if (!isId(id)) throw new NotFoundException();
+    const claimed = await this.model.findOneAndUpdate({ _id: id, status: "uploading" }, { $set: { status: "assembling" } }, { new: true });
+    if (!claimed) {
+      const cur = await this.find(id);
+      if (cur.status === "assembling") throw new ConflictException("This upload is already being assembled");
+      return this.view(cur); // already completed: idempotent
     }
-    doc.status = "processing";
-    doc.markModified("jobs");
-    await doc.save();
+    const back = () => this.model.updateOne({ _id: id }, { $set: { status: "uploading" }, }).catch(() => undefined);
+    const got = await this.store.received(id), want = Math.ceil(claimed.size / CHUNK_SIZE);
+    if (got.length !== want || got.some((v, k) => v !== k)) {
+      await back();
+      throw new BadRequestException(`Missing chunks: received ${got.length} of ${want}`);
+    }
+    let path: string;
+    try {
+      path = await this.store.assemble(id, claimed.ext || "mp4");
+      if ((await fs.stat(path)).size !== claimed.size) {
+        await fs.rm(path, { force: true });
+        await back();
+        throw new BadRequestException("The assembled file does not match the declared size; upload the chunks again");
+      }
+      await this.model.updateOne({ _id: id }, { $set: { status: "processing" } });
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      await fs.rm(this.store.dir(id) + `/source.${claimed.ext || "mp4"}`, { force: true }).catch(() => undefined);
+      await back(); // chunks are still there: the client can call complete again
+      throw e;
+    }
+    // chunks are no longer needed; a failure here only leaves disk garbage, the record is already processing
+    await this.store.clearChunks(id).catch(() => undefined);
     this.jobs.enqueue(id, "probe");
     return this.view(await this.find(id));
   }
@@ -100,12 +122,12 @@ export class FootageController {
     const doc = await this.find(id);
     if ((await this.refs.used()).has(id)) throw new ConflictException("A design or a saved version still uses this video");
     await this.store.remove(id);
-    await doc.deleteOne();
+    await this.model.deleteOne({ _id: id });
     return { ok: true };
   }
 
   /** Signed-URL file (the browser cannot send a Bearer header from <video> or a download link) */
-  private async send(id: string, file: string, token: string, req: any, res: any) {
+  async send(id: string, file: string, token: string, req: any, res: any) {
     if (!isId(id) || !/^(proxy\.mp4|exports\/[\w-]{1,64}\.mp4)$/.test(file)) throw new NotFoundException();
     if (!verifyFile(id, file, token)) throw new ForbiddenException("Invalid or expired link");
     const path = this.store.file(id, file as any);
