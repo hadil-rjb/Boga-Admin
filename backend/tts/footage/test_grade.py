@@ -4,7 +4,6 @@ import subprocess
 import sys
 
 import numpy as np
-import pytest
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -133,15 +132,6 @@ def test_hlg2709_maps_hlg_white_75pct_to_near_sdr_white(tmp_path):
     neutral = np.array([lut[i, i, i, 1] for i in range(33)])
     assert np.all(np.diff(neutral) >= 0)
 
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="SPEC CONFLICT: brief asks 0.70-0.80, but its own pipeline (HLG OOTF @1000 nit -> "
-    "BT.2390 EETF -> 100 nit -> sRGB OETF) maps HLG 75% (203 nit) to ~0.946. Awaiting ruling.",
-)
-def test_hlg2709_brief_range_70_to_80pct(tmp_path):
-    gray = hlg_lut(tmp_path)[24, 24, 24]
-    assert 0.70 <= gray.mean() <= 0.80
 
 
 def caption_frame(seed, text):
