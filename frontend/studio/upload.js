@@ -7,10 +7,14 @@ export const isVideoFile = (f) => !!f && (/^video\//.test(f.type) || (!f.type &&
 
 /**
  * @param {File} file
- * @param {{ role: 'original' | 'reference', brand?: string, api: Function, onProgress?: (v: number) => void }} o
+ * @param {{ role: 'original' | 'reference', brand?: string, api: Function, onProgress?: (v: number) => void, signal?: AbortSignal, sleep?: (ms: number) => Promise<void> }} o
+ * Retries network errors, 5xx and 429 only. A 409 on a chunk means the record left 'uploading': when it is past that, go straight to complete.
  * @returns {Promise<{ id: string }>}
  */
-export async function uploadFootage(file, { role, brand, api, onProgress }) {
+export const isAbort = (e) => !!e && e.name === 'AbortError';
+const stopped = () => new DOMException('Upload stopped', 'AbortError');
+
+export async function uploadFootage(file, { role, brand, api, onProgress, signal, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   if (!isVideoFile(file)) throw new Error('Choose a video file');
   if (file.size > MAX) throw new Error('This video is larger than 2 GB');
   if (!file.size) throw new Error('This video file is empty');
@@ -22,25 +26,38 @@ export async function uploadFootage(file, { role, brand, api, onProgress }) {
   const report = () => onProgress && onProgress(Math.min(1, sent / file.size));
   report();
   const todo = []; for (let i = 0; i < n; i++) if (!have.has(i)) todo.push(i);
-  let next = 0, failed = null;
+  let next = 0, failed = null, finished = false;
+  const check = () => { if (signal && signal.aborted) throw stopped(); };
   const worker = async () => {
-    while (!failed && next < todo.length) {
+    while (!failed && !finished && next < todo.length) {
       const i = todo[next++];
-      for (let tries = 1; ; tries++) {
-        try {
-          await api(`/footage/${id}/chunk?i=${i}`, { method: 'PUT', raw: true, body: file.slice(i * chunkSize, i * chunkSize + len(i)) });
-          break;
-        } catch (e) {
-          if (tries >= 3 || /not uploading/i.test(e && e.message)) { failed = failed || e; return; }
-          await new Promise((r) => setTimeout(r, 400 * tries));
+      try {
+        for (let tries = 1; ; tries++) {
+          check();
+          try {
+            await api(`/footage/${id}/chunk?i=${i}`, { method: 'PUT', raw: true, body: file.slice(i * chunkSize, i * chunkSize + len(i)), signal });
+            break;
+          } catch (e) {
+            if (isAbort(e) || (signal && signal.aborted)) throw stopped();
+            const st = e && e.status;
+            if (st === 409) {
+              const cur = await api(`/footage/${id}`, { signal });
+              if (cur && cur.status && cur.status !== 'uploading') { finished = true; return; }
+              throw e;
+            }
+            const transient = !st || st >= 500 || st === 429;
+            if (!transient || tries >= 3) throw e;
+            await sleep(400 * tries);
+          }
         }
-      }
+      } catch (e) { failed = failed || e; return; }
       sent += len(i); report();
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, todo.length) }, worker));
   if (failed) throw failed;
-  const done = await api(`/footage/${id}/complete`, { method: 'POST' });
+  check();
+  const done = await api(`/footage/${id}/complete`, { method: 'POST', signal });
   if (onProgress) onProgress(1);
   return { ...(done || {}), id };
 }

@@ -4,7 +4,7 @@
    Sections: 1. helpers, 2. upload modal and design creation, 3. actions and the FT object.
    Tasks 10-13 add the footage editor in new sections of this file. No DOM use at module level.
    ============================================================ */
-import { uploadFootage, isVideoFile } from './upload.js';
+import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 
 /* ---------- 1. helpers ---------- */
 /** The brand's language is stored as a name ('English'); the server takes ISO 639-1 */
@@ -18,6 +18,19 @@ export function outSize(probe) {
   const w = Math.round(+(probe && probe.w) / 2) * 2, h = Math.round(+(probe && probe.h) / 2) * 2;
   return w >= 2 && h >= 2 && w <= 9999 && h <= 9999 ? { w, h } : { ...DEFAULT_SIZE };
 }
+/** The reference's probe lands a moment after /complete (a queued job): poll once a second, up to 20 s. Resolves null on timeout, failure or abort. */
+export async function readProbe(api, id, { signal, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), tries = 20 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    if (signal && signal.aborted) return null;
+    try {
+      const rec = await api('/footage/' + id, { signal });
+      if (rec && rec.probe) return rec.probe;
+      if (rec && rec.status === 'failed') return null;
+    } catch (e) { if (isAbort(e)) return null; }
+    await sleep(1000);
+  }
+  return null;
+}
 /** The footage part of a new design */
 export function footageDoc({ src, ref = null, lookId = null, lang = null, size }) {
   const { w, h } = size || DEFAULT_SIZE;
@@ -25,14 +38,14 @@ export function footageDoc({ src, ref = null, lookId = null, lang = null, size }
 }
 
 export function installFootage(ctx) {
-  const { ACT, api, modal, ic, esc, save, uid, brand, canEdit, createDesign, ensureRatio, BG } = ctx;
+  const { ACT, api, modal, toast, ic, esc, save, uid, brand, canEdit, createDesign, ensureRatio, BG } = ctx;
   const FT = { ctx };
 
   /* ---------- 2. upload modal and design creation ---------- */
   function openNew() {
     if (canEdit && !canEdit()) return;
     const looks = (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
-    const st = { original: null, ref: null, lookId: null, busy: false, closed: false };
+    const st = { original: null, ref: null, lookId: null, busy: false, closed: false, ac: null };
     const zone = (k, title, hint) => `<div class="ft-zone"><b class="ft-zt">${title}</b>
       <label class="ft-drop" data-ft-drop="${k}" tabindex="0"><input type="file" accept="video/mp4,video/quicktime,video/*,.mp4,.mov,.m4v" hidden data-ft-file="${k}">
       <span class="ft-di">${ic('upload', 22)}</span><span class="ft-dt">${hint}</span><small class="ft-fn" data-ft-name="${k}"></small></label>
@@ -44,13 +57,13 @@ export function installFootage(ctx) {
         ${zone('ref', 'Reference', 'Drop an edited video to copy its look and subtitles')}${lookList}
         <p class="ft-err" data-ft-err role="alert" hidden></p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-start disabled>Start</button></div>`,
-      { onClose: () => { st.closed = true; }, onMount: (bg, close) => wire(bg, close, st) });
+      { onClose: () => { st.closed = true; if (st.busy && st.ac) { st.ac.abort(); toast('Upload stopped. Drop the same files again to pick up where you left off.'); } }, onMount: (bg, close) => wire(bg, close, st) });
   }
 
   function wire(bg, close, st) {
     const $ = (s) => bg.querySelector(s), $$ = (s) => [...bg.querySelectorAll(s)];
     const start = $('[data-ft-start]'), err = $('[data-ft-err]');
-    const say = (m) => { err.textContent = m || ''; err.hidden = !m; };
+    const say = (m, info) => { err.textContent = m || ''; err.hidden = !m; err.classList.toggle('ft-info', !!info); };
     const refresh = () => { start.disabled = st.busy || !st.original || !(st.ref || st.lookId); };
     const progress = (k, v) => { const w = $(`[data-ft-pw="${k}"]`); if (!w) return; w.hidden = false; const p = Math.round(v * 100); w.querySelector('i').style.width = p + '%'; w.querySelector('.prog-pct').textContent = p + '%'; };
     function pick(k, f) {
@@ -80,21 +93,24 @@ export function installFootage(ctx) {
     start.addEventListener('click', async () => {
       if (st.busy) return;
       st.busy = true; say(''); refresh(); start.textContent = 'Uploading…';
+      const ac = st.ac = new AbortController(), signal = ac.signal;
       try {
         const brandId = brand().id, lang = langCode(brand().lang);
-        const ups = [uploadFootage(st.original, { role: 'original', brand: brandId, api, onProgress: (v) => progress('original', v) })];
-        if (st.ref) ups.push(uploadFootage(st.ref, { role: 'reference', brand: brandId, api, onProgress: (v) => progress('ref', v) }));
-        const [orig, ref] = await Promise.all(ups);
-        if (st.closed) return;
+        // the first failure aborts the sibling; Start only comes back once both have settled
+        const run = (file, role, k) => uploadFootage(file, { role, brand: brandId, api, signal, onProgress: (v) => progress(k, v) }).catch((e) => { ac.abort(); throw e; });
+        const res = await Promise.allSettled([run(st.original, 'original', 'original'), ...(st.ref ? [run(st.ref, 'reference', 'ref')] : [])]);
+        const bad = res.filter((r) => r.status === 'rejected').map((r) => r.reason);
+        if (bad.length) throw bad.find((e) => !isAbort(e)) || bad[0];
+        const [orig, ref] = res.map((r) => r.value);
+        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : { lookId: st.lookId }), ...(lang ? { lang } : {}) }, signal });
         let probe = null;
-        if (ref) { try { probe = (await api('/footage/' + ref.id)).probe; } catch (e) { /* not probed yet: default size */ } }
-        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : { lookId: st.lookId }), ...(lang ? { lang } : {}) } });
+        if (ref) { start.textContent = 'Reading the reference…'; say('Reading the reference…', true); probe = await readProbe(api, ref.id, { signal }); say(''); }
         if (st.closed) return;
         const d = createFootageDesign({ original: st.original, src: orig.id, ref: ref ? ref.id : null, lookId: ref ? null : st.lookId, lang, probe });
-        close(); FT.open(d);
+        st.busy = false; close(); FT.open(d);
       } catch (e) {
-        st.busy = false; start.textContent = 'Start'; refresh();
-        if (!st.closed) say((e && e.message) || 'The upload failed. Try again, dropping the same files resumes it.');
+        st.busy = false; st.ac = null; start.textContent = 'Start'; refresh();
+        if (!st.closed && !isAbort(e)) say((e && e.message) || 'The upload failed. Try again, dropping the same files resumes it.');
       }
     });
   }

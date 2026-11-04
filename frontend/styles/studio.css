@@ -3112,3 +3112,4 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-look:hover{border-color:var(--accent)}
 .ft-look[aria-pressed="true"]{border-color:var(--accent);background:rgba(253,14,53,.08);color:var(--accent);font-weight:600}
 .ft-err{margin:0;font-size:12.5px;color:var(--accent)}.ft-err[hidden]{display:none}
+.ft-err.ft-info{color:var(--text-2)}
