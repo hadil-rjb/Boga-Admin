@@ -40,6 +40,12 @@ describe('buildProxyArgs', () => {
     expect(f.indexOf('format=gbrpf32le')).toBeLessThan(f.indexOf('lut3d')); expect(f.indexOf('lut3d')).toBeLessThan(f.lastIndexOf('format=yuv420p'));
     expect(f).toMatch(/scale=/);
   });
+  it('converts to YUV with the BT.709 matrix, for HDR and SDR alike', () => {
+    for (const p of [parseProbe(hlg), parseProbe(ref)]) {
+      const a = buildProxyArgs('s', 'o', p, 'c.cube'); const f = a[a.indexOf('-vf') + 1];
+      expect(f).toMatch(/scale=out_color_matrix=bt709:out_range=tv,format=yuv420p/);
+    }
+  });
   it('encodes with libx264 crf 23, g 15, faststart, progress pipe', () => {
     const a = buildProxyArgs('s', 'o', parseProbe(ref), 'c').join(' ');
     expect(a).toMatch(/-c:v libx264 -crf 23 -g 15/); expect(a).toMatch(/-movflags \+faststart/); expect(a).toMatch(/-progress pipe:1 -nostats/);
@@ -50,7 +56,7 @@ describe('buildProxyArgs', () => {
 describe('buildFramesArgs', () => {
   it('samples 60 frames at 256 px wide', () => {
     const a = buildFramesArgs('p.mp4', 'f/%03d.png', 30).join(' ');
-    expect(a).toMatch(/fps=2(\.0+)?,scale=256:-2/); expect(a).toMatch(/-frames:v 60/);
+    expect(a).toMatch(/fps=2(\.0+)?,scale=256:-2:in_color_matrix=bt709/); expect(a).toMatch(/-frames:v 60/);
   });
 });
 

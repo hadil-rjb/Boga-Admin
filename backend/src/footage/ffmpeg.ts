@@ -28,6 +28,7 @@ export function parseProbe(json: any): Probe {
   };
 }
 
+export const RGB_TO_709 = 'out_color_matrix=bt709:out_range=tv';
 const ROTATE: Record<number, string> = { 90: 'transpose=1', 270: 'transpose=2', 180: 'hflip,vflip' };
 
 /**
@@ -39,7 +40,8 @@ export function buildProxyArgs(src: string, out: string, p: Probe, hlgCube: stri
   if (ROTATE[p.rotation]) vf.push(ROTATE[p.rotation]);
   vf.push(p.w >= p.h ? 'scale=720:-2' : 'scale=-2:720'); // long side (display orientation) to 720
   if (p.hdr === 'hlg') vf.push('format=gbrpf32le', `lut3d=file=${hlgCube}:interp=tetrahedral`);
-  vf.push('format=yuv420p', 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv'); // frame props win over encoder flags
+  // float/RGB -> YUV must use the BT.709 matrix, else the bt709 tags lie (default is BT.601)
+  vf.push(`scale=${RGB_TO_709}`, 'format=yuv420p', 'setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv'); // frame props win over encoder flags
   return [
     '-y', '-hide_banner', '-loglevel', 'error', '-noautorotate', '-display_rotation', '0', '-i', src, // no display matrix may survive: the pixels are already rotated
    
@@ -56,7 +58,7 @@ export function buildProxyArgs(src: string, out: string, p: Probe, hlgCube: stri
 /** 60 PNG frames, 256 px wide, evenly spread over the proxy */
 export function buildFramesArgs(proxy: string, outPattern: string, durSec: number): string[] {
   const fps = 60 / Math.max(durSec, 0.1);
-  return ['-y', '-hide_banner', '-loglevel', 'error', '-i', proxy, '-an', '-vf', `fps=${+fps.toFixed(6)},scale=256:-2`, '-frames:v', '60', outPattern];
+  return ['-y', '-hide_banner', '-loglevel', 'error', '-i', proxy, '-an', '-vf', `fps=${+fps.toFixed(6)},scale=256:-2:in_color_matrix=bt709:in_range=tv`, '-frames:v', '60', outPattern];
 }
 
 /** `out_time_us=N` line from `-progress` → 0..1 (null for any other line) */
