@@ -33,9 +33,12 @@ export async function readProbe(api, id, { signal, sleep = (ms) => new Promise((
   return null;
 }
 /** The footage part of a new design */
-export function footageDoc({ src, ref = null, lookId = null, lang = null, size }) {
+export function footageDoc({ src, ref = null, lookId = null, lang = null, size, style = null }) {
   const { w, h } = size || DEFAULT_SIZE;
-  return { src, ref, lookId, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions: { style: null, lines: [], lang }, out: { w, h, fps: 30 }, export: null };
+  // a design made from a brand look starts with that look's subtitle style (styleFrom: where the style came from, see footage-editor.js)
+  const captions = { style: style ? JSON.parse(JSON.stringify(style)) : null, lines: [], lang };
+  if (style) captions.styleFrom = 'look';
+  return { src, ref, lookId, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions, out: { w, h, fps: 30 }, export: null };
 }
 
 export function installFootage(ctx) {
@@ -118,9 +121,10 @@ export function installFootage(ctx) {
 
   function createFootageDesign({ original, src, ref, lookId, lang, probe }) {
     const size = outSize(probe), r = ensureRatio(`${size.w}x${size.h}`);
+    const saved = lookId && (Array.isArray(brand().looks) ? brand().looks : []).find((l) => l && l.id === lookId);
     const d = createDesign({
       name: `${baseName(original.name)} · matched`, ratio: r,
-      mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = footageDoc({ src, ref, lookId, lang, size }); d.named = true; },
+      mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = footageDoc({ src, ref, lookId, lang, size, style: saved && saved.captionStyle }); d.named = true; },
     });
     save();
     return d;

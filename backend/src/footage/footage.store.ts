@@ -64,6 +64,12 @@ export class FootageStore {
     await fs.rm(this.dir(id), { recursive: true, force: true });
   }
 
+  /** A saved brand look's cube: <root>/looks/<id>.cube */
+  lookFile(id: string): string {
+    if (!/^[\w-]{1,64}$/.test(id)) throw new Error("Invalid look id");
+    return join(this.root, "looks", `${id}.cube`);
+  }
+
   file(id: string, name: FootageFile): string {
     if (!/^(proxy\.mp4|look\.cube|words\.json|stats\.json|exports\/[\w-]{1,64}\.mp4)$/.test(name)) throw new Error("Invalid footage file");
     return join(this.dir(id), name);

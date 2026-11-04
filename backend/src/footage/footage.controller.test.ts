@@ -286,3 +286,41 @@ describe('editor data: words, look, retry', () => {
     expect((await validate(plainToInstance(RetryFootageDto, { step: 'rm -rf' }))).length).toBe(1);
   });
 });
+
+describe('brand looks', () => {
+  const mk = async () => { const { id } = await ctl.create(user, dto({ name: 'o' + Math.random() + '.mp4' })); return id; };
+  const cubeOf = async (id: string) => { await fs.mkdir(join(root, id), { recursive: true }); await fs.writeFile(join(root, id, 'look.cube'), 'LUT_3D_SIZE 2\n0 0 0\n'); };
+  it('saves the matched grade under a fresh id, which can be read back and deleted', async () => {
+    const f = await mk(); await cubeOf(f);
+    const r = await ctl.saveLook({ footageId: f, name: 'Warm' });
+    expect(r.id).toMatch(/^[0-9a-f]{16}$/); expect(r.lut).toBe(`looks/${r.id}.cube`);
+    expect(await fs.readFile(join(root, 'looks', `${r.id}.cube`), 'utf8')).toBe('LUT_3D_SIZE 2\n0 0 0\n');
+    expect(await ctl.getLook(r.id)).toBe('LUT_3D_SIZE 2\n0 0 0\n');
+    expect((await ctl.saveLook({ footageId: f })).id).not.toBe(r.id);
+    expect(await ctl.removeLook(r.id)).toEqual({ ok: true });
+    await expect(fs.stat(join(root, 'looks', `${r.id}.cube`))).rejects.toThrow();
+    await expect(ctl.getLook(r.id)).rejects.toMatchObject({ status: 404 });
+    expect(await ctl.removeLook(r.id)).toEqual({ ok: true }); // already gone: nothing to do
+  });
+  it('404 when the footage is unknown or has no grade yet', async () => {
+    const f = await mk();
+    await expect(ctl.saveLook({ footageId: f })).rejects.toMatchObject({ status: 404 });
+    await expect(ctl.saveLook({ footageId: 'f'.repeat(24) })).rejects.toMatchObject({ status: 404 });
+    await expect(fs.stat(join(root, 'looks'))).rejects.toThrow(); // nothing was created
+  });
+  it('rejects ids that could leave the looks folder', async () => {
+    for (const bad of ['../x', '..%2Fx', 'a/b', '', 'x'.repeat(65), '.hidden']) {
+      await expect(ctl.getLook(bad)).rejects.toMatchObject({ status: 404 });
+      await expect(ctl.removeLook(bad)).rejects.toMatchObject({ status: 404 });
+    }
+    await fs.writeFile(join(root, 'secret.cube'), 'x');
+    await expect(ctl.getLook('../secret')).rejects.toMatchObject({ status: 404 });
+    expect(await fs.readFile(join(root, 'secret.cube'), 'utf8')).toBe('x');
+  });
+  it('validates the DTO', async () => {
+    const { validate } = await import('class-validator'); const { plainToInstance } = await import('class-transformer');
+    const bad = async (o: any) => (await validate(plainToInstance((await import('./footage.controller')).SaveLookDto, o))).length;
+    expect(await bad({ footageId: 'a'.repeat(24), name: 'Warm' })).toBe(0);
+    expect(await bad({ footageId: '../x' })).toBe(1); expect(await bad({ footageId: 'a'.repeat(24), name: 'x'.repeat(81) })).toBe(1);
+  });
+});

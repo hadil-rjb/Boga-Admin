@@ -3175,3 +3175,20 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-h::after{content:"";position:absolute;top:30%;bottom:30%;left:3px;width:2px;border-radius:1px;background:var(--accent);opacity:.7}
 .ft-head{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--text-1);pointer-events:none;box-shadow:0 0 0 1px var(--surface)}
 .ft-look-p .ft-sec{display:flex;flex-direction:column;gap:8px}
+
+/* ---- footage Look panel: grade sliders, subtitle style controls, brand looks ---- */
+.ft-look-p .ft-sec+.ft-sec{padding-top:14px;border-top:1px solid var(--border-soft)}
+.ft-rg{display:grid;grid-template-columns:104px 1fr 36px;align-items:center;gap:8px;font-size:13px;color:var(--text-2);margin:0}
+.ft-rg output{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-3)}
+.ft-rg.ft-cl,.ft-rg.ft-sw,.ft-rg.ft-se,.ft-rg.ft-wpl{grid-template-columns:1fr auto}
+.ft-rg.ft-cl input{width:40px;height:26px;padding:0;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer}
+.ft-rg.ft-se select{min-width:120px;max-width:150px}
+.ft-rg.ft-sw input{width:16px;height:16px;accent-color:var(--accent)}
+.ft-rg input:disabled,.ft-rg select:disabled{opacity:.5;cursor:not-allowed}
+.ft-reset{align-self:flex-start}
+.ft-frame.drag{cursor:ns-resize}
+.ft-lks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ft-lkr{display:flex;align-items:center;gap:8px;padding:6px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.ft-lkr.on{border-color:var(--accent)}
+.ft-lkr img,.ft-lkr .ft-th{width:40px;height:40px;flex-shrink:0;border-radius:6px;object-fit:cover;background:var(--pill)}
+.ft-ln{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--text-1)}

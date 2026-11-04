@@ -7,7 +7,7 @@
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, retext, retime, addLine, split, merge, DEFAULT_STYLE } from './captions.js';
+import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_STYLE, FONT_STACKS } from './captions.js';
 import { parseCube } from './look.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
 
@@ -42,15 +42,16 @@ export function analysis(rec, ref) {
  * The server's results that the design still lacks: subtitles grouped from the words (only when there are no lines yet),
  * the reference's subtitle style (only when none is set) and the grade marker (only when no look is set). null when nothing changes.
  */
-export function analysisPatch(ft, { id, words, refStyle, hasCube }) {
+export function analysisPatch(ft, { id, words, refStyle, refNote, hasCube }) {
   const out = {};
-  if (ft.captions.style == null && refStyle) out.style = refStyle;
+  // styleFrom says where the style came from; a style the user already owns (or a look's) is never replaced
+  if (ft.captions.style == null && refStyle) { out.style = refStyle; out.styleFrom = refNote ? 'default' : 'reference'; }
   if (!(ft.captions.lines || []).length && Array.isArray(words) && words.length) out.lines = group(words, out.style || ft.captions.style || DEFAULT_STYLE);
   if (hasCube && !ft.look.lut) out.lut = lookPath(id);
   return Object.keys(out).length ? out : null;
 }
 export function applyPatch(ft, p) {
-  if (p.style) ft.captions.style = p.style;
+  if (p.style) { ft.captions.style = p.style; if (p.styleFrom) ft.captions.styleFrom = p.styleFrom; }
   if (p.lines) ft.captions.lines = p.lines;
   if (p.lut) ft.look.lut = p.lut;
   return ft;
@@ -110,11 +111,106 @@ export const rangeLabel = (l) => `${fmtMs(l.start)} – ${fmtMs(l.end)}`;
 /** The text of a line as the field shows it */
 export const lineText = (l) => (l.words || []).map((w) => w.t).join(' ');
 
+
+/* ---- Look panel: grade sliders, subtitle style edits, brand looks ---- */
+const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
+/** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
+export const GRADE_KEYS = { strength: [0, 100], exposure: [-100, 100], temp: [-100, 100], sat: [-100, 100] };
+export const GRADE_RESET = { strength: 1, exposure: 0, temp: 0, sat: 0 };
+/** A grade value as the slider's integer */
+export function gradeToSlider(key, v) {
+  const [a, b] = GRADE_KEYS[key], x = v == null && key === 'strength' ? 1 : +v || 0;
+  return clampN2(Math.round(x * 100), a, b) + 0;
+}
+/** A slider's integer as the grade value */
+export function sliderToGrade(key, n) {
+  const [a, b] = GRADE_KEYS[key];
+  return (clampN2(Math.round(+n || 0), a, b) + 0) / 100;
+}
+/** The look object with one slider applied (never mutates) */
+export const gradePatch = (look, key, n) => ({ ...look, [key]: sliderToGrade(key, n) });
+export const FONT_LABELS = { 'sans-bold': 'Bold sans', sans: 'Sans', serif: 'Serif', display: 'Display' };
+export const FONT_KEYS = Object.keys(FONT_STACKS);
+export const HL_MODES = [['box', 'Box'], ['color', 'Color'], ['scale', 'Scale'], ['none', 'None']];
+export const ANIMS = [['none', 'None'], ['pop', 'Pop'], ['fade', 'Fade']];
+export const WEIGHTS = [[400, 'Regular'], [600, 'Semibold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']];
+export const Y_MIN = 0.05, Y_MAX = 0.95;
+export const clampY = (y) => Math.round(clampN2(+y || 0, Y_MIN, Y_MAX) * 1000) / 1000;
+/** A value for <input type=color> (#rrggbb), or the fallback when the style holds anything else (rgba, names) */
+export function colorHex(v, fallback = '#ffffff') {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(v || '').trim());
+  if (!m) return fallback;
+  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
+  return '#' + h.toLowerCase();
+}
+/** Words per line of a style (1..8; the default when unset) */
+export const maxWordsOf = (style) => clampN2(Math.round(+(style && style.maxWords) || DEFAULT_STYLE.maxWords), 1, 8);
+/**
+ * One edit of the subtitle style, as a new style (a missing style starts from the default). Units are the controls':
+ * size and y in percent of the video height (size 2..10, y 5..95), strokeWidth in thousandths of the height (1..20),
+ * strokeOn / shadowOn booleans, colors as #rrggbb. Unknown keys and unusable values change nothing.
+ */
+export function styleEdit(style, key, v) {
+  const s = JSON.parse(JSON.stringify(style || DEFAULT_STYLE)), num = +v;
+  const hl = () => (s.highlight = { ...DEFAULT_STYLE.highlight, ...(s.highlight || {}) });
+  const hex = (x) => /^#[0-9a-f]{6}$/i.test(String(x));
+  switch (key) {
+    case 'font': if (FONT_STACKS[v]) s.font = v; break;
+    case 'size': if (isFinite(num)) s.size = Math.round(clampN2(num, 2, 10) * 10) / 1000; break;
+    case 'weight': if (isFinite(num) && num >= 100 && num <= 900) s.weight = Math.round(num / 100) * 100; break;
+    case 'color': if (hex(v)) s.color = v; break;
+    case 'strokeOn': s.stroke = v ? (s.stroke || { color: '#000000', width: 0.004 }) : null; break;
+    case 'strokeColor': if (hex(v)) s.stroke = { width: 0.004, ...(s.stroke || {}), color: v }; break;
+    case 'strokeWidth': if (isFinite(num)) s.stroke = { color: '#000000', ...(s.stroke || {}), width: clampN2(num, 1, 20) / 1000 }; break;
+    case 'shadowOn': s.shadow = v ? (s.shadow || { ...DEFAULT_STYLE.shadow }) : null; break;
+    case 'hlMode': if (['box', 'color', 'scale', 'none'].includes(v)) hl().mode = v; break;
+    case 'hlColor': if (hex(v)) hl().color = v; break;
+    case 'hlText': if (hex(v)) hl().text = v; break;
+    case 'y': if (isFinite(num)) s.y = clampY(num / 100); break;
+    case 'anim': if (['none', 'pop', 'fade'].includes(v)) s.anim = v; break;
+    default: break;
+  }
+  return s;
+}
+/** Where the subtitle style came from: the stored origin, else guessed (a style without one came from the reference or the look) */
+export function styleOrigin(captions, hasRef) {
+  const c = captions || {};
+  if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
+  return c.style ? (hasRef ? 'reference' : 'look') : 'default';
+}
+/** The panel's sentence about the style's origin */
+export const ORIGIN_COPY = {
+  reference: 'Subtitles use the style read from the reference.',
+  look: 'Subtitles use the brand look’s style.',
+  default: 'Subtitles use the default style.',
+  custom: 'Subtitles use your own style.',
+};
+/** Seconds into a video of `dur` seconds at which the reference thumbnail is taken: frame 30 of the 60 sampled frames */
+export const thumbTime = (dur) => Math.max(0, (29.5 / 60) * (+dur || 0));
+/** Thumbnail size: 160 px wide */
+export const thumbSize = (vw, vh) => ({ w: 160, h: Math.max(1, Math.round((160 * (+vh || 9)) / (+vw || 16))) });
+/** The stored brand look */
+export function lookRecord({ id, name, lut, captionStyle, refThumb, now = new Date() }) {
+  const nm = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Brand look';
+  return { id, name: nm, lut, captionStyle: JSON.parse(JSON.stringify(captionStyle || DEFAULT_STYLE)), refThumb: refThumb || null, createdAt: new Date(now).toISOString() };
+}
+/**
+ * Applies a brand look to a footage doc (in place): its cube, its subtitle style (origin 'look') and, when `lines` are given
+ * (regrouped by the caller because the look's words per line differ), the new lines. Returns whether the lines need regrouping.
+ */
+export function applyLookTo(ft, look, lines) {
+  const was = maxWordsOf(ft.captions.style);
+  ft.look.lut = look.lut; ft.lookId = look.id;
+  if (look.captionStyle) { ft.captions.style = JSON.parse(JSON.stringify(look.captionStyle)); ft.captions.styleFrom = 'look'; }
+  if (lines) ft.captions.lines = lines;
+  return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
+}
+
 const PEAK_BUCKETS = 2000;
 const GOOGLE_FONTS = 'https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700;800;900&family=Lalezar&family=Noto+Naskh+Arabic:wght@400;700&family=Noto+Sans+Arabic:wght@400;600;700;800&display=swap';
 
 export function installFootageEditor(ctx, FT) {
-  const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed } = ctx;
+  const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed, brand } = ctx;
   Object.assign(IC, { ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>' });
   const $ = (s, r = document) => r.querySelector(s);
   const isFt = (d) => !!(d && d.footage);
@@ -124,7 +220,7 @@ export function installFootageEditor(ctx, FT) {
   /* ---------- 2. session ---------- */
   function start(d) {
     stop();
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
     ED.tab = 'ftSubs';
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -172,7 +268,7 @@ export function installFootageEditor(ctx, FT) {
     const cur = ED.d.footage; // an undo during the requests replaces the object
     if (cubeText) { try { S.cube = parseCube(cubeText); } catch (e) { S.cube = null; S.note = 'The colour grade file could not be read.'; } }
     const refStyle = S.refRec && S.refRec.captionStyle ? S.refRec.captionStyle : null;
-    const patch = analysisPatch(cur, { id: S.id, words, refStyle, hasCube: !!S.cube }) || {};
+    const patch = analysisPatch(cur, { id: S.id, words, refStyle, refNote: S.refRec && S.refRec.captionNote, hasCube: !!S.cube }) || {};
     if (redo) { // Re-transcribe: the new words replace the edited lines
       S.retx = false;
       patch.lines = group(Array.isArray(words) ? words : [], patch.style || cur.captions.style || DEFAULT_STYLE);
@@ -186,7 +282,16 @@ export function installFootageEditor(ctx, FT) {
   function sync() {
     if (!F || !F.player) return;
     const ft = ED.d.footage;
+    ensureCube(F, ft.look.lut);
     F.player.setLook(ft.look); F.player.setCaptions(ft.captions); F.player.setSplit(F.split);
+  }
+  /** A brand look's cube ('looks/<id>.cube') is fetched once; the player picks it up when it arrives (a failure is remembered, not retried) */
+  function ensureCube(S, lut) {
+    const m = /^looks\/([\w-]{1,64})\.cube$/.exec(lut || '');
+    if (!m || S.cubes[lut] || S.cubeBad[lut] || S.cubeBusy === lut) return;
+    S.cubeBusy = lut;
+    api(`/footage/looks/${m[1]}`, { text: true }).then((t) => { S.cubes[lut] = parseCube(t); }).catch(() => { S.cubeBad[lut] = true; S.note = 'This brand look’s colour grade could not be loaded.'; })
+      .finally(() => { if (S.cubeBusy === lut) S.cubeBusy = null; if (alive(S)) { sync(); redraw(); } });
   }
 
   function mountPlayer() {
@@ -194,7 +299,7 @@ export function installFootageEditor(ctx, FT) {
     const ft = S.d.footage;
     S.player = createPlayer(box, {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: ft.captions,
-      cube: (lut) => (lut === lookPath(S.id) ? S.cube : null),
+      cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
       onTime: (ms, playing) => transport(ms, playing),
       onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); },
       onError: (err) => refreshProxy(S, err),
@@ -397,14 +502,14 @@ export function installFootageEditor(ctx, FT) {
   }
   function regroup(inp) {
     if (!F || !can()) return;
-    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = Math.round(+(ft.captions.style && ft.captions.style.maxWords) || DEFAULT_STYLE.maxWords);
+    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = maxWordsOf(ft.captions.style);
     inp.value = n; if (n === was) return;
     ask('Change words per line?', 'This replaces your line breaks', 'Replace', async () => {
       try {
         const words = await api(`/footage/${S.id}/words`);
         if (!alive(S)) return;
         if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
-        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.lines = group(words, c.style); }); save();
+        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.lines = group(words, c.style); }); save();
       } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
     }, () => { inp.value = was; });
   }
@@ -484,28 +589,71 @@ export function installFootageEditor(ctx, FT) {
   }
   function footHTML(ft, A) {
     if (canEdit && !canEdit()) return '';
-    const has = (ft.captions.lines || []).length, mw = Math.min(8, Math.max(1, Math.round(+(ft.captions.style && ft.captions.style.maxWords) || DEFAULT_STYLE.maxWords)));
     const busyT = A.busy(A.transcribe);
     return `<div class="ft-foot"><button class="btn secondary sm" data-act="ftAdd">${ic('plus', 15)}Add a line at the playhead</button>
-      <label class="ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${mw}" data-ft-wpl aria-label="Words per line" ${has ? '' : 'disabled'}></label>
       <button class="btn ghost sm" data-act="ftRetx" ${busyT || !F.rec ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button></div>`;
   }
 
+  /* ---------- Look panel ---------- */
+  const optHTML = (list, cur) => list.map(([v, l]) => `<option value="${esc(String(v))}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft-rg"><span>${label}</span><input type="range" ${attr}="${key}" min="${min}" max="${max}" step="${step}" value="${val}" style="--p:${((val - min) / (max - min)) * 100}%" ${dis}><output>${val}</output></label>`;
+  const colorHTML = (key, label, val, dis) => `<label class="ft-rg ft-cl"><span>${label}</span><input type="color" data-ft-s="${key}" value="${colorHex(val)}" ${dis}></label>`;
+  const swHTML = (key, label, on, dis) => `<label class="ft-rg ft-sw"><span>${label}</span><input type="checkbox" data-ft-s="${key}" ${on ? 'checked' : ''} ${dis}></label>`;
+  const selHTML = (key, label, list, cur, dis) => `<label class="ft-rg ft-se"><span>${label}</span><select class="field" data-ft-s="${key}" ${dis}>${optHTML(list, cur)}</select></label>`;
+  const brandLooks = () => (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
+
+  function gradeHTML(ft, A, src, dis) {
+    if (A.grade.state === 'failed') return failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
+    if (A.busy(A.grade) || !F.rec) return `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
+    const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut);
+    const msg = own && F.cube ? `The colours match ${src}. Use <b>Before / After</b> under the video to compare.`
+      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(F.note || 'No colour grade yet.');
+    const L = ft.look, g = (k) => gradeToSlider(k, L[k]);
+    return `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg}</p>
+      ${rgHTML('data-ft-g', 'strength', 'Strength', 0, 100, 1, g('strength'), dis)}${rgHTML('data-ft-g', 'exposure', 'Exposure', -100, 100, 1, g('exposure'), dis)}
+      ${rgHTML('data-ft-g', 'temp', 'Temperature', -100, 100, 1, g('temp'), dis)}${rgHTML('data-ft-g', 'sat', 'Saturation', -100, 100, 1, g('sat'), dis)}
+      ${dis ? '' : `<button class="btn ghost sm ft-reset" data-act="ftGradeReset">${ic('refresh', 14)}Reset grade</button>`}`;
+  }
+
+  function styleHTML(ft, A, dis) {
+    const st = ft.captions.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(ft.captions, !!F.ref);
+    if (F.ref && !ft.captions.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
+    let top = '';
+    if (F.ref && !ft.captions.style && A.style.state === 'failed') top = failBox(A.style.error || 'The subtitle style could not be read.', F.ref, 'caption-style');
+    else top = `<p class="sm-t">${ORIGIN_COPY[origin]}</p>`;
+    const note = F.refRec && F.refRec.captionNote; if (note && (origin === 'default' || origin === 'reference')) top += `<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
+    const wc = WEIGHTS.some(([w]) => w === st.weight) ? WEIGHTS : [...WEIGHTS, [st.weight, String(st.weight)]];
+    const has = (ft.captions.lines || []).length, size = Math.round(st.size * 1000) / 10, y = Math.round(st.y * 100);
+    return `${top}${selHTML('font', 'Font', FONT_KEYS.map((k) => [k, FONT_LABELS[k]]), st.font, dis)}
+      ${rgHTML('data-ft-s', 'size', 'Size', 2, 10, 0.5, clampN2(size, 2, 10), dis)}
+      ${selHTML('weight', 'Weight', wc, st.weight, dis)}${colorHTML('color', 'Text color', st.color, dis)}
+      ${swHTML('strokeOn', 'Stroke', !!st.stroke, dis)}${st.stroke ? `${colorHTML('strokeColor', 'Stroke color', st.stroke.color, dis)}${rgHTML('data-ft-s', 'strokeWidth', 'Stroke width', 1, 20, 1, clampN2(Math.round(st.stroke.width * 1000), 1, 20), dis)}` : ''}
+      ${swHTML('shadowOn', 'Shadow', !!st.shadow, dis)}
+      ${selHTML('hlMode', 'Highlight', HL_MODES, hl.mode, dis)}${hl.mode !== 'none' ? colorHTML('hlColor', 'Highlight color', hl.color, dis) : ''}${hl.mode === 'box' ? colorHTML('hlText', 'Highlight text', hl.text, dis) : ''}
+      ${rgHTML('data-ft-s', 'y', 'Position', 5, 95, 1, clampN2(y, 5, 95), dis)}
+      <label class="ft-rg ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${maxWordsOf(ft.captions.style)}" data-ft-wpl aria-label="Words per line" ${dis || !has ? 'disabled' : ''}></label>
+      ${selHTML('anim', 'Animation', ANIMS, st.anim || 'none', dis)}
+      ${dis ? '' : '<p class="xs-t muted">You can also drag the subtitle on the video to move it.</p>'}`;
+  }
+
+  function looksHTML(ft, dis) {
+    const list = brandLooks(), own = ft.look.lut === lookPath(F.id);
+    const canSave = !dis && F.cube && own;
+    const save = dis ? '' : `<button class="btn secondary sm" data-act="ftSaveLook" ${canSave ? '' : 'disabled'} ${!canSave && F.cube && !own ? 'title="Undo the applied look to save the matched grade"' : ''}>${ic('plus', 15)}Save as brand look</button>`;
+    const rows = list.length ? `<ul class="ft-lks">${list.map((l) => `<li class="ft-lkr${l.lut === ft.look.lut ? ' on' : ''}">${l.refThumb && /^data:image\//.test(l.refThumb) ? `<img src="${esc(l.refThumb)}" alt="" width="40" height="40">` : '<span class="ft-th"></span>'}
+      <span class="ft-ln" title="${esc(l.name || l.id)}">${esc(l.name || l.id)}</span>
+      ${dis ? '' : `<button class="btn secondary sm" data-act="ftApplyLook" data-id="${esc(l.id)}" ${l.lut === ft.look.lut ? 'disabled' : ''}>${l.lut === ft.look.lut ? 'In use' : 'Apply'}</button>
+      <button class="btn ghost icon sm" data-act="ftDelLook" data-id="${esc(l.id)}" aria-label="Delete ${esc(l.name || l.id)}" title="Delete">${ic('trash', 15)}</button>`}</li>`).join('')}</ul>`
+      : '<p class="xs-t muted">No brand looks yet. Save this grade and subtitle style to reuse them on other videos.</p>';
+    return `${save}${rows}`;
+  }
+
   function lookHTML() {
-    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look';
-    let grade;
-    if (A.grade.state === 'failed') grade = failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
-    else if (A.busy(A.grade) || !F.rec) grade = `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
-    else if (F.cube) grade = `<p class="sm-t">The colours match ${src}. Use <b>Before / After</b> under the video to compare.</p>`;
-    else grade = `<p class="sm-t muted">${esc(F.note || 'No colour grade yet.')}</p>`;
-    let style = '';
-    if (F.ref) {
-      if (A.style.state === 'failed') style = failBox(A.style.error || 'The subtitle style could not be read.', F.ref, 'caption-style');
-      else if (A.busy(A.style) || !F.refRec) style = `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
-      else style = `<p class="sm-t">${ft.captions.style && !(F.refRec && F.refRec.captionNote) ? 'Subtitles use the style read from the reference.' : 'Subtitles use the default style.'}</p>`;
-      const note = F.refRec && F.refRec.captionNote; if (note) style +=`<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
-    } else style = `<p class="sm-t">${ft.captions.style ? 'Subtitles use the brand look’s style.' : 'Subtitles use the default style.'}</p>`;
-    return `<div class="body ft-look-p"><h3>Look</h3><section class="ft-sec"><span class="label">Colour grade</span>${grade}</section><section class="ft-sec"><span class="label">Subtitle style</span>${style}</section></div>`;
+    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = can() ? '' : 'disabled';
+    return `<div class="body ft-look-p"><h3>Look</h3>
+      <section class="ft-sec"><span class="label">Colour grade</span>${gradeHTML(ft, A, src, dis)}</section>
+      <section class="ft-sec"><span class="label">Subtitle style</span>${styleHTML(ft, A, dis)}</section>
+      <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
   }
 
   wrapEd({
@@ -545,6 +693,10 @@ export function installFootageEditor(ctx, FT) {
     ftMore: (a) => rowMenu(a),
     ftAdd: () => addAtPlayhead(),
     ftRetx: () => retranscribe(),
+    ftGradeReset: () => gradeReset(),
+    ftSaveLook: () => saveLook(),
+    ftApplyLook: (a) => applyLook(a.dataset.id),
+    ftDelLook: (a) => deleteLook(a.dataset.id),
     ftSeek: (a) => { if (F && F.player) { F.player.seek(+a.dataset.ms); } },
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
@@ -584,6 +736,151 @@ export function installFootageEditor(ctx, FT) {
     if (!act || (k === ' ' && tag === 'button' && t.dataset.act !== 'ftPlay')) return;
     e.preventDefault(); e.stopImmediatePropagation(); act();
   }, true);
+  /* ---- Look panel: live preview on `input`, one mutate() on `change` (release) ---- */
+  const ctlValue = (el) => (el.type === 'checkbox' ? el.checked : el.value);
+  const setOut = (el) => {
+    const o = el.closest('.ft-rg') && el.closest('.ft-rg').querySelector('output'); if (o) o.textContent = el.value;
+    if (el.type === 'range') el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
+  };
+  /** Controls that add or remove other controls: the panel is redrawn after the commit (it is also redrawn on the first edit, for the origin text), focus kept */
+  const STRUCT = new Set(['strokeOn', 'hlMode']);
+  function gradePreview(el) {
+    if (!F || !F.player || !can()) return; setOut(el);
+    F.player.setLook(gradePatch(ED.d.footage.look, el.dataset.ftG, el.value));
+  }
+  function gradeCommit(el) {
+    if (!F || !can()) return; const k = el.dataset.ftG, ft = ED.d.footage, v = sliderToGrade(k, el.value);
+    if (ft.look[k] === v) { sync(); return; }
+    mutate(() => { ED.d.footage.look[k] = v; }, sync); save();
+  }
+  function gradeReset() {
+    if (!F || !can()) return;
+    mutate(() => { Object.assign(ED.d.footage.look, GRADE_RESET); }, () => { sync(); ed.props(); }); save();
+  }
+  function stylePreview(el) {
+    if (!F || !F.player || !can()) return; setOut(el);
+    const c = ED.d.footage.captions;
+    F.player.setCaptions({ ...c, style: styleEdit(c.style, el.dataset.ftS, ctlValue(el)) });
+  }
+  function styleCommit(el) {
+    if (!F || !can()) return; const k = el.dataset.ftS, c0 = ED.d.footage.captions, wasCustom = c0.styleFrom === 'custom';
+    const next = styleEdit(c0.style, k, ctlValue(el));
+    if (c0.style && JSON.stringify(next) === JSON.stringify(c0.style)) { sync(); return; }
+    mutate(() => { const c = ED.d.footage.captions; c.style = next; c.styleFrom = 'custom'; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
+    save();
+  }
+  document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
+  document.addEventListener('change', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradeCommit(t); else if (t.matches('[data-ft-s]')) styleCommit(t); });
+
+  /* dragging the subtitle on the video sets its height (y): preview through the player, one mutate() on release */
+  function captionDrag(e) {
+    if (!F || !F.player || F.split != null || !can() || e.button > 0 || F.cdrag) return;
+    const fr = $('#ftFrame'), ov = fr && fr.querySelector('.ftp-o'); if (!fr || !ov || !fr.contains(e.target) || !ov.width) return;
+    const ft = ED.d.footage, st = ft.captions.style || DEFAULT_STYLE, line = lineAt(ft.captions.lines || [], F.player.time()); if (!line) return;
+    const r = fr.getBoundingClientRect(), W = ov.width, H = ov.height, L = layout(ov.getContext('2d'), line, st, W, H);
+    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height, pad = 0.025;
+    if (px < L.x / W - pad || px > (L.x + L.w) / W + pad || py < L.y / H - pad || py > (L.y + L.h) / H + pad) return;
+    e.preventDefault();
+    const S = F, off = py - st.y, d = S.cdrag = { y: st.y, y0: st.y };
+    try { fr.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+    fr.classList.add('drag');
+    const at = (ev) => {
+      d.y = clampY((ev.clientY - r.top) / r.height - off);
+      const c = ED.d.footage.captions; S.player && S.player.setCaptions({ ...c, style: { ...(c.style || DEFAULT_STYLE), y: d.y } });
+      const sl = $('#edProps [data-ft-s="y"]'); if (sl) { sl.value = String(Math.round(d.y * 100)); setOut(sl); }
+    };
+    const done = (commit) => {
+      fr.removeEventListener('pointermove', at); fr.removeEventListener('pointerup', up); fr.removeEventListener('pointercancel', cancel); fr.removeEventListener('lostpointercapture', cancel);
+      fr.classList.remove('drag'); S.cdrag = null;
+      if (!alive(S)) return;
+      if (commit && d.y !== d.y0) {
+        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; }, () => { sync(); ed.props(); }); save();
+      } else { sync(); ed.props(); }
+    };
+    const up = () => done(true), cancel = () => done(false);
+    fr.addEventListener('pointermove', at); fr.addEventListener('pointerup', up); fr.addEventListener('pointercancel', cancel); fr.addEventListener('lostpointercapture', cancel);
+  }
+  document.addEventListener('pointerdown', captionDrag);
+
+  /* ---- brand looks ---- */
+  /** A 160 px JPEG data URL of a video's frame 30 (null when the video cannot be read or drawn within 12 s) */
+  function grabThumb(url) {
+    return new Promise((resolve) => {
+      const v = document.createElement('video'); let done = false, t = 0;
+      const fin = (x) => { if (done) return; done = true; clearTimeout(t); v.removeAttribute('src'); try { v.load(); } catch (e) { /* ignore */ } resolve(x); };
+      t = setTimeout(() => fin(null), 12000);
+      v.crossOrigin = 'anonymous'; v.muted = true; v.preload = 'auto'; v.playsInline = true;
+      v.addEventListener('error', () => fin(null));
+      v.addEventListener('loadedmetadata', () => { if (!(v.duration > 0) || !isFinite(v.duration)) return fin(null); v.currentTime = Math.min(thumbTime(v.duration), Math.max(0, v.duration - 0.05)); });
+      v.addEventListener('seeked', () => {
+        try {
+          const { w, h } = thumbSize(v.videoWidth, v.videoHeight), c = document.createElement('canvas'); c.width = w; c.height = h;
+          c.getContext('2d').drawImage(v, 0, 0, w, h); fin(c.toDataURL('image/jpeg', 0.7));
+        } catch (e) { fin(null); }
+      });
+      v.src = url;
+    });
+  }
+  const refName = (S) => String((S.refRec && S.refRec.name) || '').replace(/\.[^.]+$/, '');
+  function saveLook() {
+    if (!F || !can()) return; const S = F, ft = ED.d.footage;
+    if (!S.cube || ft.look.lut !== lookPath(S.id)) { toast('The matched grade is not ready, or a brand look is applied.'); return; }
+    const applied = brandLooks().find((l) => l.id === ft.lookId), def = (refName(S) || (applied && applied.name) || 'Brand look').slice(0, 60);
+    ctx.modal(`<div class="mh"><h2>Save as brand look</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><label class="label" for="ftLkName">Name</label><input class="inp" id="ftLkName" maxlength="60" value="${esc(def)}" autocomplete="off">
+        <p class="xs-t muted" style="margin-top:8px">Saves the matched colours and the subtitle style. Strength, exposure, temperature and saturation are not saved.</p></div>
+      <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-ok>Save</button></div>`,
+      { onMount: (bg, close) => {
+        const inp = bg.querySelector('#ftLkName'), go = () => { const name = inp.value.trim() || def; close(); doSaveLook(S, name); };
+        bg.querySelector('[data-ft-ok]').addEventListener('click', go);
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+        inp.focus(); inp.select();
+      } });
+  }
+  async function doSaveLook(S, name) {
+    try {
+      const ft = ED.d.footage, prev = brandLooks().find((l) => l.id === ft.lookId);
+      const thumb = async () => {
+        if (!S.ref) return prev ? prev.refThumb : null;
+        let url = S.refRec && S.refRec.proxyUrl;
+        try { const r = await api('/footage/' + S.ref); if (r && r.proxyUrl) url = r.proxyUrl; } catch (e) { /* use the one we have */ }
+        return url ? grabThumb(apiUrl(url)) : null;
+      };
+      const [saved, refThumb] = await Promise.all([api('/footage/looks', { method: 'POST', body: { footageId: S.id, name } }), thumb()]);
+      const rec = lookRecord({ id: saved.id, name, lut: saved.lut, captionStyle: ED.d.footage.captions.style || DEFAULT_STYLE, refThumb });
+      const b = brand(); b.looks = [...(Array.isArray(b.looks) ? b.looks : []), rec]; save();
+      toast(`Saved “${rec.name}”`);
+      if (alive(S)) ed.props();
+    } catch (e) { toast((e && e.message) || 'Could not save the brand look'); }
+  }
+  async function applyLook(id) {
+    if (!F || !can()) return; const S = F, look = brandLooks().find((l) => l.id === id); if (!look) return;
+    let cube;
+    try { cube = parseCube(await api(`/footage/looks/${encodeURIComponent(id)}`, { text: true })); } catch (e) { toast('This brand look is no longer available.'); return; }
+    if (!alive(S)) return;
+    S.cubes[look.lut] = cube; delete S.cubeBad[look.lut];
+    const cur = ED.d.footage;
+    if (look.captionStyle && maxWordsOf(look.captionStyle) !== maxWordsOf(cur.captions.style) && (cur.captions.lines || []).length) {
+      ask('Apply this look?', `Its subtitles use ${maxWordsOf(look.captionStyle)} words per line. This replaces your line breaks.`, 'Apply', async () => {
+        let words = [];
+        try { words = await api(`/footage/${S.id}/words`); } catch (e) { toast((e && e.message) || 'Could not load the words'); return; }
+        if (!alive(S)) return;
+        const lines = Array.isArray(words) && words.length ? group(words, look.captionStyle) : null;
+        mutate(() => { applyLookTo(ED.d.footage, look, lines); }); save(); toast(`Applied “${look.name}”`);
+      });
+      return;
+    }
+    mutate(() => { applyLookTo(ED.d.footage, look); }); save(); toast(`Applied “${look.name}”`);
+  }
+  function deleteLook(id) {
+    if (!F || !can()) return; const S = F, look = brandLooks().find((l) => l.id === id); if (!look) return;
+    ask('Delete this brand look?', `“${look.name}” is removed for everyone on this brand. Videos that use it lose its colour grade when reopened.`, 'Delete', async () => {
+      try { await api(`/footage/looks/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch (e) { if (!e || e.status !== 404) { toast((e && e.message) || 'Could not delete the brand look'); return; } }
+      const b = brand(); b.looks = brandLooks().filter((l) => l.id !== id); save(); toast('Brand look deleted');
+      if (alive(S)) ed.props();
+    });
+  }
+
   /** Tasks 11-13: after changing d.footage outside mutate(), make the player and panels follow */
   FT.sync = () => { sync(); redraw(); };
   /** The open footage session (player, records) or null */

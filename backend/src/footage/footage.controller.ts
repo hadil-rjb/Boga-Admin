@@ -1,8 +1,10 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Header, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from "class-validator";
+import { randomBytes } from "crypto";
 import { createReadStream, promises as fs } from "fs";
 import { Model } from "mongoose";
+import { dirname } from "path";
 import { Public } from "../common/public.decorator";
 import { Roles } from "../common/roles.decorator";
 import { Footage, FootageDocument } from "./footage.schema";
@@ -30,12 +32,18 @@ export class PairFootageDto {
   @IsOptional() @IsString() @Matches(/^[a-z]{2}$/) lang?: string;
 }
 
+export class SaveLookDto {
+  @IsString() @Matches(/^[0-9a-f]{24}$/) footageId: string;
+  @IsOptional() @IsString() @MaxLength(80) name?: string;
+}
+
 export class RetryFootageDto {
   @IsIn([...STEP_ORDER]) step: Step;
 }
 
 const MIME_EXT: Record<string, string> = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "video/x-matroska": "mkv", "video/x-m4v": "m4v" };
 const extOf = (name: string, mime: string) => MIME_EXT[mime] ?? (/\.([a-z0-9]{1,5})$/i.exec(name)?.[1].toLowerCase() || "mp4");
+const isLookId = (id: string) => /^[\w-]{1,64}$/.test(id);
 const isId = (id: string) => /^[0-9a-f]{24}$/.test(id);
 
 @Controller("footage")
@@ -63,6 +71,37 @@ export class FootageController {
     if (prev) return { id: String(prev._id), chunkSize: CHUNK_SIZE, received: await this.store.received(String(prev._id)) };
     const doc = await this.model.create({ ...d, ext: extOf(d.name, d.mime), createdBy: r.user.sub, status: "uploading", jobs: {} });
     return { id: String(doc._id), chunkSize: CHUNK_SIZE, received: [] };
+  }
+
+  /**
+   * Saves a footage's matched grade as a brand look: copies its look.cube to <root>/looks/<lookId>.cube. The brand record (name,
+   * subtitle style, thumbnail) lives in the client's brand data. Declared before the ":id" routes so "looks" is never read as an id.
+   */
+  @Roles("admin", "editor") @Post("looks") @HttpCode(200)
+  async saveLook(@Body() d: SaveLookDto) {
+    await this.find(d.footageId);
+    const src = this.store.file(d.footageId, "look.cube");
+    if (!(await fs.stat(src).then((s) => s.isFile(), () => false))) throw new NotFoundException("No colour grade to save yet");
+    const id = randomBytes(8).toString("hex"), dest = this.store.lookFile(id), tmp = `${dest}.${randomBytes(6).toString("hex")}.tmp`;
+    await fs.mkdir(dirname(dest), { recursive: true });
+    try { await fs.copyFile(src, tmp); await fs.rename(tmp, dest); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
+    return { id, lut: `looks/${id}.cube` };
+  }
+
+  /** A brand look's cube (text), for the editor to preview it */
+  @Get("looks/:id") @Header("Content-Type", "text/plain; charset=utf-8") @Header("Cache-Control", "no-store")
+  async getLook(@Param("id") id: string) {
+    if (!isLookId(id)) throw new NotFoundException();
+    const text = await fs.readFile(this.store.lookFile(id), "utf8").catch(() => null);
+    if (text == null) throw new NotFoundException("This brand look no longer exists");
+    return text;
+  }
+
+  @Roles("admin", "editor") @Delete("looks/:id") @HttpCode(200)
+  async removeLook(@Param("id") id: string) {
+    if (!isLookId(id)) throw new NotFoundException();
+    await fs.rm(this.store.lookFile(id), { force: true });
+    return { ok: true };
   }
 
   @Roles("admin", "editor") @Put(":id/chunk") @HttpCode(200)
