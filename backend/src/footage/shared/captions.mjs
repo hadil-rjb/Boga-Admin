@@ -12,8 +12,8 @@ export const DEFAULT_STYLE = {
 export const FONT_STACKS = {
   'sans-bold': '"Cairo", "Noto Sans Arabic", "Inter", sans-serif',
   sans: '"Noto Sans Arabic", "Cairo", "Inter", sans-serif',
-  serif: '"Noto Naskh Arabic", "Noto Sans Arabic", Georgia, serif',
-  mono: '"Noto Sans Arabic", "Cairo", Menlo, monospace',
+  serif: '"Amiri", "Noto Naskh Arabic", Georgia, serif',
+  display: '"Lalezar", "Cairo", "Noto Sans Arabic", sans-serif',
 };
 
 const PAUSE_MS = 350;
@@ -108,23 +108,58 @@ const isRtl = (text) => {
   }
   return false;
 };
-const fontOf = (style, px) => `${style.weight} ${px}px ${FONT_STACKS[style.font] || FONT_STACKS['sans-bold']}`;
+const fontOf = (style, px) => {
+  const stack = FONT_STACKS[style.font] || FONT_STACKS['sans-bold'];
+  return `${style.weight} ${px}px ${style.family ? `${style.family}, ${stack}` : stack}`;
+};
+
+const ANIM_MS = 133;
+// Deterministic per-word animation state from time alone.
+export function animAt(style, line, wordIndex, ms) {
+  let alpha = 1;
+  let scale = 1;
+  if (style.anim === 'fade') alpha = Math.min(1, Math.max(0, (ms - line.start) / ANIM_MS));
+  if (style.anim === 'pop') {
+    const d = ms - line.words[wordIndex].s;
+    if (d >= 0 && d < ANIM_MS) scale = 1 + 0.12 * (1 - Math.abs((2 * d) / ANIM_MS - 1));
+  }
+  return { alpha, scale };
+}
+
+// Balanced 2-row split by measured width, preserving reading order.
+function splitRows(widths, gap) {
+  let best = 1;
+  let bestMax = Infinity;
+  for (let k = 1; k < widths.length; k++) {
+    const sum = (a, b) => widths.slice(a, b).reduce((x, y) => x + y, 0) + gap * (b - a - 1);
+    const m = Math.max(sum(0, k), sum(k, widths.length));
+    if (m < bestMax) { bestMax = m; best = k; }
+  }
+  return [[0, best], [best, widths.length]];
+}
 
 export function layout(ctx, line, style, w, h) {
   const px = style.size * h;
   ctx.font = fontOf(style, px);
   const widths = line.words.map((x) => ctx.measureText(shown(x.t, style)).width);
   const gap = ctx.measureText(' ').width;
-  const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, widths.length - 1);
+  const rowW = (a, b) => widths.slice(a, b).reduce((x, y) => x + y, 0) + gap * Math.max(0, b - a - 1);
+  const total = rowW(0, widths.length);
   const rtl = isRtl(line.words.map((x) => x.t).join(' '));
-  const order = widths.map((_, i) => i);
-  if (rtl) order.reverse();
-  const x0 = w / 2 - total / 2;
-  const y = style.y * h - px / 2;
+  const wrap = style.lines === 2 && widths.length > 1 && total > 0.86 * w;
+  const rows = wrap ? splitRows(widths, gap) : [[0, widths.length]];
+  const lh = wrap ? px * 1.25 : px;
+  const top = style.y * h - (lh * rows.length) / 2;
   const words = [];
-  let x = x0;
-  for (const i of order) { words[i] = { i, x, y, w: widths[i], h: px }; x += widths[i] + gap; }
-  return { x: x0, y, w: total, h: px, words };
+  rows.forEach(([a, b], r) => {
+    const idx = []; for (let i = a; i < b; i++) idx.push(i);
+    if (rtl) idx.reverse();
+    let x = w / 2 - rowW(a, b) / 2;
+    const y = top + r * lh + (lh - px) / 2;
+    for (const i of idx) { words[i] = { i, x, y, w: widths[i], h: px }; x += widths[i] + gap; }
+  });
+  const bw = Math.max(...rows.map(([a, b]) => rowW(a, b)));
+  return { x: w / 2 - bw / 2, y: top, w: bw, h: lh * rows.length, words };
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -163,6 +198,7 @@ export function draw(ctx, lines, style, ms, w, h) {
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
+  ctx.globalAlpha = animAt(style, line, 0, ms).alpha;
   if (style.box) {
     const pad = (style.box.pad || 0.012) * h;
     ctx.fillStyle = style.box.color;
@@ -181,7 +217,8 @@ export function draw(ctx, lines, style, ms, w, h) {
       ctx.fill();
     }
     const fill = on && hl.mode === 'box' ? hl.text : on && hl.mode === 'color' ? hl.color : style.color;
-    drawWord(ctx, shown(line.words[b.i].t, style), b, style, fill, on && hl.mode === 'scale' ? 1.12 : 1, h);
+    const k = (on && hl.mode === 'scale' ? 1.12 : 1) * animAt(style, line, b.i, ms).scale;
+    drawWord(ctx, shown(line.words[b.i].t, style), b, style, fill, k, h);
   }
   ctx.restore();
 }
