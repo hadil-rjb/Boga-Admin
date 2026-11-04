@@ -75,8 +75,8 @@ d.footage = {
   ref: footageId | null,        // the reference (null when a brand look was applied)
   lookId: string | null,        // brand look it came from, if any
   look: {
-    lut: 'footage/<id>/look.cube',   // HLG→709 + transfer, 33³
-    strength: 1,                // 0..1, mixes the transfer part only (HLG→709 always applies)
+    lut: 'footage/<id>/look.cube',   // 709 → graded 709, 33³ (applied to the SDR proxy)
+    strength: 1,                // 0..1, mixes look.cube with identity (HLG→709 always applies on export)
     exposure: 0, temp: 0, sat: 0,    // -1..1 user tweaks on top of the LUT
   },
   captions: {
@@ -126,8 +126,10 @@ steps. The editor polls `GET /footage/:id` for progress.
      background statistics are kept separately;
    - in Lab: matches the mean and std of a/b per region (blended 60% face / 40% background) and maps L
      through the CDF of the reference's luminance (smoothed, monotonic);
-   - writes a 33³ `.cube`: input = the source's native encoding (HLG BT.2020 for these clips), output =
-     graded BT.709, so the export needs one `lut3d` pass;
+   - writes a 33³ `look.cube` whose input **and** output are BT.709 SDR (the proxy's space), so the
+     preview applies it directly to the proxy. At export the server composes `hlg2709.cube` (when the
+     source is HDR), `look.cube` at the chosen strength and the tweaks into a single `export.cube`, so the
+     export needs one `lut3d` pass;
    - also writes `stats.json` (before/after means, used by the integration test).
 5. **caption-style** (reference only) — finds frames with text with a cheap check (high-contrast
    horizontal edges in the band 40–85% of height across 60 sampled frames), keeps 6, and sends the
@@ -149,7 +151,7 @@ and is shared with the headless renderer.
   a reference **or** pick a saved brand look. The upload shows progress, and the design opens as soon as
   the proxy is ready while transcription and grading continue (their panels show skeletons).
 - **Canvas:** the proxy `<video>` is drawn into a WebGL2 canvas. A fragment shader samples the 3D LUT
-  texture (trilinear), mixes it with the plain HLG→709 result by `strength`, then applies exposure,
+  texture (trilinear), mixes it with the ungraded proxy pixel by `strength`, then applies exposure,
   temperature and saturation. A 2D canvas on top draws the captions with `captions.js` at the current
   time. **Before/After:** a split line you drag across the frame.
 - **Transport:** Space plays and pauses, J/K/L, and the timeline below shows the audio waveform (from the
@@ -174,15 +176,16 @@ and is shared with the headless renderer.
    of the output. Frames are written as PNGs into the job folder, and only frames whose caption changes
    are rendered (a concat list holds each image's duration), so a 60 s clip renders hundreds of frames,
    not 1,800.
-2. **Encode:** ffmpeg runs `source → transpose (rotation) → scale/crop to out → lut3d=look.cube (strength
-   via a blend with the plain conversion) → eq/colortemperature (tweaks) → overlay=captions → libx264
+2. **Encode:** the server bakes `export.cube` = tweaks ∘ mix(look, identity, strength) ∘ hlg2709 (the
+   last part only for HDR sources). ffmpeg then runs
+   `source → transpose (rotation) → scale/crop to out → lut3d=export.cube → overlay=captions → libx264
    -crf 18 -preset medium -pix_fmt yuv420p, AAC 192k, +faststart`. Progress comes from `-progress`.
 3. The result goes to `exports/<jobId>.mp4`. `d.footage.export` is set. The editor shows Download and
    Schedule; Schedule hands the MP4 to the existing planner as a video post.
 
 Preview vs export parity: both use the same `.cube` and the same caption drawing code. The tweaks use
-the same formulas in the shader and in ffmpeg (the `eq` gamma/saturation mapping is documented in
-`footage.js`).
+one formula module (`frontend/studio/look.js`, ported 1:1 to `grade.py`) that both the shader and the
+cube baker implement; a unit test checks the two agree.
 
 ### Security and limits
 
