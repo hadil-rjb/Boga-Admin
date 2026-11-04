@@ -31,6 +31,15 @@ BAND = (0.40, 0.85)
 EDGE_STEP = 48  # |d luma / dx| on 0..255 that counts as a strong edge
 DENSE_ROW = 0.08  # fraction of strong-edge pixels that makes a row "edge-dense"
 MIN_DENSE_ROWS = 3  # a frame needs this many dense rows in the band to hold text
+HL_MIN_CHROMA = 30  # Lab C* of highlight-box candidates
+HL_ROW_PAD = 4  # rows added above/below the edge-dense rows (box padding)
+HL_MIN_AREA = 0.002  # min blob area, share of the band, per frame (~100 px at 256 px wide)
+HL_MIN_FRAME_SHARE = 1 / 3  # blob must recur in this share of kept frames (and >= 2)
+HL_HUE_TOL = 20  # deg; recurring blobs must share a hue
+HL_BG_DE = 12  # Lab dE76: "same colour" for the background check
+HL_BG_SHARE = 0.5  # that colour off the text rows >= this x blob area -> background
+HL_STATIC = 0.8  # saturated in >= 80% of all frames -> static background
+HL_STATIC_MIN_FRAMES = 10
 
 
 # ---- frames ---------------------------------------------------------------
@@ -244,38 +253,82 @@ def row_edge_density(img):
     return edges.mean(axis=1)
 
 
-def kmeans(x, k=3, iters=20):
-    """Deterministic k-means: centroids seeded at chroma quantiles."""
-    chroma = np.hypot(x[:, 1], x[:, 2])
-    order = np.argsort(chroma)
-    cent = x[order[np.linspace(0, len(x) - 1, k).astype(int)]].copy()
-    for _ in range(iters):
-        lab = np.argmin(((x[:, None] - cent[None]) ** 2).sum(-1), axis=1)
-        for j in range(k):
-            if np.any(lab == j):
-                cent[j] = x[lab == j].mean(axis=0)
-    return cent, lab
+def static_vivid(imgs):
+    """Pixels saturated in >= HL_STATIC of all frames: static background (wood, walls).
+
+    Caption highlight boxes move word to word, so they never pass this test.
+    Needs >= HL_STATIC_MIN_FRAMES same-sized frames, else nothing is static.
+    """
+    shapes = {i.shape for i in imgs}
+    if len(imgs) < HL_STATIC_MIN_FRAMES or len(shapes) != 1:
+        return np.zeros(imgs[0].shape[:2], bool)
+    hits = sum(chroma_of(i) > HL_MIN_CHROMA for i in imgs)
+    return hits >= HL_STATIC * len(imgs)
 
 
-def caption_colors(imgs, dense):
-    """Text = median of L>85 pixels; highlight = most chromatic k-means cluster."""
-    rows, band_px = [], 0
-    for img, d in zip(imgs, dense):
-        y0, y1 = band_rows(img)
-        band_px += (y1 - y0) * img.shape[1]
-        rows.append(img[y0:y1][d].reshape(-1, 3))
+def chroma_of(img):
+    lab = color.rgb_to_lab(img)
+    return np.hypot(lab[..., 1], lab[..., 2])
+
+
+def text_region(img, dense):
+    """Edge-dense band rows, widened by HL_ROW_PAD rows (box padding above/below glyphs)."""
+    y0, y1 = band_rows(img)
+    rows = np.convolve(dense.astype(float), np.ones(2 * HL_ROW_PAD + 1), mode="same") > 0
+    region = np.zeros(img.shape[:2], bool)
+    region[y0:y1][rows] = True
+    return region
+
+
+def highlight_blob(img, dense, static):
+    """RGB pixels of the largest saturated non-background blob on the text rows, or None."""
+    y0, y1 = band_rows(img)
+    lab = color.rgb_to_lab(img)
+    region = text_region(img, dense)
+    vivid = (np.hypot(lab[..., 1], lab[..., 2]) > HL_MIN_CHROMA) & region & ~static
+    if not vivid.any():
+        return None
+    outside = lab[y0:y1][~region[y0:y1]]  # band pixels off the text rows
+    labels = label_components(vivid)
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    min_area = HL_MIN_AREA * (y1 - y0) * img.shape[1]
+    for k in np.argsort(-counts):
+        if counts[k] < min_area:
+            return None
+        core = np.median(lab[labels == k], axis=0)
+        if (np.linalg.norm(outside - core, axis=1) < HL_BG_DE).sum() >= HL_BG_SHARE * counts[k]:
+            continue  # the same colour fills the band off the text rows: background
+        return img[labels == k]
+    return None
+
+
+def hue_of(rgb):
+    lab = color.rgb_to_lab(np.median(rgb, axis=0))
+    return np.degrees(np.arctan2(lab[2], lab[1]))
+
+
+def highlight_color(imgs, dense, static):
+    """Median colour of per-frame box blobs that recur, with one hue, in enough kept frames."""
+    blobs = [b for b in (highlight_blob(i, d, static) for i, d in zip(imgs, dense)) if b is not None]
+    need = max(2, int(np.ceil(len(imgs) * HL_MIN_FRAME_SHARE)))
+    if len(blobs) < need:
+        return None
+    hues = np.array([hue_of(b) for b in blobs])
+    ref = np.degrees(np.angle(np.exp(1j * np.radians(hues)).sum()))  # circular mean
+    keep = [b for b, h in zip(blobs, hues) if abs((h - ref + 180) % 360 - 180) <= HL_HUE_TOL]
+    if len(keep) < need:
+        return None
+    return color.to_hex(np.median(np.concatenate(keep), axis=0))
+
+
+def caption_colors(imgs, dense, static):
+    """Text = median of L>85 pixels on the text rows; highlight = recurring box colour."""
+    rows = [img[band_rows(img)[0]:band_rows(img)[1]][d].reshape(-1, 3) for img, d in zip(imgs, dense)]
     px = np.concatenate(rows)
-    lab = color.rgb_to_lab(px)
-    text = px[lab[:, 0] > 85]
+    text = px[color.rgb_to_lab(px)[:, 0] > 85]
     text_hex = color.to_hex(np.median(text, axis=0)) if len(text) else None
-    vivid = lab[np.hypot(lab[:, 1], lab[:, 2]) > 30]
-    hl_hex = None
-    if len(vivid) >= 3:
-        cent, members = kmeans(vivid)
-        j = int(np.argmax(np.hypot(cent[:, 1], cent[:, 2])))
-        if (members == j).sum() / band_px >= 0.015:
-            hl_hex = color.to_hex(np.clip(color.lab_to_rgb(cent[j]), 0, 1))
-    return text_hex, hl_hex
+    return text_hex, highlight_color(imgs, dense, static)
 
 
 def cmd_textframes(a):
@@ -292,7 +345,7 @@ def cmd_textframes(a):
     y0 = band_rows(imgs[0])[0]
     idx = np.nonzero(any_dense)[0]
     band = [round((y0 + idx[0]) / h, 4), round((y0 + idx[-1] + 1) / h, 4)]
-    text, hl = caption_colors([s[2] for s in top], [s[3] for s in top])
+    text, hl = caption_colors([s[2] for s in top], [s[3] for s in top], static_vivid(imgs))
     return {"ok": True, "frames": [s[1] for s in top], "band": band, "colors": {"text": text, "highlight": hl}}
 
 

@@ -261,3 +261,45 @@ def test_skin_anchor_curve_is_monotonic():
         assert np.all(np.diff(bent[inner]) > 0)
         # capped shift: exactly SKIN_ANCHOR_MAX_SHIFT at m, in the right direction
         assert abs(np.interp(m, x, bent) - (m + sign * grade.SKIN_ANCHOR_MAX_SHIFT)) < 0.01
+
+
+def wood_caption_frame(seed, text, box):
+    """Band holds static warm wood on the text rows; the gold box moves word to word."""
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:H, 0:W] / np.array([H, W])[:, None, None]
+    f = np.stack([0.15 + 0.2 * x, 0.18 + 0.1 * y, 0.3 + 0.1 * x], -1) + rng.uniform(-0.02, 0.02, 3)
+    f[int(0.50 * H) : int(0.80 * H), 0:70] = [0.78, 0.52, 0.28]  # wood, bigger than the box
+    r0, r1 = int(0.60 * H), int(0.70 * H)
+    f[r0:r1, 196:256] = [0.70, 0.35, 0.30]  # terracotta strip only on the text rows: only the static test rejects it
+    if text:
+        if box:
+            bx = 90 + 20 * (seed % 4)
+            f[r0:r1, bx : bx + 40] = np.array([0xE8, 0xB5, 0x4A]) / 255
+        for cx in range(30, 226, 6):
+            f[r0 + 2 : r1 - 2, cx : cx + 3] = 1.0
+    return np.clip(f, 0, 1)
+
+
+def delta_e76(hex_a, hex_b):
+    import color
+
+    rgb = lambda h: np.array([int(h[i : i + 2], 16) for i in (1, 3, 5)]) / 255
+    return float(np.linalg.norm(color.rgb_to_lab(rgb(hex_a)) - color.rgb_to_lab(rgb(hex_b))))
+
+
+def test_textframes_gold_box_beside_warm_wood(tmp_path):
+    frames = [wood_caption_frame(i, text=i % 3 != 0, box=True) for i in range(12)]
+    d = save_frames(tmp_path / "frames", frames)
+    code, res = run("textframes", "--frames", d, "--keep", "6")
+    assert code == 0 and len(res["frames"]) == 6
+    assert res["colors"]["highlight"] is not None
+    assert delta_e76(res["colors"]["highlight"], "#E8B54A") < 6
+
+
+def test_textframes_white_text_no_highlight_warm_background(tmp_path):
+    frames = [wood_caption_frame(i, text=i % 3 != 0, box=False) for i in range(12)]
+    d = save_frames(tmp_path / "frames", frames)
+    code, res = run("textframes", "--frames", d, "--keep", "6")
+    assert code == 0 and len(res["frames"]) == 6
+    assert res["colors"]["text"] is not None
+    assert res["colors"]["highlight"] is None
