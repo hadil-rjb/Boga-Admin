@@ -102,7 +102,7 @@ export class FootageController {
     }
     // chunks are no longer needed; a failure here only leaves disk garbage, the record is already processing
     await this.store.clearChunks(id).catch(() => undefined);
-    this.jobs.enqueue(id, "probe");
+    await this.jobs.enqueue(id, "probe");
     return this.view(await this.find(id));
   }
 
