@@ -23,6 +23,7 @@ export type Sampled = { text?: string | null; highlight?: string | null };
 
 export const NOTE_NO_TEXT = "No subtitles found in the reference. Using the default style.";
 export const NOTE_NO_KEY = "Add an Anthropic key in Settings, AI to copy the subtitle style.";
+export const NOTE_UNREADABLE = "The subtitle style could not be read from the reference. Using the default style.";
 export const NOTE_AI_FAILED = "The subtitle style could not be read from the reference. Using the default style with the detected colors.";
 
 const HEX = /^#[0-9a-fA-F]{6}$/;

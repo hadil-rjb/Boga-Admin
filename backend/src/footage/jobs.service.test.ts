@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FootageStore } from './footage.store';
 import { HLG_CUBE_NAME, JobsService, PQ_UNSUPPORTED, runProcess } from './jobs.service';
@@ -35,6 +35,12 @@ let ask: ReturnType<typeof vi.fn>;
 let calls: { cmd: string; args: string[] }[];
 let probeJson: string, failProxy: boolean, failFrames: boolean, failGrade: boolean, failAudio: boolean, ffmpegActive: number, ffmpegMax: number;
 
+/** Fake runners may only write inside the test's tmp dir; anything else throws (a bad argument shape must never touch the repo) */
+const safeWrite = (path: string | undefined, data: string) => {
+  if (!path || !resolve(path).startsWith(resolve(root) + sep)) throw new Error(`fake runner refused to write outside ${root}: ${path}`);
+  writeFileSync(path, data);
+};
+
 /** Fake ffmpeg / ffprobe: writes the proxy temp file, counts concurrency */
 const fakeRunner = async (cmd: string, args: string[]) => {
   calls.push({ cmd, args });
@@ -43,16 +49,17 @@ const fakeRunner = async (cmd: string, args: string[]) => {
   if (args[0]?.endsWith('grade.py')) {
     await sleep(5);
     if (failGrade) throw new Error('grade exploded');
-    writeFileSync(args[args.indexOf('--out') + 1], 'look'); writeFileSync(args[args.indexOf('--stats') + 1], '{}');
+    if (args[1] !== 'transfer' || !args.includes('--out') || !args.includes('--stats')) throw new Error(`unexpected grade.py call: ${args.join(' ')}`);
+    safeWrite(args[args.indexOf('--out') + 1], 'look'); safeWrite(args[args.indexOf('--stats') + 1], '{}');
     return { stdout: '{"ok":true,"stats":{}}', stderr: '' };
   }
   ffmpegActive++; ffmpegMax = Math.max(ffmpegMax, ffmpegActive);
   try {
     await sleep(15);
     const isFrames = args.some((a) => a.endsWith('%03d.png')), isAudio = args.includes('-vn');
-    if (isAudio) { if (failAudio) throw new Error('no audio today'); writeFileSync(args.at(-1)!, 'wav'); return { stdout: '', stderr: '' }; }
+    if (isAudio) { if (failAudio) throw new Error('no audio today'); safeWrite(args.at(-1), 'wav'); return { stdout: '', stderr: '' }; }
     if (isFrames ? failFrames : failProxy) throw new Error('boom: ffmpeg said no');
-    if (!isFrames) writeFileSync(args.at(-1)!, 'proxy');
+    if (!isFrames) safeWrite(args.at(-1), 'proxy');
     return { stdout: '', stderr: '' };
   } finally { ffmpegActive--; }
 };
@@ -202,7 +209,7 @@ describe('JobsService recovery and cube', () => {
   it('the cube file name is versioned by the SDR peak', () => expect(HLG_CUBE_NAME).toBe('hlg2709-300.cube'));
   it('ensureCube generates through grade.py hlg2709 into the versioned file, with a timeout', async () => {
     rmSync(svc.cube);
-    const r = vi.fn(async (_c: string, args: string[], _o?: any) => { writeFileSync(args.at(-1)!, 'c'); return { stdout: '{"ok": true}', stderr: '' }; });
+    const r = vi.fn(async (_c: string, args: string[], _o?: any) => { safeWrite(args.at(-1), 'c'); return { stdout: '{"ok": true}', stderr: '' }; });
     svc.runner = r as any;
     await svc.ensureCube();
     expect(r.mock.calls[0][1].slice(0, 2)[1]).toBe('hlg2709'); expect(r.mock.calls[0][2]).toMatchObject({ timeoutMs: 120_000 });

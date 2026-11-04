@@ -6,7 +6,7 @@ import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { Model } from "mongoose";
 import { PyWorker } from "../ai/local-tts.service";
-import { CaptionAi, FOOTAGE_AI, mergeStyle, NoAnthropicKey, NOTE_AI_FAILED, NOTE_NO_KEY, NOTE_NO_TEXT } from "./caption-style";
+import { CaptionAi, FOOTAGE_AI, mergeStyle, NoAnthropicKey, NOTE_AI_FAILED, NOTE_NO_KEY, NOTE_NO_TEXT, NOTE_UNREADABLE } from "./caption-style";
 import { loadShared } from "./shared";
 import { buildCaptionCropArgs, buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
 import { planRecovery, Step } from "./footage.recovery";
@@ -325,11 +325,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const { captions } = await loadShared();
     const defaults = captions.DEFAULT_STYLE;
     const store = (r: { style: any; note?: string }) => this.set(id, { captionStyle: r.style, captionNote: r.note ?? null });
-    const { stdout } = await this.runner(this.python, [join(this.root, "tts", "footage", "grade.py"), "textframes", "--frames", join(dir, "frames"), "--keep", "6"], { timeoutMs: STEP_TIMEOUT.python });
-    const found = JSON.parse(stdout.trim().split("\n").pop() ?? "");
-    const names: string[] = Array.isArray(found?.frames) ? found.frames : [];
-    const band = found?.band;
-    if (!names.length || !Array.isArray(band)) return void (await store({ ...mergeStyle(null, {}, defaults), note: NOTE_NO_TEXT }));
+    const unreadable = (why: string) => { this.log.warn(`caption style for ${id}: ${why}`); return store({ ...mergeStyle(null, {}, defaults), note: NOTE_UNREADABLE }); };
+    let found: any;
+    try {
+      const { stdout } = await this.runner(this.python, [join(this.root, "tts", "footage", "grade.py"), "textframes", "--frames", join(dir, "frames"), "--keep", "6"], { timeoutMs: STEP_TIMEOUT.python });
+      found = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+    } catch (e: any) { return void (await unreadable(`textframes: ${e?.message ?? e}`)); }
+    if (found?.ok !== true) return void (await unreadable(`textframes: ${found?.error ?? "not ok"}`));
+    const names: string[] = Array.isArray(found.frames) ? found.frames.map(String) : [];
+    if (!names.length) return void (await store({ ...mergeStyle(null, {}, defaults), note: NOTE_NO_TEXT }));
+    const band = Array.isArray(found.band) ? found.band.map(Number) : [];
+    if (band.length !== 2 || !band.every((v: number) => Number.isFinite(v) && v >= 0 && v <= 1) || !(band[0] < band[1])) return void (await unreadable(`textframes band: ${JSON.stringify(found.band)}`));
     const sampled = { text: found.colors?.text ?? null, highlight: found.colors?.highlight ?? null };
     // 256 px frames are too small for Claude to read the styling: full-resolution crops of the band come from the proxy
     const times = names.map((n) => (Math.max(0, (parseInt(n, 10) || 1) - 1) + 0.5) * meta.dur / 60);
@@ -337,16 +343,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     let result: { style: any; note?: string };
     try {
       await fs.mkdir(tmp, { recursive: true });
-      await this.withFfmpeg(() => this.runner("ffmpeg", buildCaptionCropArgs(this.store.file(id, "proxy.mp4"), times, [Number(band[0]), Number(band[1])], tmp), { timeoutMs: STEP_TIMEOUT.media(10) }));
+      await this.withFfmpeg(() => this.runner("ffmpeg", buildCaptionCropArgs(this.store.file(id, "proxy.mp4"), times, [band[0], band[1]], tmp), { timeoutMs: STEP_TIMEOUT.media(10) }));
       const images = await Promise.all(["full.jpg", ...times.map((_, k) => `c${k}.jpg`)].map(async (f) => ({ media: "image/jpeg", data: (await fs.readFile(join(tmp, f))).toString("base64") })));
       const doc: any = await this.model.findById(id).select("createdBy").lean();
       try {
-        const r = await this.ai.captionStyle(images, sampled, { id: doc?.createdBy ?? null, name: "Footage" }, [Number(band[0]), Number(band[1])]);
+        const r = await this.ai.captionStyle(images, sampled, { id: doc?.createdBy ?? null, name: "Footage" }, [band[0], band[1]]);
         result = mergeStyle(r.style, sampled, defaults);
       } catch (e: any) {
         this.log.warn(`caption style for ${id}: ${e?.message ?? e}`);
         result = e instanceof NoAnthropicKey ? { ...mergeStyle(null, {}, defaults), note: NOTE_NO_KEY } : { ...mergeStyle(null, sampled, defaults), note: NOTE_AI_FAILED };
       }
+    } catch (e: any) {
+      return void (await unreadable(`crops: ${e?.message ?? e}`));
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

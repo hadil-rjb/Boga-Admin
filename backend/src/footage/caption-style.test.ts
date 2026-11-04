@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCaptionCropArgs, cropBand } from './ffmpeg';
 import { mergeStyle, NoAnthropicKey, NOTE_NO_KEY, NOTE_NO_TEXT, parseJsonLoose } from './caption-style';
@@ -65,16 +65,32 @@ const ID = 'a'.repeat(24), ID_ORIG = 'b'.repeat(24);
 let root: string, store: FootageStore, model: any, svc: JobsService, ai: { captionStyle: ReturnType<typeof vi.fn> };
 let calls: { cmd: string; args: string[] }[], textframes: any;
 
+let failFfmpeg = false;
+/** Fake runners may only write inside the test's tmp dir; unknown argument shapes throw */
+const safeWrite = (path: string, data: string) => {
+  if (!resolve(path).startsWith(resolve(root) + sep)) throw new Error(`fake runner refused to write outside ${root}: ${path}`);
+  writeFileSync(path, data);
+};
 const runner = async (cmd: string, args: string[]) => {
   calls.push({ cmd, args });
-  if (args[0]?.endsWith('grade.py') && args[1] === 'textframes') return { stdout: JSON.stringify(textframes), stderr: '' };
-  if (cmd === 'ffmpeg') for (const a of args) if (a.endsWith('.jpg')) writeFileSync(a, 'jpeg');
-  return { stdout: '', stderr: '' };
+  if (args[0]?.endsWith('grade.py')) {
+    if (args[1] !== 'textframes') throw new Error(`unexpected grade.py call: ${args.join(' ')}`);
+    return { stdout: typeof textframes === 'string' ? textframes : JSON.stringify(textframes), stderr: '' };
+  }
+  if (cmd === 'ffmpeg') {
+    if (failFfmpeg) throw new Error('ffmpeg exploded');
+    if (args.some((a) => a.endsWith('%03d.png'))) return { stdout: '', stderr: '' }; // frames step
+    const outs = args.filter((a) => a.endsWith('.jpg'));
+    if (!outs.length) throw new Error(`unexpected ffmpeg call: ${args.join(' ')}`);
+    for (const a of outs) safeWrite(a, 'jpeg');
+    return { stdout: '', stderr: '' };
+  }
+  throw new Error(`unexpected command: ${cmd}`);
 };
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'cap-')); process.env.FOOTAGE_DIR = root; store = new FootageStore();
-  calls = []; textframes = { ok: true, frames: ['003.png', '031.png'], band: [0.6, 0.7], colors: { text: '#FFFFFF', highlight: '#E8B54A' } };
+  failFfmpeg = false; calls = []; textframes = { ok: true, frames: ['003.png', '031.png'], band: [0.6, 0.7], colors: { text: '#FFFFFF', highlight: '#E8B54A' } };
   model = fakeModel({ [ID]: { role: 'reference', meta: { dur: 60, w: 1080, h: 1920, rotation: 0, fps: 30, hdr: null, audio: true } }, [ID_ORIG]: { role: 'original', meta: { dur: 60, w: 1080, h: 1920, rotation: 0, fps: 30, hdr: null, audio: true } } });
   ai = { captionStyle: vi.fn(async () => ({ style: { highlight: { mode: 'box', textLight: false }, y: 0.66, maxWords: 3, color: '#000000' }, model: 'claude-sonnet-5-5' })) };
   svc = new JobsService(model, store, ai as any); svc.runner = runner;
@@ -135,5 +151,25 @@ describe('caption-style step', () => {
     expect(model.docs[ID].jobs['caption-style']).toMatchObject({ state: 'done' });
     expect(model.docs[ID_ORIG].jobs['caption-style']).toBeUndefined();
     expect(model.docs[ID_ORIG].status).toBe('ready');
+  });
+  it.each([
+    ['ok:false', { ok: false, error: 'boom' }],
+    ['garbage output', 'Traceback (most recent call last)'],
+    ['NaN band', { ok: true, frames: ['003.png'], band: [null, 'x'], colors: { text: '#FFFFFF', highlight: null } }],
+  ])('unreadable textframes (%s): default style with a note, step done, Claude not called', async (_n, tf) => {
+    textframes = tf;
+    await svc.enqueue(ID, 'caption-style'); await svc.idle(ID);
+    expect(model.docs[ID].captionStyle).toEqual(DEFAULT_STYLE);
+    expect(model.docs[ID].captionNote).toBe('The subtitle style could not be read from the reference. Using the default style.');
+    expect(model.docs[ID].jobs['caption-style'].state).toBe('done');
+    expect(ai.captionStyle).not.toHaveBeenCalled();
+  });
+  it('an ffmpeg crop failure falls back to the default style with the same note and cleans up', async () => {
+    failFfmpeg = true;
+    await svc.enqueue(ID, 'caption-style'); await svc.idle(ID);
+    expect(model.docs[ID].captionStyle).toEqual(DEFAULT_STYLE);
+    expect(model.docs[ID].captionNote).toBe('The subtitle style could not be read from the reference. Using the default style.');
+    expect(model.docs[ID].jobs['caption-style'].state).toBe('done');
+    expect(readdirSync(store.dir(ID)).filter((n) => n.startsWith('caption.'))).toEqual([]);
   });
 });
