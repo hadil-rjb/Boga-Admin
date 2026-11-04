@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildFramesArgs, buildProxyArgs, parseProbe, parseProgress } from './ffmpeg';
+import { buildExportArgs, buildFramesArgs, buildProxyArgs, parseProbe, parseProgress } from './ffmpeg';
 
 const fx = (n: string) => JSON.parse(readFileSync(join(__dirname, '__fixtures__', n), 'utf8'));
 const hlg = fx('probe-hlg-1080.json'), hlg720 = fx('probe-hlg-720.json'), ref = fx('probe-ref.json');
@@ -63,4 +63,34 @@ describe('buildFramesArgs', () => {
 describe('parseProgress', () => {
   it('parses progress', () => expect(parseProgress('out_time_us=5000000', 10000)).toBeCloseTo(0.5));
   it('clamps to 1 and ignores other lines', () => { expect(parseProgress('out_time_us=99000000', 10000)).toBe(1); expect(parseProgress('frame=12', 10000)).toBeNull(); expect(parseProgress('out_time_us=N/A', 10000)).toBeNull(); });
+});
+
+describe('buildExportArgs', () => {
+  const base = { src: 's', cube: 'e.cube', concat: 'c.txt', out: 'o.mp4', w: 1080, h: 1920, fps: 30 };
+  const fc = (a: string[]) => a[a.indexOf('-filter_complex') + 1];
+  it('export args: HLG portrait → transpose, crop to 1080x1920, lut, overlay, faststart', () => {
+    const a = buildExportArgs({ ...base, probe: parseProbe(hlg) }).join(' ');
+    for (const re of [/transpose=1/, /crop=1080:1920/, /lut3d=file=e.cube/, /overlay=0:0/, /-crf 18/, /\+faststart/, /aac/]) expect(a).toMatch(re);
+  });
+  it('landscape SDR source is center-cropped to 9:16 without transpose', () => {
+    const a = buildExportArgs({ ...base, cube: 'e', concat: 'c', out: 'o', probe: { dur: 1, w: 1920, h: 1080, rotation: 0, fps: 30, hdr: null, audio: true } }).join(' ');
+    expect(a).not.toMatch(/transpose/); expect(a).toMatch(/force_original_aspect_ratio=increase,crop=1080:1920/);
+  });
+  it('no audio → -an', () => expect(buildExportArgs({ ...base, probe: { ...parseProbe(ref), audio: false } })).toContain('-an'));
+  it('rotation like the proxy: -noautorotate -display_rotation 0 before the source, same transpose mapping', () => {
+    const a = buildExportArgs({ ...base, probe: parseProbe(hlg) });
+    expect(a.slice(a.indexOf('-noautorotate'), a.indexOf('-noautorotate') + 5)).toEqual(['-noautorotate', '-display_rotation', '0', '-i', 's']);
+    const p = buildProxyArgs('s', 'o', parseProbe(hlg), 'c'); expect(fc(a).startsWith('[0:v]' + p[p.indexOf('-vf') + 1].split(',')[0] + ',')).toBe(true);
+    expect(fc(buildExportArgs({ ...base, probe: { ...parseProbe(ref), rotation: 270 } }))).toMatch(/^\[0:v\]transpose=2,/);
+  });
+  it('the concat overlay is the second input, at the export fps, rounded up, with the BT.709 matrix on both branches', () => {
+    const a = buildExportArgs({ ...base, probe: parseProbe(hlg) });
+    expect(a.join(' ')).toMatch(/-f concat -safe 0 -i c\.txt/);
+    const f = fc(a);
+    expect(f).toMatch(/lut3d=file=e\.cube:interp=tetrahedral,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p\[v\]/);
+    expect(f).toMatch(/\[1:v\]fps=30:round=up,format=rgba,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p\[o\]/);
+    expect(f.indexOf('format=rgb48le')).toBeLessThan(f.indexOf('lut3d'));
+    expect(a.join(' ')).toMatch(/-colorspace bt709 -color_primaries bt709 -color_trc bt709/); expect(a.join(' ')).toMatch(/-r 30 -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p/);
+  });
+  it('limitSec adds -t, the output is last', () => { const a = buildExportArgs({ ...base, probe: parseProbe(ref), limitSec: 10 }); expect(a.join(' ')).toMatch(/-t 10 /); expect(a.at(-1)).toBe('o.mp4'); });
 });

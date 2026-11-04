@@ -7,7 +7,7 @@
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_STYLE, FONT_STACKS } from './captions.js';
+import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
 import { parseCube } from './look.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
 
@@ -206,8 +206,33 @@ export function applyLookTo(ft, look, lines) {
   return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
 }
 
+/* ---- Export ---- */
+const even = (v) => Math.max(2, Math.round(v / 2) * 2);
+/**
+ * The export sizes for an output of w × h: the reference size, then the short side at 720 and at 2160 (same aspect, even
+ * numbers, each side 240..3840, no duplicates). Labels like "1080 × 1920 (reference)".
+ */
+export function exportSizes(out) {
+  const w = even(+(out && out.w) || 1080), h = even(+(out && out.h) || 1920), s = Math.min(w, h), seen = new Set(), list = [];
+  for (const [k, ref] of [[1, true], [720 / s, false], [2160 / s, false]]) {
+    const W = even(w * k), H = even(h * k), key = `${W}x${H}`;
+    if (seen.has(key) || Math.min(W, H) < 240 || Math.max(W, H) > 3840) continue;
+    seen.add(key); list.push({ w: W, h: H, label: `${W} × ${H}${ref ? ' (reference)' : ''}`, ref });
+  }
+  return list;
+}
+/** POST /footage/export body: the server reads nothing from the design store, so everything the MP4 needs travels here */
+export function exportPayload(d, size) {
+  const ft = d.footage, out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
+  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: ft.captions.style || null, lines: ft.captions.lines || [] }, out: ft.out }, w: size.w, h: size.h, fps };
+}
+/** The download's file name: the design name, the size, .mp4 */
+export const exportName = (d, size) => `${(String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video')}-${size.w}x${size.h}.mp4`;
+/** Export is offered once the original is ready and the analysis has settled without a failure */
+export const canExport = (rec, ref) => { const A = analysis(rec, ref); return !!rec && rec.status === 'ready' && A.settled && !A.failed; };
+
 const PEAK_BUCKETS = 2000;
-const GOOGLE_FONTS = 'https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700;800;900&family=Lalezar&family=Noto+Naskh+Arabic:wght@400;700&family=Noto+Sans+Arabic:wght@400;600;700;800&display=swap';
+const GOOGLE_FONTS = FONTS_CSS;
 
 export function installFootageEditor(ctx, FT) {
   const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed, brand } = ctx;
@@ -334,7 +359,7 @@ export function installFootageEditor(ctx, FT) {
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage;
     const sig = JSON.stringify([F.err, F.note, F.rec && F.rec.status, F.rec && F.rec.jobs, F.refRec && F.refRec.status, F.refRec && F.refRec.jobs && F.refRec.jobs['caption-style'], A.settled, ft.captions.lines.length, !!F.cube]);
     if (sig === F.sig) return; F.sig = sig;
-    drawStage(); ed.panel(); ed.props();
+    drawStage(); ed.panel(); ed.props(); exportButton();
   }
 
   function drawStage() {
@@ -659,9 +684,9 @@ export function installFootageEditor(ctx, FT) {
   wrapEd({
     edStage: (orig) => function () {
       const r = orig.apply(this, arguments);
-      if (!isFt(ED.d)) { if (F) stop(); const st = $('#ftStage'); st && st.remove(); $('.ed-stage') && $('.ed-stage').classList.remove('ft10'); $('.ed') && $('.ed').classList.remove('ft10'); return r; }
+      if (!isFt(ED.d)) { if (F) stop(); const st = $('#ftStage'); st && st.remove(); $('.ed-stage') && $('.ed-stage').classList.remove('ft10'); $('.ed') && $('.ed').classList.remove('ft10'); exportButton(); return r; }
       if (!F || F.d !== ED.d || (F.player && !document.body.contains(F.player.video))) start(ED.d);
-      drawStage(); sync();
+      drawStage(); sync(); exportButton();
       return r;
     },
     edRail: (orig) => function () {
@@ -879,6 +904,69 @@ export function installFootageEditor(ctx, FT) {
       const b = brand(); b.looks = brandLooks().filter((l) => l.id !== id); save(); toast('Brand look deleted');
       if (alive(S)) ed.props();
     });
+  }
+
+  /* ---- export: the server encodes the MP4 (export.service.ts); the modal polls it once a second ---- */
+  function exportModal() {
+    if (!F || !isFt(ED.d)) return;
+    if (!canExport(F.rec, F.refRec)) { toast('Your video is still being prepared.'); return; }
+    const d = ED.d, sizes = exportSizes(d.footage.out), dur = F.dur || (F.rec && F.rec.meta ? F.rec.meta.dur * 1000 : 0);
+    const st = { timer: 0, gone: false, busy: false, url: null, size: sizes[0] };
+    ctx.modal(`<div class="mh"><h2>Export video</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb ft-ex"><p class="xs-t muted">MP4 · ${esc(fmtMs(dur))} · with the colour grade and subtitles</p>
+        <div class="ft-szs" role="radiogroup" aria-label="Size">${sizes.map((s, i) => `<label class="ft-sz"><input type="radio" name="ftSz" value="${i}" ${i ? '' : 'checked'}><span>${esc(s.label)}</span></label>`).join('')}</div>
+        <div class="prog-w" data-ft-ep hidden><div class="prog"><i style="width:0%"></i></div><span class="prog-pct">0%</span></div>
+        <p class="xs-t muted" data-ft-em role="status" aria-live="polite"></p></div>
+      <div class="mf" data-ft-ef><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-go>${ic('download', 16)}Export</button></div>`, {
+      onClose: () => { st.gone = true; clearTimeout(st.timer); },
+      onMount: (bg, close) => {
+        const $b = (s) => bg.querySelector(s), msg = (t) => { $b('[data-ft-em]').textContent = t; };
+        const bar = (p) => { const w = $b('[data-ft-ep]'); w.hidden = false; const n = Math.round(Math.max(0, Math.min(1, p)) * 100); w.querySelector('i').style.width = n + '%'; w.querySelector('.prog-pct').textContent = n + '%'; };
+        const lock = (on) => { st.busy = on; bg.querySelectorAll('input[name=ftSz]').forEach((x) => (x.disabled = on)); const g = $b('[data-ft-go]'); if (g) g.disabled = on; };
+        const done = (url) => {
+          st.url = url; bar(1); msg('Your video is ready.');
+          const name = exportName(d, st.size), href = apiUrl(url) + '&dl=' + encodeURIComponent(name);
+          $b('[data-ft-ef]').innerHTML = `<button class="btn ghost" data-close>Close</button><a class="btn secondary" href="${esc(href)}" download="${esc(name)}">${ic('download', 16)}Download</a>${canEdit && !canEdit() ? '' : `<button class="btn primary" data-ft-sched>${ic('clock', 16)}Schedule</button>`}`;
+          const sc = $b('[data-ft-sched]');
+          sc && sc.addEventListener('click', () => {
+            const rec = { jobId: st.jobId, url, w: st.size.w, h: st.size.h, at: new Date().toISOString() };
+            if (ED.d === d) { mutate(() => { ED.d.footage.export = rec; }); } else d.footage.export = rec;
+            save(); close(); ctx.openSchedule(d);
+          });
+        };
+        const fail = (e) => { lock(false); msg((e && e.message) || 'The export failed. Try again.'); const g = $b('[data-ft-go]'); if (g) g.innerHTML = `${ic('refresh', 16)}Try again`; };
+        async function poll() {
+          if (st.gone) return;
+          try {
+            const r = await api(`/footage/export/${st.jobId}`);
+            if (st.gone) return;
+            if (r.state === 'done' && r.url) return done(r.url);
+            if (r.state === 'failed') return fail({ message: r.error || 'The export failed. Try again.' });
+            bar(r.progress || 0); msg(r.state === 'queued' ? 'Waiting for another export to finish…' : (r.progress || 0) < 0.3 ? 'Drawing the subtitles…' : 'Encoding the video…');
+          } catch (e) { if (st.gone) return; if (e && e.status === 404) return fail({ message: 'This export was lost. Try again.' }); msg('Could not reach the server. Retrying…'); }
+          st.timer = setTimeout(poll, 1000);
+        }
+        $b('[data-ft-go]').addEventListener('click', async () => {
+          if (st.busy) return;
+          const i = +((bg.querySelector('input[name=ftSz]:checked') || {}).value || 0); st.size = sizes[i] || sizes[0];
+          lock(true); bar(0); msg('Starting…');
+          try {
+            const r = await api('/footage/export', { method: 'POST', body: exportPayload(ED.d === d ? ED.d : d, st.size) });
+            if (st.gone) return;
+            st.jobId = r.jobId; poll();
+          } catch (e) { if (!st.gone) fail(e); }
+        });
+        $b('[data-ft-go]').focus();
+      },
+    });
+  }
+  /** Export opens the footage export while a footage design is open; it stays disabled until the analysis is ready */
+  const origExport = ACT.edExport;
+  ACT.edExport = function (a) { if (isFt(ED.d)) return exportModal(); return origExport && origExport.apply(this, arguments); };
+  function exportButton() {
+    const b = document.querySelector('.ed-top [data-act=edExport]'); if (!b) return;
+    const on = !isFt(ED.d) || (!!F && canExport(F.rec, F.refRec));
+    b.disabled = !on; b.title = on ? '' : 'Available once your video is ready';
   }
 
   /** Tasks 11-13: after changing d.footage outside mutate(), make the player and panels follow */

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { clampDrag, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
-  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo } from './footage-editor.js';
+  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport } from './footage-editor.js';
 import { DEFAULT_STYLE } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e, p: 1 });
@@ -223,5 +223,30 @@ describe('brand looks', () => {
     expect(applyLookTo(f, look, lines)).toBe(false); expect(f.captions.lines).toBe(lines);
     const g = ft({ captions: { style: DEFAULT_STYLE, styleFrom: 'custom', lines: [], lang: 'ar' } });
     expect(applyLookTo(g, { id: 'q', name: 'n', lut: 'looks/q.cube' })).toBe(false); expect(g.captions.styleFrom).toBe('custom'); expect(g.look.lut).toBe('looks/q.cube');
+  });
+});
+
+describe('export', () => {
+  it('sizes: the reference, then the short side at 720 and 2160', () => {
+    expect(exportSizes({ w: 1080, h: 1920 }).map((s) => s.label)).toEqual(['1080 × 1920 (reference)', '720 × 1280', '2160 × 3840']);
+    expect(exportSizes({ w: 1920, h: 1080 }).map((s) => s.label)).toEqual(['1920 × 1080 (reference)', '1280 × 720', '3840 × 2160']);
+    expect(exportSizes({ w: 1080, h: 1350 }).map((s) => [s.w, s.h])).toEqual([[1080, 1350], [720, 900], [2160, 2700]]);
+    expect(exportSizes({ w: 720, h: 1280 }).map((s) => s.label)).toEqual(['720 × 1280 (reference)', '2160 × 3840']); // no duplicate
+    expect(exportSizes({ w: 1081, h: 1921 }).every((s) => s.w % 2 === 0 && s.h % 2 === 0)).toBe(true);
+    expect(exportSizes({ w: 1080, h: 3000 }).map((s) => s.label)).toEqual(['1080 × 3000 (reference)', '720 × 2000']); // 2160 × 6000 is too big
+  });
+  it('payload carries the footage, the size and the fps', () => {
+    const d = { id: 'd1', name: 'x', footage: ft({ captions: { style: null, lines: [{ id: 'l', start: 0, end: 1, words: [W('a', 0, 1)] }], lang: 'ar', styleFrom: 'default' } }) };
+    const p = exportPayload(d, { w: 720, h: 1280 });
+    expect(p).toEqual({ designId: 'd1', footage: { src: 'a'.repeat(24), look: d.footage.look, captions: { style: null, lines: d.footage.captions.lines }, out: d.footage.out }, w: 720, h: 1280, fps: 30 });
+    expect(exportPayload({ ...d, footage: { ...d.footage, out: { w: 1, h: 1, fps: 29 } } }, { w: 720, h: 1280 }).fps).toBe(30);
+  });
+  it('file name and readiness', () => {
+    expect(exportName({ name: 'Interview · matched' }, { w: 1080, h: 1920 })).toBe('Interview-matched-1080x1920.mp4');
+    expect(exportName({ name: 'مرحبا بكم' }, { w: 720, h: 1280 })).toBe('مرحبا-بكم-720x1280.mp4');
+    expect(canExport({ status: 'ready', jobs: {} }, null)).toBe(true);
+    expect(canExport({ status: 'processing', jobs: {} }, null)).toBe(false);
+    expect(canExport({ status: 'ready', jobs: {} }, { status: 'processing' })).toBe(false);
+    expect(canExport(null, null)).toBe(false);
   });
 });

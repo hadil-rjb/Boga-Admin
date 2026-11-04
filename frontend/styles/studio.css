@@ -3113,6 +3113,15 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-look[aria-pressed="true"]{border-color:var(--accent);background:rgba(253,14,53,.08);color:var(--accent);font-weight:600}
 .ft-err{margin:0;font-size:12.5px;color:var(--accent)}.ft-err[hidden]{display:none}
 .ft-err.ft-info{color:var(--text-2)}
+/* footage export modal */
+.ft-ex{gap:14px}
+.ft-szs{display:flex;flex-direction:column;gap:6px}
+.ft-sz{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;color:var(--text-1);cursor:pointer;font-variant-numeric:tabular-nums}
+.ft-sz:hover{border-color:var(--accent)}
+.ft-sz:has(input:checked){border-color:var(--accent);background:rgba(253,14,53,.06)}
+.ft-sz:has(input:disabled){opacity:.6;cursor:default}
+.ft-sz input{accent-color:var(--accent);margin:0}
+.ft-ex .prog-w[hidden]{display:none}
 
 /* ---- footage editor (ft10): player stage, transport, Subtitles and Look panels ---- */
 .ed.ft10 #edRatio,.ed.ft10 [data-act=edZoom],.ed.ft10 #zoomTxt,.ed.ft10 #edSafe{display:none}

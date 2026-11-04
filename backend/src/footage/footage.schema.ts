@@ -24,6 +24,8 @@ export class Footage {
   /** Reference only: the subtitle style read from the video (CaptionStyle) and a note when it is the default */
   @Prop({ type: mongoose.Schema.Types.Mixed }) captionStyle?: Record<string, any>;
   @Prop({ type: String }) captionNote?: string | null;
+  /** Original only: exports by job id, { hash, state, at, error? } (export.service.ts); the MP4 is exports/<jobId>.mp4 */
+  @Prop({ type: mongoose.Schema.Types.Mixed }) exports?: Record<string, { hash: string; state: string; at?: string; error?: string }>;
   createdAt?: Date;
   updatedAt?: Date;
 }

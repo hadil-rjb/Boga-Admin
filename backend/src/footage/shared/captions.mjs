@@ -16,6 +16,9 @@ export const FONT_STACKS = {
   display: '"Lalezar", "Cairo", "Noto Sans Arabic", sans-serif',
 };
 
+// The web fonts the stacks above name (the studio editor and the export page load this stylesheet).
+export const FONTS_CSS = 'https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700;800;900&family=Lalezar&family=Noto+Naskh+Arabic:wght@400;700&family=Noto+Sans+Arabic:wght@400;600;700;800&display=swap';
+
 const PAUSE_MS = 350;
 const END_PUNCT = /[.!?؟…,،;:؛]$/;
 const RTL_CHAR = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
@@ -129,7 +132,8 @@ const isRtl = (text) => {
   }
   return false;
 };
-const fontOf = (style, px) => {
+// The canvas font of a style at px (the export page loads it before drawing).
+export const fontOf = (style, px) => {
   const stack = FONT_STACKS[style.font] || FONT_STACKS['sans-bold'];
   return `${style.weight} ${px}px ${style.family ? `${style.family}, ${stack}` : stack}`;
 };
@@ -145,6 +149,24 @@ export function animAt(style, line, wordIndex, ms) {
     if (d >= 0 && d < ANIM_MS) scale = 1 + 0.12 * (1 - Math.abs((2 * d) / ANIM_MS - 1));
   }
   return { alpha, scale };
+}
+
+// Every ms in [0, durMs) at which draw() output changes: 0, each line's start and end, each word's start and end, and,
+// when the style animates, 4 steps across the 133 ms after each word start (the export samples the ramp there).
+// Lines without words are skipped (lineAt never shows them). Sorted, deduplicated, integers.
+export function changeTimes(lines, style, durMs) {
+  const set = new Set([0]);
+  const add = (t) => { const v = Math.round(t); if (v >= 0 && v < durMs) set.add(v); };
+  const anim = style && style.anim && style.anim !== 'none';
+  for (const l of lines || []) {
+    if (!l || !l.words || !l.words.length) continue;
+    add(l.start); add(l.end);
+    for (const w of l.words) {
+      add(w.s); add(w.e);
+      if (anim) for (let k = 1; k <= 4; k++) add(w.s + (k * ANIM_MS) / 4);
+    }
+  }
+  return [...set].sort((a, b) => a - b);
 }
 
 // Balanced 2-row split by measured width, preserving reading order.

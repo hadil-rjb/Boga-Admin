@@ -235,8 +235,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return join(this.store.dir(id), name);
   }
 
-  /** One ffmpeg at a time across all footage */
-  private withFfmpeg<T>(fn: () => Promise<T>): Promise<T> {
+  /** One ffmpeg at a time across all footage (the pipeline steps and the export encode, see export.service.ts) */
+  withFfmpeg<T>(fn: () => Promise<T>): Promise<T> {
     const result = this.ffmpegLock.then(fn);
     this.ffmpegLock = result.then(() => undefined, () => undefined);
     return result;

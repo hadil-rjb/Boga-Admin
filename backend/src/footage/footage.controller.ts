@@ -14,6 +14,7 @@ import { signFile, verifyFile } from "./footage.sign";
 import { FootageStore } from "./footage.store";
 import { STEP_ORDER, Step } from "./footage.recovery";
 import { JobsService } from "./jobs.service";
+import { ExportInvalid, ExportService, validateExport } from "./export.service";
 
 export const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_SIZE = 2 * 1024 * 1024 * 1024;
@@ -45,6 +46,12 @@ const MIME_EXT: Record<string, string> = { "video/mp4": "mp4", "video/quicktime"
 const extOf = (name: string, mime: string) => MIME_EXT[mime] ?? (/\.([a-z0-9]{1,5})$/i.exec(name)?.[1].toLowerCase() || "mp4");
 const isLookId = (id: string) => /^[\w-]{1,64}$/.test(id);
 const isId = (id: string) => /^[0-9a-f]{24}$/.test(id);
+/** Content-Disposition for a download name: an ASCII fallback plus the UTF-8 name (RFC 6266), always ending in .mp4 */
+export function attachment(name: string): string {
+  const base = String(name).normalize("NFC").replace(/\.mp4$/i, "").replace(/[\u0000-\u001f\u007f"\\/:*?<>|;]+/g, "-").trim().slice(0, 80) || "video";
+  const ascii = base.replace(/[^\x20-\x7e]+/g, "-").replace(/-+/g, "-") || "video";
+  return `attachment; filename="${ascii}.mp4"; filename*=UTF-8''${encodeURIComponent(base + ".mp4").replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())}`;
+}
 
 @Controller("footage")
 export class FootageController {
@@ -53,6 +60,7 @@ export class FootageController {
     private store: FootageStore,
     private refs: FootageRefs,
     private jobs: JobsService,
+    private exports: ExportService,
   ) {}
 
   private async find(id: string) {
@@ -86,6 +94,30 @@ export class FootageController {
     await fs.mkdir(dirname(dest), { recursive: true });
     try { await fs.copyFile(src, tmp); await fs.rename(tmp, dest); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
     return { id, lut: `looks/${id}.cube` };
+  }
+
+  /**
+   * Starts the MP4 export of a footage design: { designId, footage: { src, look, captions, out }, w, h, fps } → { jobId }.
+   * The server reads nothing from the design store: the payload is validated here (export.service.ts validateExport).
+   * An identical request returns the finished (or running) job. Declared before the ":id" routes.
+   */
+  @Roles("admin", "editor") @Post("export") @HttpCode(200)
+  async exportStart(@Body() body: any) {
+    try {
+      const req = validateExport(body, { allowLimit: process.env.NODE_ENV !== "production" });
+      return await this.exports.start(req);
+    } catch (e) {
+      if (e instanceof ExportInvalid) throw new BadRequestException(e.message);
+      throw e;
+    }
+  }
+
+  /** { state: queued | running | done | failed, progress 0..1, url? (signed, when done), error? } */
+  @Roles("admin", "editor") @Get("export/:jobId") @Header("Cache-Control", "no-store")
+  async exportStatus(@Param("jobId") jobId: string) {
+    const st = await this.exports.status(jobId);
+    if (!st) throw new NotFoundException("This export was not found");
+    return st;
   }
 
   /** A brand look's cube (text), for the editor to preview it */
@@ -243,14 +275,15 @@ export class FootageController {
   }
 
   /** Signed-URL file (the browser cannot send a Bearer header from <video> or a download link) */
-  async send(id: string, file: string, token: string, req: any, res: any) {
+  async send(id: string, file: string, token: string, req: any, res: any, download?: string) {
     if (!isId(id) || !/^(proxy\.mp4|exports\/[\w-]{1,64}\.mp4)$/.test(file)) throw new NotFoundException();
     if (!verifyFile(id, file, token)) throw new ForbiddenException("Invalid or expired link");
     const path = this.store.file(id, file as any);
     const stat = await fs.stat(path).catch(() => null);
     if (!stat || !stat.isFile()) throw new NotFoundException();
     const size = stat.size, rg = parseRange(req.headers.range, size);
-    const head = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff" };
+    const head: Record<string, string> = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff" };
+    if (download) head["Content-Disposition"] = attachment(download);
     if (rg === "unsatisfiable") { res.status(416).set({ ...head, "Content-Range": `bytes */${size}` }).end(); return; }
     const [status, start, end] = rg ? [206, rg.start, rg.end] : [200, 0, Math.max(0, size - 1)];
     res.status(status).set({ ...head, "Content-Length": String(size ? end - start + 1 : 0), ...(rg ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}) });
@@ -265,5 +298,7 @@ export class FootageController {
   proxy(@Param("id") id: string, @Query("t") t: string, @Req() req: any, @Res() res: any) { return this.send(id, "proxy.mp4", t, req, res); }
 
   @Public() @Get(":id/exports/:job.mp4")
-  exported(@Param("id") id: string, @Param("job") job: string, @Query("t") t: string, @Req() req: any, @Res() res: any) { return this.send(id, `exports/${job}.mp4`, t, req, res); }
+  exported(@Param("id") id: string, @Param("job") job: string, @Query("t") t: string, @Req() req: any, @Res() res: any, @Query("dl") dl?: string) {
+    return this.send(id, `exports/${job}.mp4`, t, req, res, typeof dl === "string" && dl ? dl : undefined); // ?dl=<name>: saved as a file (a cross-origin link ignores `download`)
+  }
 }

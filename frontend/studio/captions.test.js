@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt } from './captions.js';
+import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt, changeTimes } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e });
 const fakeCtx = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
@@ -53,5 +53,14 @@ describe('captions', () => {
     const a = [{ id:'a', start:0, end:1000, words:[W('x',0,1000)] }, { id:'n', start:1100, end:2000, words:[W('z',1100,2000)] }];
     expect(addLine(a, 500)).toBe(a);
     expect(addLine([a[0]], 500)[1]).toMatchObject({ start: 1000, end: 2500 });
+  });
+  it('changeTimes covers line and word boundaries', () => {
+    const lines = [{ id: 'x', start: 100, end: 700, words: [W('a', 100, 400), W('b', 400, 700)] }];
+    expect(changeTimes(lines, DEFAULT_STYLE, 2000)).toEqual([0, 100, 400, 700]);
+    expect(changeTimes([{ id: 'y', start: 100, end: 300, words: [W('a', 120, 300)] }], DEFAULT_STYLE, 2000)).toEqual([0, 100, 120, 300]);
+  });
+  it('changeTimes adds 4 ramp steps after each word start when animated, and stays inside the clip', () => {
+    const lines = [{ id: 'x', start: 100, end: 700, words: [W('a', 100, 400), W('b', 400, 700)] }, { id: 'e', start: 900, end: 1000, words: [] }];
+    expect(changeTimes(lines, { ...DEFAULT_STYLE, anim: 'pop' }, 600)).toEqual([0, 100, 133, 167, 200, 233, 400, 433, 467, 500, 533]);
   });
 });

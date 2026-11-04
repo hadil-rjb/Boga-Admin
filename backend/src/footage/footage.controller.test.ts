@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CHUNK_SIZE, FootageController } from './footage.controller';
+import { attachment, CHUNK_SIZE, FootageController } from './footage.controller';
 import { FootageStore } from './footage.store';
 import { signFile } from './footage.sign';
 
@@ -39,7 +39,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'footage-')); process.env.FOOTAGE_DIR = root; process.env.JWT_SECRET = 'test-secret-0123456789abcdef';
   model = fakeModel(); enqueue = vi.fn(); refs = { used: async () => new Set<string>() };
   wake = vi.fn(async () => undefined);
-  ctl = new FootageController(model as any, new FootageStore(), refs, { enqueue, wake } as any);
+  ctl = new FootageController(model as any, new FootageStore(), refs, { enqueue, wake } as any, {} as any);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const dto = (o: any = {}) => ({ name: 'a.mp4', size: 10, mime: 'video/mp4', role: 'original', brand: 'b1', ...o });
@@ -322,5 +322,29 @@ describe('brand looks', () => {
     const bad = async (o: any) => (await validate(plainToInstance((await import('./footage.controller')).SaveLookDto, o))).length;
     expect(await bad({ footageId: 'a'.repeat(24), name: 'Warm' })).toBe(0);
     expect(await bad({ footageId: '../x' })).toBe(1); expect(await bad({ footageId: 'a'.repeat(24), name: 'x'.repeat(81) })).toBe(1);
+  });
+});
+
+describe('export endpoints', () => {
+  it('a bad payload is a 400 with the reason, nothing starts', async () => {
+    const start = vi.fn();
+    const c = new FootageController(model as any, new FootageStore(), refs, { enqueue, wake } as any, { start } as any);
+    await expect(c.exportStart({ designId: 'd', footage: { src: 'a'.repeat(24), look: { lut: '../../etc/passwd' } }, w: 1080, h: 1920, fps: 30 })).rejects.toMatchObject({ status: 400, message: 'Invalid colour grade' });
+    await expect(c.exportStart({ designId: 'd', footage: { src: 'a'.repeat(24) }, w: 1080, h: 1920, fps: 29 })).rejects.toMatchObject({ status: 400 });
+    expect(start).not.toHaveBeenCalled();
+    start.mockResolvedValue({ jobId: 'c'.repeat(24), state: 'queued' });
+    expect(await c.exportStart({ designId: 'd', footage: { src: 'a'.repeat(24) }, w: 1080, h: 1920, fps: 30 })).toEqual({ jobId: 'c'.repeat(24), state: 'queued' });
+  });
+  it('an unknown job is a 404', async () => {
+    const c = new FootageController(model as any, new FootageStore(), refs, { enqueue, wake } as any, { status: async () => null } as any);
+    await expect(c.exportStatus('c'.repeat(24))).rejects.toMatchObject({ status: 404 });
+  });
+  it('?dl= serves the export as a named attachment', async () => {
+    const id = (await ctl.create(user, dto())).id;
+    await fs.mkdir(join(root, id, 'exports'), { recursive: true }); await fs.writeFile(join(root, id, 'exports', 'j1.mp4'), 'mp4data');
+    const res = fakeRes(); await ctl.exported(id, 'j1', signFile(id, 'exports/j1.mp4').split('t=')[1], { headers: {} }, res, 'مرحبا "x".mp4'); await res.done;
+    expect(res.headers['Content-Disposition']).toBe(attachment('مرحبا "x".mp4'));
+    expect(attachment('مرحبا "x".mp4')).toBe(`attachment; filename="- -x-.mp4"; filename*=UTF-8''${encodeURIComponent('مرحبا -x-.mp4')}`);
+    expect(attachment("it's (1)")).toBe("attachment; filename=\"it's (1).mp4\"; filename*=UTF-8''it%27s%20%281%29.mp4");
   });
 });
