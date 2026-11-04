@@ -129,10 +129,10 @@ it('retext keeps timings of unchanged words', () => { const l = retext({ id:'x',
 it('retext to empty yields a line with no words that lineAt skips', () => { const l = retext({ id:'x', start:0, end:100, words:[W('a',0,100)] }, '  '); expect(lineAt([l], 50)).toBeNull(); });
 it('split and merge round-trip', () => { const l = group([W('a',0,100),W('b',100,200)], { ...DEFAULT_STYLE, maxWords: 9 })[0]; const [x, y] = split(l, 100); expect(merge(x, y).words).toEqual(l.words); });
 it('activeWord follows time', () => { const l = { words: [W('a',0,100),W('b',100,200)] }; expect([activeWord(l, 50), activeWord(l, 150), activeWord(l, 250)]).toEqual([0, 1, -1]); });
-it('Arabic line with digits lays out right to left', () => { const L = layout(fakeCtx, { words: [W('نسبة',0,1),W('25%',1,2),W('في',2,3),W('Q3',3,4)] }, DEFAULT_STYLE, 1080, 1920); expect(L.words.map((w) => w.i)).toEqual([3, 2, 1, 0].reverse().sort((a, b) => L.words[a].x - L.words[b].x) && L.words.slice().sort((a, b) => b.x - a.x).map((w) => w.i)).toEqual([0, 1, 2, 3]); });
+it('Arabic line with digits lays out right to left', () => { const L = layout(fakeCtx, { words: [W('نسبة',0,1),W('25%',1,2),W('في',2,3),W('Q3',3,4)] }, DEFAULT_STYLE, 1080, 1920); expect(L.words.slice().sort((a, b) => b.x - a.x).map((w) => w.i)).toEqual([0, 1, 2, 3]); });
 ```
 
-  The last test asserts that word 0 is the right-most and word 3 the left-most. Rewrite the expectation plainly when implementing: `sorted by x descending → indices [0,1,2,3]`.
+  The last test asserts that, in an RTL line, word 0 is the right-most and word 3 the left-most.
 
 - [ ] **Step 2:** Run `npm --prefix frontend test -- captions` and expect FAIL.
 - [ ] **Step 3:** Implement `frontend/studio/captions.js` (pure, the only DOM use is the passed `ctx2d`). In `draw`, the highlight box is drawn behind the active word only when `highlight.mode === 'box'`, with radius `radius × word height`; `'color'` paints the word in `highlight.color`; `'scale'` draws it at 1.12×. Line ids come from `uid()`-style random strings, not from timings.
@@ -209,18 +209,20 @@ def test_textframes_none_when_no_text(tmp_path):              # flat frames → 
   - `GET /footage/:id` returns the record, including `jobs` and `received`.
   - `GET /footage/:id/proxy.mp4` and `GET /footage/:id/exports/:job.mp4` stream with `Range` support (`fs.createReadStream` with start/end, 206).
   - `DELETE /footage/:id` → 409 when a design or version still references the id (reuse the `inUse()` scan style from `media.controller.ts`).
+  - `FootageSweep` (an `@nestjs/schedule` daily cron, or a 24 h `setInterval` if the schedule module isn't installed) removes footage older than 7 days that no design or version references, along with its folder.
 
 - [ ] **Step 1: Write the failing tests** (store only; use a tmp `FOOTAGE_DIR`)
 
 ```ts
 it("rejects ids that are not ObjectIds", () => expect(() => store.dir("../etc")).toThrow());
 it("assembles chunks in index order", async () => { await store.writeChunk(id, 1, Buffer.from("b")); await store.writeChunk(id, 0, Buffer.from("a")); expect(await fs.readFile(await store.assemble(id, "mp4"), "utf8")).toBe("ab"); });
+it("sweep removes unreferenced footage older than 7 days only", async () => { /* old+unused → removed; old+used and new+unused → kept */ });
 it("lists received chunks for resume", async () => { await store.writeChunk(id, 0, Buffer.from("a")); await store.writeChunk(id, 2, Buffer.from("c")); expect(await store.received(id)).toEqual([0, 2]); });
 ```
 
 - [ ] **Step 2:** Run `npm --prefix backend test -- footage.store` and expect FAIL.
 - [ ] **Step 3:** Implement the store, schema, controller and module.
-- [ ] **Step 4:** Run `npm --prefix backend test -- footage.store` and expect 3 passed. Then start the API and check by hand:
+- [ ] **Step 4:** Run `npm --prefix backend test -- footage.store` and expect 4 passed. Then start the API and check by hand:
 
 ```bash
 curl -s -X POST localhost:4000/footage -H "Authorization: Bearer $T" -H 'content-type: application/json' -d '{"name":"a.mp4","size":10,"mime":"video/mp4","role":"original","brand":"b1"}'
@@ -282,7 +284,7 @@ it("parses progress", () => expect(parseProgress("out_time_us=5000000", 10000)).
 - Test: `backend/src/footage/jobs.service.test.ts`
 
 **Interfaces:**
-- Consumes: `PyWorker` (Task 7 export). Its `call(req)` currently returns a WAV. Add `ask(req): Promise<any>`, which resolves the raw message, and keep `call` for TTS.
+- Consumes: `PyWorker`, exported from `local-tts.service.ts` in this task. Its `call(req)` currently returns a WAV. Add `ask(req): Promise<any>`, which resolves the raw message, and keep `call` for TTS.
 - `transcribe`:
   - When `probe.audio` is false, set `jobs.transcribe = { state: 'skipped' }`.
   - Otherwise extract 16 kHz mono WAV (`-vn -ac 1 -ar 16000`), call the worker with `lang` = the brand's caption language code (`Arabic` → `ar`, otherwise auto-detect), and write `words.json`.
@@ -341,9 +343,9 @@ it("no Anthropic key → defaults with a note, grade unaffected", async () => { 
 ### Task 9: Create tile, upload modal and design creation (frontend)
 
 **Files:**
-- Create: `frontend/studio/footage.js` (the IIFE block, registered like the v37/v38 blocks: `import * as FT from './footage'` in engine.js is **not** used; follow the engine's pattern of version blocks that wrap editor functions, placed in `footage.js` and imported once at the end of engine.js via `import './footage'` with access to the shared helpers it needs through an `installFootage(ctx)` call that receives `{ ED, S, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, openEditor }`)
+- Create: `frontend/studio/footage.js` (exports `installFootage(ctx)`; `ctx` = `{ ED, S, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, openEditor, openSchedule }`). Inside, it wraps editor functions for `d.footage` designs the way the v37 block wraps them for `d.motion` (engine.js ~9973–10570).
 - Create: `frontend/studio/upload.js` (`uploadFootage(file, { role, brand, api, onProgress }): Promise<{ id }>`)
-- Modify: `frontend/studio/engine.js` (after the v38 block: `installFootage({...})`; in the Create block's Videos row, an extra tile `data-act="ftNew"` labelled **Match a reference**, subtitle **Copy a video's look and subtitles**)
+- Modify: `frontend/studio/engine.js` (`import { installFootage } from './footage';` with the other imports; after the v38 block, `installFootage({...})`; in the Create block's Videos row, an extra tile `data-act="ftNew"` labelled **Match a reference**, subtitle **Copy a video's look and subtitles**)
 - Modify: `frontend/styles/studio.css` (an `ft-` prefix for every new class)
 - Test: `frontend/studio/upload.test.js`
 
