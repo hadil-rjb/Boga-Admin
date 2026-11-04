@@ -149,11 +149,17 @@ export function overlayPlan(times: number[], shows: (t: number) => boolean, durM
   return out;
 }
 
-/** ffconcat text: file/duration pairs (seconds), the last file repeated so its duration is honoured (concat demuxer rule) */
+/**
+ * ffconcat text: file/duration pairs (seconds), the last file repeated so its duration is honoured (concat demuxer rule).
+ * `option framerate 1000` on every file: the concat demuxer takes the PNG stream's time base from image2, whose default
+ * framerate (25) would snap every change to a 40 ms grid and drop segments shorter than that (the 33 ms animation steps).
+ * At 1000 the time base is 1/1000 and each change keeps its exact ms.
+ */
 export function concatText(entries: { file: string; dur: number }[]): string {
   const q = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
-  const body = entries.map((e) => `file ${q(e.file)}\nduration ${(e.dur / 1000).toFixed(6)}\n`).join("");
-  return `ffconcat version 1.0\n${body}${entries.length ? `file ${q(entries[entries.length - 1].file)}\n` : ""}`;
+  const file = (f: string) => `file ${q(f)}\noption framerate 1000\n`;
+  const body = entries.map((e) => `${file(e.file)}duration ${(e.dur / 1000).toFixed(6)}\n`).join("");
+  return `ffconcat version 1.0\n${body}${entries.length ? file(entries[entries.length - 1].file) : ""}`;
 }
 
 /** Draws subtitle frames: one session per export (a page), draw() returns a PNG data URL per time */

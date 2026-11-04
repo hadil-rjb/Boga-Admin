@@ -139,7 +139,9 @@ describe('overlay plan and concat', () => {
   });
   it('concat text: seconds, quoted paths, last file repeated', () => {
     const t = concatText([{ file: '/a b/blank.png', dur: 1000 }, { file: "/x/it's.png", dur: 1500 }]);
-    expect(t).toBe("ffconcat version 1.0\nfile '/a b/blank.png'\nduration 1.000000\nfile '/x/it'\\''s.png'\nduration 1.500000\nfile '/x/it'\\''s.png'\n");
+    expect(t).toBe("ffconcat version 1.0\nfile '/a b/blank.png'\noption framerate 1000\nduration 1.000000\nfile '/x/it'\\''s.png'\noption framerate 1000\nduration 1.500000\nfile '/x/it'\\''s.png'\noption framerate 1000\n");
+    // every file line is followed by the 1 ms time base option (else image2's 1/25 s grid snaps the changes)
+    const ls = t.split('\n'); ls.forEach((l, i) => { if (l.startsWith('file ')) expect(ls[i + 1]).toBe('option framerate 1000'); });
     const secs = [...t.matchAll(/duration ([\d.]+)/g)].reduce((a, m) => a + Number(m[1]), 0); expect(secs).toBeCloseTo(2.5);
   });
 });
@@ -157,7 +159,7 @@ describe('ExportService', () => {
     // the concat: blank, 2 drawn, blank, 1 drawn, blank; files from the overlay folder
     expect([...lastConcat.matchAll(/duration ([\d.]+)/g)].reduce((s, m) => s + Number(m[1]), 0)).toBeCloseTo(5);
     expect((lastConcat.match(/blank\.png/g) || []).length).toBe(4); // 3 blank stretches, the last one repeated
-    expect(lastConcat).toMatch(/overlay\/00000\.png'[\s\S]*overlay\/00002\.png'[\s\S]*blank\.png'\n$/);
+    expect(lastConcat).toMatch(/overlay\/00000\.png'[\s\S]*overlay\/00002\.png'[\s\S]*blank\.png'\noption framerate 1000\n$/);
     expect(drawCalls.slice(1).flatMap((c) => c.times)).toEqual([1000, 1500, 3000]);
     expect(model.docs[SRC].exports[jobId]).toMatchObject({ state: 'done' });
   });

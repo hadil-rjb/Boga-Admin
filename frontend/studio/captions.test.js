@@ -63,4 +63,11 @@ describe('captions', () => {
     const lines = [{ id: 'x', start: 100, end: 700, words: [W('a', 100, 400), W('b', 400, 700)] }, { id: 'e', start: 900, end: 1000, words: [] }];
     expect(changeTimes(lines, { ...DEFAULT_STYLE, anim: 'pop' }, 600)).toEqual([0, 100, 133, 167, 200, 233, 400, 433, 467, 500, 533]);
   });
+  it('changeTimes samples the fade ramp from the line start, even before the first word', () => {
+    const lines = [{ id: 'x', start: 100, end: 700, words: [W('a', 300, 700)] }];
+    const t = changeTimes(lines, { ...DEFAULT_STYLE, anim: 'fade' }, 2000);
+    for (const v of [100, 133, 167, 200, 233]) expect(t).toContain(v);
+    expect(t).toEqual([0, 100, 133, 167, 200, 233, 300, 333, 367, 400, 433, 700]);
+    expect(changeTimes(lines, { ...DEFAULT_STYLE, anim: 'pop' }, 2000)).not.toContain(133);
+  });
 });

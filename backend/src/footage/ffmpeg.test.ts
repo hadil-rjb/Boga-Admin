@@ -83,13 +83,15 @@ describe('buildExportArgs', () => {
     const p = buildProxyArgs('s', 'o', parseProbe(hlg), 'c'); expect(fc(a).startsWith('[0:v]' + p[p.indexOf('-vf') + 1].split(',')[0] + ',')).toBe(true);
     expect(fc(buildExportArgs({ ...base, probe: { ...parseProbe(ref), rotation: 270 } }))).toMatch(/^\[0:v\]transpose=2,/);
   });
-  it('the concat overlay is the second input, at the export fps, rounded up, with the BT.709 matrix on both branches', () => {
+  it('the concat overlay is the second input, at its own exact timestamps, with the BT.709 matrix on both branches', () => {
     const a = buildExportArgs({ ...base, probe: parseProbe(hlg) });
     expect(a.join(' ')).toMatch(/-f concat -safe 0 -i c\.txt/);
     const f = fc(a);
     expect(f).toMatch(/lut3d=file=e\.cube:interp=tetrahedral,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p\[v\]/);
-    expect(f).toMatch(/\[1:v\]fps=30:round=up,format=rgba,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p\[o\]/);
+    expect(f).toMatch(/\[1:v\]format=rgba,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p\[o\]/);
+    expect(f).not.toMatch(/fps=/); // the overlay keeps the concat's exact ms timestamps
     expect(f.indexOf('format=rgb48le')).toBeLessThan(f.indexOf('lut3d'));
+    expect(f).toMatch(/overlay=0:0:format=auto:eof_action=repeat:shortest=1,/); // the source sets the length, not the overlay
     expect(a.join(' ')).toMatch(/-colorspace bt709 -color_primaries bt709 -color_trc bt709/); expect(a.join(' ')).toMatch(/-r 30 -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p/);
   });
   it('limitSec adds -t, the output is last', () => { const a = buildExportArgs({ ...base, probe: parseProbe(ref), limitSec: 10 }); expect(a.join(' ')).toMatch(/-t 10 /); expect(a.at(-1)).toBe('o.mp4'); });

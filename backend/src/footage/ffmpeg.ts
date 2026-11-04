@@ -93,15 +93,20 @@ export type ExportArgs = { src: string; probe: Probe; cube: string; concat: stri
  * The export encode: the source (rotated and HDR-handled like the proxy), cover-cropped to w × h like the preview
  * (footage-player.js coverCrop: scale up to cover, centre crop), one 3D LUT (HLG→709 ∘ grade ∘ tweaks, baked by the service),
  * then the caption overlay (a concat of PNGs, one per change) on top. RGB→YUV with the BT.709 matrix on both branches, so the
- * bt709 tags are true and the subtitle colours are the preview's. fps round=up: a change at t shows from the first frame at or
- * after t, as in the preview (draw at the frame time).
+ * bt709 tags are true and the subtitle colours are the preview's.
+ * Timing: the overlay stream keeps the concat's exact ms timestamps (no fps filter on it). overlay pairs each source frame
+ * with the latest overlay frame whose pts ≤ that frame's pts, which is what the preview does (draw at the presented frame's
+ * media time). A change at t therefore first shows on the first source frame with pts ≥ t; for a constant-rate source that is
+ * frame ceil(t·fps). Resampling the overlay to a fixed fps grid instead lags a frame whenever the source rate is not exactly
+ * fps (phones record 30.004). `-r fps` then sets the output rate. shortest=1: the source video sets the length, never the
+ * overlay (which runs a little past the end).
  */
 export function buildExportArgs({ src, probe, cube, concat, out, w, h, fps, limitSec }: ExportArgs): string[] {
   const v: string[] = [];
   if (ROTATE[probe.rotation]) v.push(ROTATE[probe.rotation]);
   v.push(`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'format=rgb48le', `lut3d=file=${cube}:interp=tetrahedral`, `scale=${RGB_TO_709}`, 'format=yuv420p');
-  const o = [`fps=${fps}:round=up`, 'format=rgba', `scale=${RGB_TO_709}`, 'format=yuva420p'];
-  const fc = `[0:v]${v.join(',')}[v];[1:v]${o.join(',')}[o];[v][o]overlay=0:0:format=auto:eof_action=repeat,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]`;
+  const o = ['format=rgba', `scale=${RGB_TO_709}`, 'format=yuva420p'];
+  const fc = `[0:v]${v.join(',')}[v];[1:v]${o.join(',')}[o];[v][o]overlay=0:0:format=auto:eof_action=repeat:shortest=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]`;
   return [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-noautorotate', '-display_rotation', '0', '-i', src, // as the proxy: we rotate ourselves, no display matrix survives

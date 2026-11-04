@@ -152,7 +152,8 @@ export function animAt(style, line, wordIndex, ms) {
 }
 
 // Every ms in [0, durMs) at which draw() output changes: 0, each line's start and end, each word's start and end, and,
-// when the style animates, 4 steps across the 133 ms after each word start (the export samples the ramp there).
+// when the style animates, 4 steps across the 133 ms after each word start (the export samples the ramp there), and for
+// fade the same 4 steps after the line's start (its alpha ramp starts there).
 // Lines without words are skipped (lineAt never shows them). Sorted, deduplicated, integers.
 export function changeTimes(lines, style, durMs) {
   const set = new Set([0]);
@@ -161,6 +162,8 @@ export function changeTimes(lines, style, durMs) {
   for (const l of lines || []) {
     if (!l || !l.words || !l.words.length) continue;
     add(l.start); add(l.end);
+    // fade ramps alpha from the line's start, which can come before its first word
+    if (style && style.anim === 'fade') for (let k = 1; k <= 4; k++) add(l.start + (k * ANIM_MS) / 4);
     for (const w of l.words) {
       add(w.s); add(w.e);
       if (anim) for (let k = 1; k <= 4; k++) add(w.s + (k * ANIM_MS) / 4);
