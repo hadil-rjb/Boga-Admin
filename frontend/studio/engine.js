@@ -20,6 +20,7 @@ import * as PATH from './paths';
 import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
+import { installFootage } from './footage';
 
 let mounted = null; // destroy() of the running instance
 
@@ -10013,7 +10014,7 @@ function clipCss(l, frames) {
     const html = _sv37.apply(this, arguments), m = /<div class="tiles">([\s\S]*?)<\/div>\s*<div class="lib-bar">/.exec(html);
     if (!m) return html;
     const posts = m[1].replace('<b>Story / Reel</b><small>1080 × 1920</small>', '<b>Story</b><small>1080 × 1920 · still</small>');
-    const videos = MO.FORMATS.map((f) => `<button class="tile vt37" data-act="mo37New" data-f="${f.k}" title="${esc(f.n)} for ${esc(f.nets)}: opens an empty video"><span class="shape"><i style="${shapeOf(f.ratio)}">${ic('play37', 9)}</i></span><span><b>${f.n}</b><small>${f.s.split(' · ')[1]}</small></span></button>`).join('');
+    const videos = MO.FORMATS.map((f) => `<button class="tile vt37" data-act="mo37New" data-f="${f.k}" title="${esc(f.n)} for ${esc(f.nets)}: opens an empty video"><span class="shape"><i style="${shapeOf(f.ratio)}">${ic('play37', 9)}</i></span><span><b>${f.n}</b><small>${f.s.split(' · ')[1]}</small></span></button>`).join('') + `<button class="tile vt37 ft-tile" data-act="ftNew" title="Upload a raw clip and a reference video: copies the reference's look and subtitles"><span class="shape"><i style="${shapeOf('9:16')}">${ic('play37', 9)}</i></span><span><b>Match a reference</b><small>Copy a video's look and subtitles</small></span></button>`;
     const block = `<section class="cr37" aria-label="Create">
       <div class="cr37-g"><div class="cr37-h"><b>Posts</b><small>Still images and carousels</small></div><div class="cr37-row">${posts}</div></div>
       <div class="cr37-g"><div class="cr37-h"><b>Videos</b><span class="cr37-new">New</span><small>Intro, scenes and outro, animated with your brand kit</small></div><div class="cr37-row">${videos}</div></div></section>`;
@@ -11030,6 +11031,9 @@ function clipCss(l, frames) {
   });
   addEventListener('hashchange', () => { stopPreview(); AU.stop(); if (S.rec) S.rec.rec.stop(); });
 })();
+
+/* ============ footage style match: Match a reference tile, upload modal, footage designs (see footage.js) ============ */
+installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule });
 
 /* ============ v39 · select several designs in the Studio and delete them at once ============ */
 /* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a

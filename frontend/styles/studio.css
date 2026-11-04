@@ -3095,3 +3095,20 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 @keyframes mog-rot{to{transform:rotate(360deg)}}
 @keyframes mo-flash{0%{box-shadow:0 0 0 3px rgba(253,14,53,.45)}100%{box-shadow:0 0 0 3px rgba(253,14,53,0)}}
 }
+
+/* ---- footage style match: "Match a reference" modal (ft-) ---- */
+.ft-mb{gap:14px}
+.ft-zone{display:flex;flex-direction:column;gap:8px}
+.ft-zt{font-size:13px;font-weight:600;color:var(--text-1)}
+.ft-drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:104px;padding:16px 12px;border:1.5px dashed var(--border);border-radius:12px;text-align:center;cursor:pointer;color:var(--text-2);font-size:13px;transition:border-color .12s,background .12s}
+.ft-drop:hover,.ft-drop:focus-visible,.ft-drop.over{border-color:var(--accent);background:rgba(253,14,53,.05);color:var(--text-1);outline:0}
+.ft-drop.has{border-style:solid;border-color:var(--accent);color:var(--text-1)}
+.ft-di{color:var(--accent);display:grid;place-items:center}
+.ft-fn{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-2)}
+.ft-pw[hidden]{display:none}
+.ft-looks{display:flex;flex-direction:column;gap:8px}
+.ft-lk{display:flex;flex-wrap:wrap;gap:6px}
+.ft-look{padding:6px 12px;border:1.5px solid var(--border);border-radius:999px;font-size:13px;color:var(--text-1);background:var(--surface)}
+.ft-look:hover{border-color:var(--accent)}
+.ft-look[aria-pressed="true"]{border-color:var(--accent);background:rgba(253,14,53,.08);color:var(--accent);font-weight:600}
+.ft-err{margin:0;font-size:12.5px;color:var(--accent)}.ft-err[hidden]{display:none}
