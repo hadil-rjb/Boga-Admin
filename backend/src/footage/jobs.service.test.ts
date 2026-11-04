@@ -39,6 +39,7 @@ let probeJson: string, failProxy: boolean, failFrames: boolean, failGrade: boole
 const fakeRunner = async (cmd: string, args: string[]) => {
   calls.push({ cmd, args });
   if (cmd === 'ffprobe') return { stdout: probeJson, stderr: '' };
+  if (args[0]?.endsWith('grade.py') && args[1] === 'textframes') return { stdout: '{"ok":true,"frames":[],"band":null,"colors":{"text":null,"highlight":null}}', stderr: '' };
   if (args[0]?.endsWith('grade.py')) {
     await sleep(5);
     if (failGrade) throw new Error('grade exploded');
@@ -65,7 +66,7 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'jobs-')); process.env.FOOTAGE_DIR = root; store = new FootageStore();
   calls = []; probeJson = fx('probe-hlg-1080.json'); failProxy = false; failFrames = false; failGrade = false; failAudio = false; ffmpegActive = 0; ffmpegMax = 0;
   model = fakeModel({ [ID1]: {}, [ID2]: {} });
-  svc = new JobsService(model, store); svc.runner = fakeRunner;
+  svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner;
   ask = vi.fn(async (_r: any, _t?: number) => ({ ok: true, lang: 'ar', words: [{ t: ' مرحبا ', s: 100, e: 400.4, p: 0.9 }, { t: '  ', s: 410, e: 420, p: 0.5 }, { t: 'بكم', s: 390, e: 800, p: 0.8 }] }));
   svc.whisper = { ask } as any;
   writeFileSync(svc.cube, 'cube');
@@ -191,7 +192,7 @@ describe('JobsService recovery and cube', () => {
       [ID1]: { status: 'assembling', updatedAt: new Date(now - 20 * 60_000) },
       [ID2]: { status: 'processing', jobs: { probe: { state: 'done' }, proxy: { state: 'running', progress: 0.3 } } },
     });
-    svc = new JobsService(model, store); svc.runner = fakeRunner;
+    svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner;
     const enq = vi.spyOn(svc, 'enqueue').mockResolvedValue();
     await svc.recover(now);
     expect(model.docs[ID1].status).toBe('uploading');
@@ -211,7 +212,7 @@ describe('JobsService recovery and cube', () => {
 
 const DONE = { state: 'done', progress: 1 };
 const ready = (extra: any = {}) => ({ role: 'original', status: 'ready', meta: { dur: 10, w: 720, h: 1280, rotation: 0, fps: 30, hdr: null, audio: true }, jobs: { probe: DONE, proxy: DONE, frames: DONE }, ...extra });
-const pyCalls = () => calls.filter((c) => c.args[0]?.endsWith('grade.py'));
+const pyCalls = () => calls.filter((c) => c.args[0]?.endsWith('grade.py') && c.args[1] !== 'textframes');
 
 describe('JobsService transcribe', () => {
   beforeEach(() => { model.docs[ID1] = { _id: ID1, ...ready({ pair: { ref: ID2, lang: 'ar' } }) }; });

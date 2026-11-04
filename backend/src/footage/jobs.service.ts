@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { ChildProcess, spawn } from "child_process";
 import { existsSync, promises as fs } from "fs";
@@ -6,7 +6,9 @@ import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { Model } from "mongoose";
 import { PyWorker } from "../ai/local-tts.service";
-import { buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
+import { CaptionAi, FOOTAGE_AI, mergeStyle, NoAnthropicKey, NOTE_AI_FAILED, NOTE_NO_KEY, NOTE_NO_TEXT } from "./caption-style";
+import { loadShared } from "./shared";
+import { buildCaptionCropArgs, buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
 import { planRecovery, Step } from "./footage.recovery";
 import { Footage, FootageDocument } from "./footage.schema";
 import { FootageStore } from "./footage.store";
@@ -14,10 +16,10 @@ import { FootageStore } from "./footage.store";
 export type { Step } from "./footage.recovery";
 
 export const PQ_UNSUPPORTED = "HDR10 footage is not supported yet. Record in HLG or SDR, or convert it first.";
-/** Pipeline order. Task 8 appends caption-style. */
-const CHAIN: Step[] = ["probe", "proxy", "frames", "transcribe", "grade"];
-/** Steps that follow each other automatically after probe. transcribe and grade are requested by the pair endpoint (originals only). */
-const AUTO: Step[] = ["probe", "proxy", "frames"];
+/** Pipeline order */
+const CHAIN: Step[] = ["probe", "proxy", "frames", "transcribe", "grade", "caption-style"];
+/** Steps that follow each other automatically after probe. transcribe and grade are requested by the pair endpoint (originals only); caption-style follows frames of a reference only. */
+const AUTO: Step[] = ["probe", "proxy", "frames", "caption-style"];
 /** The step that follows automatically; none after frames, and none for steps outside the auto chain */
 const autoNext = (s: Step): Step | undefined => (AUTO.includes(s) ? AUTO[AUTO.indexOf(s) + 1] : undefined);
 const FATAL: Step[] = ["probe", "proxy"];
@@ -107,7 +109,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       { HF_HOME: join(this.root, ".tts", "hf") }, 180_000, 600_000, 10 * 60_000)).ask(req, timeoutMs),
   };
 
-  constructor(@InjectModel(Footage.name) private model: Model<FootageDocument>, private store: FootageStore) {}
+  constructor(@InjectModel(Footage.name) private model: Model<FootageDocument>, private store: FootageStore, @Inject(FOOTAGE_AI) private ai: CaptionAi) {}
 
   get cube(): string { return join(this.store.root, HLG_CUBE_NAME); }
 
@@ -205,7 +207,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const outcome = await this.runStep(id, step);
         await this.set(id, { [`jobs.${step}`]: { state: outcome === "skipped" ? "skipped" : "done", progress: 1 } });
         const next = autoNext(step);
-        if (next && !pending.has(next)) { pending.add(next); await this.set(id, { [`jobs.${next}`]: { state: "queued", progress: 0 } }); }
+        if (next && !pending.has(next) && (next !== "caption-style" || await this.isReference(id))) { pending.add(next); await this.set(id, { [`jobs.${next}`]: { state: "queued", progress: 0 } }); }
       } catch (e: any) {
         if (e instanceof Wait) {
           await this.set(id, { [`jobs.${step}`]: { state: "queued", progress: 0 } });
@@ -216,11 +218,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         this.log.warn(`${step} failed for ${id}: ${error}`);
         await this.set(id, { [`jobs.${step}`]: { state: "failed", progress: 0, error }, ...(FATAL.includes(step) ? { status: "failed", error } : {}) });
         if (FATAL.includes(step)) { failed = true; pending.clear(); await this.wake(id); continue; }
-        const next = autoNext(step);
-        if (next) pending.add(next);
+        // frames failed: there is nothing for caption-style to look at
       }
       if (step === "frames") await this.wake(id);
     }
+  }
+
+  private async isReference(id: string): Promise<boolean> {
+    const doc: any = await this.model.findById(id).select("role").lean();
+    return doc?.role === "reference";
   }
 
   private async sourcePath(id: string): Promise<string> {
@@ -308,6 +314,42 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         if (!existsSync(src)) throw new Error(LOOK_MISSING);
         try { await fs.copyFile(src, tmp); await fs.rename(tmp, look); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
       } else throw new Error("No reference video or brand look is set for this video");
+    } else if (step === "caption-style") {
+      await this.captionStyle(id);
     }
+  }
+
+  /** Finds the burned-in subtitles in the reference's frames, has Claude describe them and stores the merged style. Never fails the pipeline for a missing key or an unreadable answer. */
+  private async captionStyle(id: string) {
+    const dir = this.store.dir(id), meta = await this.metaOf(id);
+    const { captions } = await loadShared();
+    const defaults = captions.DEFAULT_STYLE;
+    const store = (r: { style: any; note?: string }) => this.set(id, { captionStyle: r.style, captionNote: r.note ?? null });
+    const { stdout } = await this.runner(this.python, [join(this.root, "tts", "footage", "grade.py"), "textframes", "--frames", join(dir, "frames"), "--keep", "6"], { timeoutMs: STEP_TIMEOUT.python });
+    const found = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+    const names: string[] = Array.isArray(found?.frames) ? found.frames : [];
+    const band = found?.band;
+    if (!names.length || !Array.isArray(band)) return void (await store({ ...mergeStyle(null, {}, defaults), note: NOTE_NO_TEXT }));
+    const sampled = { text: found.colors?.text ?? null, highlight: found.colors?.highlight ?? null };
+    // 256 px frames are too small for Claude to read the styling: full-resolution crops of the band come from the proxy
+    const times = names.map((n) => (Math.max(0, (parseInt(n, 10) || 1) - 1) + 0.5) * meta.dur / 60);
+    const tmp = join(dir, `caption.${randomBytes(6).toString("hex")}.tmp`);
+    let result: { style: any; note?: string };
+    try {
+      await fs.mkdir(tmp, { recursive: true });
+      await this.withFfmpeg(() => this.runner("ffmpeg", buildCaptionCropArgs(this.store.file(id, "proxy.mp4"), times, [Number(band[0]), Number(band[1])], tmp), { timeoutMs: STEP_TIMEOUT.media(10) }));
+      const images = await Promise.all(["full.jpg", ...times.map((_, k) => `c${k}.jpg`)].map(async (f) => ({ media: "image/jpeg", data: (await fs.readFile(join(tmp, f))).toString("base64") })));
+      const doc: any = await this.model.findById(id).select("createdBy").lean();
+      try {
+        const r = await this.ai.captionStyle(images, sampled, { id: doc?.createdBy ?? null, name: "Footage" }, [Number(band[0]), Number(band[1])]);
+        result = mergeStyle(r.style, sampled, defaults);
+      } catch (e: any) {
+        this.log.warn(`caption style for ${id}: ${e?.message ?? e}`);
+        result = e instanceof NoAnthropicKey ? { ...mergeStyle(null, {}, defaults), note: NOTE_NO_KEY } : { ...mergeStyle(null, sampled, defaults), note: NOTE_AI_FAILED };
+      }
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+    await store(result);
   }
 }

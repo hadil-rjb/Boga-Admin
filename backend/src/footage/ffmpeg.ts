@@ -61,6 +61,25 @@ export function buildFramesArgs(proxy: string, outPattern: string, durSec: numbe
   return ['-y', '-hide_banner', '-loglevel', 'error', '-i', proxy, '-an', '-vf', `fps=${+fps.toFixed(6)},scale=256:-2:in_color_matrix=bt709:in_range=tv`, '-frames:v', '60', outPattern];
 }
 
+/** The caption crop band: the detected text band plus 5 % of the frame height on each side, as fractions of the full frame height */
+export function cropBand(band: [number, number]): [number, number] {
+  const r = (v: number) => Math.round(v * 10000) / 10000;
+  return [r(Math.max(0, band[0] - 0.05)), r(Math.min(1, band[1] + 0.05))];
+}
+
+/**
+ * One ffmpeg run, one input per frame time: a full-resolution crop of the caption band of each (c0.jpg, c1.jpg ...)
+ * and the first frame as a whole, 540 px tall (full.jpg). JPEG quality about 3 (-q:v).
+ */
+export function buildCaptionCropArgs(proxy: string, times: number[], band: [number, number], outDir: string): string[] {
+  const [y0, y1] = cropBand(band), h = Math.round((y1 - y0) * 10000) / 10000;
+  const args = ['-y', '-hide_banner', '-loglevel', 'error'];
+  for (const t of times) args.push('-ss', t.toFixed(3), '-i', proxy);
+  times.forEach((_, k) => args.push('-map', `${k}:v:0`, '-frames:v', '1', '-vf', `crop=iw:ih*${h}:0:ih*${y0}`, '-q:v', '3', `${outDir}/c${k}.jpg`));
+  args.push('-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=-2:540', '-q:v', '3', `${outDir}/full.jpg`);
+  return args;
+}
+
 /** `out_time_us=N` line from `-progress` → 0..1 (null for any other line) */
 export function parseProgress(line: string, durMs: number): number | null {
   const m = /^out_time_(?:us|ms)=(\d+)\s*$/.exec(line.trim());

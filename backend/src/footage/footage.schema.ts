@@ -21,6 +21,9 @@ export class Footage {
   @Prop({ type: mongoose.Schema.Types.Mixed }) meta?: Record<string, any>;
   /** Original only: the reference video to match (ref) or a saved brand look (lookId), and the spoken language (lang) */
   @Prop({ type: mongoose.Schema.Types.Mixed }) pair?: { ref?: string; lookId?: string; lang?: string };
+  /** Reference only: the subtitle style read from the video (CaptionStyle) and a note when it is the default */
+  @Prop({ type: mongoose.Schema.Types.Mixed }) captionStyle?: Record<string, any>;
+  @Prop({ type: String }) captionNote?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
