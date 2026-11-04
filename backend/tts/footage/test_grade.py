@@ -193,3 +193,48 @@ def test_skin_mask_ignores_warm_neutral_wall():
     assert mask[face].mean() > 0.95
     assert mask[~face].mean() < 0.01
     assert not mask[wood & ~face].any()
+
+
+def portrait(bg, skin, seed):
+    rng = np.random.default_rng(seed)
+    h, w = 256, 144
+    img = np.tile(np.array(bg, float), (h, w, 1)) + rng.normal(0, 0.01, (h, w, 3))
+    y, x = np.mgrid[0:h, 0:w]
+    face = ((x - 0.5 * w) / (0.15 * w)) ** 2 + ((y - 0.33 * h) / (0.10 * h)) ** 2 < 1
+    img[face] = np.array(skin) + rng.normal(0, 0.02, (face.sum(), 3))
+    return np.clip(img, 0, 1)
+
+
+def test_skin_anchor_keeps_face_at_reference_brightness(tmp_path):
+    import color
+    import cube
+    import grade
+
+    srcs = [portrait([0.86, 0.89, 0.93], [0.60, 0.42, 0.33], s) for s in range(3)]  # bright bg, mid skin
+    refs = [portrait([0.22, 0.25, 0.32], [0.86, 0.66, 0.54], s + 9) for s in range(3)]  # dark bg, bright skin
+    src = save_frames(tmp_path / "src", srcs)
+    ref = save_frames(tmp_path / "ref", refs)
+    out = tmp_path / "look.cube"
+    code, res = run("transfer", "--src", src, "--ref", ref, "--out", str(out), "--stats", str(tmp_path / "s.json"))
+    assert code == 0 and res["stats"]["mode"] == "regions"
+    _, lut = cube.read_cube(str(out))
+    _, src_imgs = grade.load_frames(src)
+    _, ref_imgs = grade.load_frames(ref)
+    src_px = np.concatenate([i[grade.skin_mask(i)] for i in src_imgs])
+    ref_px = np.concatenate([i[grade.skin_mask(i)] for i in ref_imgs])
+    got = np.median(color.rgb_to_lab(cube.apply_lut(lut, src_px))[:, 0])
+    want = np.median(color.rgb_to_lab(ref_px)[:, 0])
+    assert abs(got - want) < 3
+    # the neutral axis of the baked LUT stays monotonic in L
+    neutral = color.rgb_to_lab(np.array([lut[i, i, i] for i in range(33)]))[:, 0]
+    assert np.all(np.diff(neutral) >= -1e-6)
+
+
+def test_skin_anchor_curve_is_monotonic():
+    import grade
+
+    rng = np.random.default_rng(3)
+    curve = grade.l_curve(rng.uniform(60, 95, 20000), rng.uniform(5, 40, 20000))
+    bent = grade.skin_anchor(curve, rng.normal(45, 3, 2000), rng.normal(72, 3, 2000))
+    assert np.all(np.diff(bent) >= 0) and bent.min() >= 0 and bent.max() <= 100
+    assert abs(np.interp(45, np.linspace(0, 100, 257), bent) - 72) < 1.5

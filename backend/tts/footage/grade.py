@@ -20,6 +20,7 @@ LUT_SIZE = 33
 SKIN_WEIGHT = 0.6
 MIN_SKIN = 0.02
 STD_PRIOR = 4.0  # Lab units added to both stds before the ratio
+SKIN_ANCHOR_SIGMA = 18.0  # L units; width of the skin-anchor bump on the L curve
 SKIN_MIN_CHROMA = 12  # Lab C*; neutral/cream walls sit below this
 # Lab hue angle (deg). Real frames: face ~42-44, warm wall / wood map ~78-80 at
 # the same chroma, so chroma alone cannot separate them.
@@ -123,6 +124,19 @@ def l_curve(src_l, ref_l, bins=256):
     return np.clip(np.maximum.accumulate(smooth), 0, 100)
 
 
+def skin_anchor(curve, src_skin_l, ref_skin_l, sigma=SKIN_ANCHOR_SIGMA):
+    """Bend the L curve so the source skin median lands on the reference's.
+
+    d = median(ref skin L) - f(m), m = median(src skin L); add a Gaussian bump
+    d * exp(-(x - m)^2 / (2 sigma^2)), then clamp 0..100 and force non-decreasing.
+    """
+    x = np.linspace(0, 100, len(curve))
+    m = float(np.median(src_skin_l))
+    d = float(np.median(ref_skin_l)) - float(np.interp(m, x, curve))
+    bent = curve + d * np.exp(-((x - m) ** 2) / (2 * sigma ** 2))
+    return np.maximum.accumulate(np.clip(bent, 0, 100))
+
+
 def _moments(ab):
     # STD_PRIOR shrinks the std ratio toward 1: a small, flat region (a face
     # patch with std < 1 Lab unit) would otherwise give ratios like 2x that the
@@ -189,6 +203,8 @@ def cmd_transfer(a):
     ref_lab, ref_skin = clip_lab(ref_imgs)
     curve = l_curve(src_lab[:, 0], ref_lab[:, 0])
     ab_fn, mode = ab_transfer(src_lab, src_skin, ref_lab, ref_skin)
+    if mode == "regions":
+        curve = skin_anchor(curve, src_lab[src_skin, 0], ref_lab[ref_skin, 0])
     lut = bake(curve, ab_fn)
     cube.write_cube(a.out, lut, "look")
     src_rgb = np.concatenate([i.reshape(-1, 3) for i in src_imgs])
