@@ -17,6 +17,9 @@ import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAU
 import { BOGA_LOGO } from './assets/bogaLogo';
 import { createRuntime } from './runtime';
 import * as PATH from './paths';
+import * as MO from './motion';
+import * as AUD from './audio';
+import * as COMP from './composer';
 
 let mounted = null; // destroy() of the running instance
 
@@ -9963,6 +9966,1151 @@ function clipCss(l, frames) {
   addEventListener('resize', () => popover());
   setInterval(() => { if (ED.d && document.body.classList.contains('in-editor') && document.visibilityState === 'visible' && !C.busy && !$('#pop36 .pop36-in:focus')) load(true); }, 30000);
 })();
+
+/* ============ v37 · motion graphics: Reels, Stories, animated posts and thumbnails (intro, scenes, outro) ============ */
+/* A motion design is a design with `motion` ({ fmt, fps }). Its pages are scenes (`pg.scene`: kind intro / body / outro,
+   length, transition in), its layers carry `anim` (enter, delay, length, easing, exit, loop). The slide strip becomes a
+   timeline, the canvas plays it, and Export records a video (MP4 where the browser can, else WebM). Math: motion.js. */
+(function () {
+  Object.assign(IC, {
+    play37: '<polygon points="6 3 20 12 6 21 6 3"/>',
+    pause37: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+    film37: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
+    rew37: '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>',
+    loop37: '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+    tr37: '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
+  });
+  const isMo = (d) => !!(d && d.motion);
+  const TL = () => MO.timeline(ED.d.pages);
+  const unit = () => { const [w, h] = dim(); return Math.min(w, h) * 0.08; };
+  const isBg = (l) => l.locked && l.name === 'Background';
+  const lum = (c) => { const m = /#([0-9a-f]{6})/i.exec(hex(c)); if (!m) return 0; const n = parseInt(m[1], 16); return (((n >> 16) & 255) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11) / 255; };
+  const secs = (ms) => (Math.round(ms / 100) / 10).toFixed(1) + ' s';
+  /** The active brand as a look for the starters: its dark color as the background, its first color as the accent */
+  function look() {
+    const b = brand(), c = (b.colors || []).map((x) => x.hex), L = b.logos || [];
+    const bg = c[1] || '#0b1220', light = lum(bg) > 0.6, accent = c[0] || '#fd0e35';
+    const lg = L.find((l) => l.src && l.kind === (light ? 'Light background' : 'Dark background')) || L.find((l) => l.src && l.kind !== (light ? 'Dark background' : 'Light background'));
+    return { bg, fg: light ? '#0f172a' : '#ffffff', muted: light ? 'rgba(15,23,42,.66)' : 'rgba(255,255,255,.72)', accent, onAccent: lum(accent) > 0.6 ? '#0b1220' : '#ffffff',
+      head: (b.fonts && b.fonts.heading) || 'Plus Jakarta Sans', body: (b.fonts && b.fonts.body) || 'Inter', logo: lg ? lg.src : null, brand: b.name,
+      site: String(b.website || '').replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''), handle: b.handle ? (b.handle[0] === '@' ? b.handle : '@' + b.handle) : '', tagline: b.tagline || '', cta: b.cta || '' };
+  }
+  const newPage = (kind, key, w, h, dur) => ({ id: uid(), ...MO.starterPage(kind, key, w, h, look(), dur) });
+  const kindLabel = (d, i) => { const s = MO.sceneOf(d.pages[i]); if (s.k !== 'body') return MO.KINDS[s.k]; return 'Scene ' + d.pages.slice(0, i + 1).filter((p) => MO.sceneOf(p).k === 'body').length; };
+  /** Intro scenes first, outros last; the open scene stays open */
+  function order(d) { const cur = d.pages[ED.pi]; d.pages = d.pages.map((p, i) => [p, i]).sort((a, b) => MO.kindRank(a[0]) - MO.kindRank(b[0]) || a[1] - b[1]).map((x) => x[0]); if (ED.d === d) ED.pi = Math.max(0, d.pages.indexOf(cur)); }
+  /** Turns a static design into a video: every slide becomes an animated scene */
+  function toMotion(d) {
+    const [w, h] = RATIOS[d.ratio];
+    d.motion = { fmt: (MO.FORMATS.find((f) => f.ratio === d.ratio) || {}).k || 'post', fps: 30 };
+    d.pages.forEach((pg, i) => { if (!pg.scene) pg.scene = { ...MO.SCENE_DEFAULT, tr: i ? 'fade' : 'cut' }; if (!pg.layers.some((l) => l.anim)) MO.autoAnimate(pg.layers, pg.scene, w, h); });
+  }
+
+  /* ---------- Studio: one Create block, posts and videos ---------- */
+  const shapeOf = (r, box = 30) => { const [w, h] = RATIOS[ensureRatio(r)], k = box / Math.max(w, h); return `width:${Math.round(w * k)}px;height:${Math.round(h * k)}px`; };
+  const _sv37 = PAGES.studio.view;
+  PAGES.studio.view = function () {
+    const html = _sv37.apply(this, arguments), m = /<div class="tiles">([\s\S]*?)<\/div>\s*<div class="lib-bar">/.exec(html);
+    if (!m) return html;
+    const posts = m[1].replace('<b>Story / Reel</b><small>1080 × 1920</small>', '<b>Story</b><small>1080 × 1920 · still</small>');
+    const videos = MO.FORMATS.map((f) => `<button class="tile vt37" data-act="mo37New" data-f="${f.k}" title="${esc(f.n)} for ${esc(f.nets)}: opens an empty video"><span class="shape"><i style="${shapeOf(f.ratio)}">${ic('play37', 9)}</i></span><span><b>${f.n}</b><small>${f.s.split(' · ')[1]}</small></span></button>`).join('');
+    const block = `<section class="cr37" aria-label="Create">
+      <div class="cr37-g"><div class="cr37-h"><b>Posts</b><small>Still images and carousels</small></div><div class="cr37-row">${posts}</div></div>
+      <div class="cr37-g"><div class="cr37-h"><b>Videos</b><span class="cr37-new">New</span><small>Intro, scenes and outro, animated with your brand kit</small></div><div class="cr37-row">${videos}</div></div></section>`;
+    return html.replace(m[0], block + '<div class="lib-bar">');
+  };
+  /** A video tile opens the editor right away on an empty video: one blank scene in the brand's background color */
+  ACT.mo37New = (a) => { if (canEdit()) createMotion(MO.formatOf(a && a.dataset.f)); };
+  function createMotion(F) {
+    const r = ensureRatio(F.ratio), [w, h] = RATIOS[r], o = look();
+    const pages = [{ id: uid(), bg: o.bg, layers: [BG(w, h, o.bg)], scene: { ...MO.SCENE_DEFAULT, dur: F.k === 'thumb' ? F.dur : 5000, tr: 'cut' } }];
+    const d = createDesign({ name: `${F.n} · ${new Date().toLocaleDateString('en', { day: 'numeric', month: 'short' })}`, ratio: r, mutate: (d) => { d.pages = pages; d.motion = { fmt: F.k, fps: 30 }; d.named = true; } });
+    save(); location.hash = '#/editor/' + d.id;
+    setTimeout(() => toast(`New ${F.n.toLowerCase()}: add text and elements, or pick a starter scene`), 1200); // after the editor's own tip
+  }
+  /** Cards: a video badge with the length */
+  const _dc37 = designCard;
+  designCard = function (d) {
+    const html = _dc37.apply(this, arguments), dd = getD(d.id);
+    if (!isMo(dd)) return html;
+    return html.replace('<span class="st">', `<span class="badge b-mo37">${ic('play37', 10)}${MO.fmtTime(MO.timeline(dd.pages).total, false)}</span><span class="st">`);
+  };
+
+  /* ---------- playback on the canvas ---------- */
+  /** Audio hooks, filled in by the audio section (v38): what plays, the caption, the timeline lanes, the export mix */
+  const AU = RT.moAudio = { tick() {}, stop() {}, caption: () => null, labels: () => '', lanes: () => '', exportSetup: async () => null, drawCaption() {} };
+  const PL = { on: false, t: 0, at: 0, raf: 0, view: null, cache: new Map(), loop: false, stopAt: 0, autoExit: false };
+  function view() {
+    if (PL.view && PL.view.isConnected) return PL.view;
+    const sc = $('#scaler'); if (!sc) return null; const [w, h] = dim();
+    const v = document.createElement('div'); v.className = 'mo-view'; v.style.cssText = `width:${w}px;height:${h}px`;
+    v.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); exitPreview(); });
+    sc.append(v); PL.view = v; PL.cache.clear();
+    const ed = $('.ed'); ed && ed.classList.add('mo-live');
+    return v;
+  }
+  function sceneEl(i) {
+    let el = PL.cache.get(i); if (el) return el;
+    const pg = ED.d.pages[i], [w, h] = dim(), T = treeOf(pg);
+    el = document.createElement('div'); el.className = 'poster mo-scene'; el.style.cssText = `width:${w}px;height:${h}px;background:${pg.bg}`; el.innerHTML = posterHTML(pg);
+    el._ly = $$('.ly[data-id]', el).map((x) => { const l = T.byId.get(x.dataset.id), o = parseFloat(x.style.opacity); return l && { x, l, op: isNaN(o) ? 1 : o, f: x.style.filter, c: x.style.clipPath }; }).filter(Boolean);
+    el._T = T; PL.view.append(el); PL.cache.set(i, el); return el;
+  }
+  /** A layer's state, its containers' animations included (they move their content) */
+  function stateOf(T, l, t, dur, D) {
+    const st = MO.layerState(l, t, dur, D);
+    ancestorsT(T, l).forEach((p) => {
+      if (!p.anim) return; const ps = MO.layerState(p, t, dur, D);
+      const dx = l.x + l.w / 2 - (p.x + p.w / 2), dy = l.y + l.h / 2 - (p.y + p.h / 2);
+      st.tx += ps.tx + dx * (ps.s - 1); st.ty += ps.ty + dy * (ps.s - 1); st.o *= ps.o; st.s *= ps.s; st.r += ps.r; st.blur += ps.blur;
+    });
+    return st;
+  }
+  function paint(el, st, op = 1, f = '', c = '') {
+    const s = el.style;
+    s.opacity = String(op * st.o); s.translate = st.tx || st.ty ? `${st.tx}px ${st.ty}px` : ''; s.scale = st.s !== 1 ? String(st.s) : ''; s.rotate = st.r ? `${st.r}deg` : '';
+    s.filter = st.blur > 0.3 ? `${f} blur(${st.blur.toFixed(1)}px)`.trim() : f;
+    s.clipPath = st.clip ? `inset(${st.clip.map((v) => v.toFixed(2) + '%').join(' ')})` : c;
+  }
+  function draw(t) {
+    if (!ED.d || !view()) return;
+    const tl = TL(), f = MO.frameAt(tl, t); if (!f) return;
+    const [W, H] = dim(), D = unit(), [a, b] = f.prev ? MO.transition(f.cur.tr, f.p, W, H) : [MO.ID(), null];
+    const showing = new Set([f.cur.i, f.prev ? f.prev.i : -1]);
+    PL.cache.forEach((el, i) => { if (!showing.has(i)) el.style.display = 'none'; });
+    [[f.cur, f.local, a, 2], ...(f.prev ? [[f.prev, f.prev.dur, b, 1]] : [])].forEach(([sc, local, st, z]) => {
+      const el = sceneEl(sc.i); el.style.display = ''; el.style.zIndex = z; paint(el, st);
+      el._ly.forEach((r) => paint(r.x, stateOf(el._T, r.l, local, sc.dur, D), r.op, r.f, r.c));
+    });
+    const cap = AU.caption(t), v = PL.view; let ce = v.querySelector('.mo-cap');
+    if (cap) { if (!ce) { ce = document.createElement('div'); ce.className = 'mo-cap'; v.append(ce); } if (ce.textContent !== cap) ce.textContent = cap; ce.hidden = false; } else if (ce) ce.hidden = true;
+    if (PL.on) AU.tick(t);
+    head(t);
+  }
+  function tick() {
+    cancelAnimationFrame(PL.raf);
+    PL.raf = requestAnimationFrame(() => {
+      if (!PL.on || !ED.d) return; const total = TL().total; let t = performance.now() - PL.at;
+      if (PL.stopAt && t >= PL.stopAt) { t = PL.stopAt; draw(t); PL.t = t; pause(); if (PL.autoExit) exitPreview(true); return; }
+      if (t >= total) { if (PL.loop) { PL.at += total; t -= total; } else { draw(total - 1); PL.t = 0; pause(); return; } }
+      PL.t = t; draw(t); tick();
+    });
+  }
+  function play(from, until, autoExit) {
+    if (!isMo(ED.d)) return; const total = TL().total;
+    if (from != null) PL.t = from; else if (PL.t >= total - 50) PL.t = 0;
+    PL.stopAt = until || 0; PL.autoExit = !!autoExit; PL.on = true; PL.at = performance.now() - PL.t; drawSel();
+    draw(PL.t); tick(); controls();
+  }
+  function pause() { PL.on = false; cancelAnimationFrame(PL.raf); AU.stop(); controls(); }
+  /** Back to editing: the overlay goes, and the scene under the playhead opens */
+  function exitPreview(keepScene) {
+    pause(); if (!PL.view) return;
+    PL.view.remove(); PL.view = null; PL.cache.clear(); const ed = $('.ed'); ed && ed.classList.remove('mo-live');
+    if (!keepScene && ED.d) { const f = MO.frameAt(TL(), PL.t); if (f && f.cur.i !== ED.pi) { ED.pi = f.cur.i; ED.sel = null; edAll(); return; } }
+    drawSel(); controls();
+  }
+  /** Plays one scene from its start (after picking an animation) and returns to editing */
+  function previewScene(i, until) { const s = TL().scenes[i]; if (!s) return; exitPreview(true); play(s.start, s.start + Math.min(s.dur, until || s.dur), true); }
+  const toggle = () => (PL.on ? pause() : (PL.view && PL.t > 0 ? play() : play(TL().scenes[ED.pi] ? TL().scenes[ED.pi].start : 0)));
+
+  /* ---------- timeline (the slide strip of a motion design) ---------- */
+  let folded = false; try { folded = localStorage.getItem('boga.mo37Folded') === '1'; } catch (e) {}
+  const lbl = () => (innerWidth < 700 ? 96 : 148); // the layer names column
+  let K = 0.1; // px per ms
+  function head(t) {
+    const ph = $('#mo37Ph'); if (ph) ph.style.transform = `translateX(${t * K}px)`;
+    const tt = $('#mo37T'); if (tt) tt.textContent = MO.fmtTime(t);
+  }
+  function controls() {
+    const b = $('#mo37Play'); if (b) { b.innerHTML = ic(PL.on ? 'pause37' : 'play37', 16); b.title = (PL.on ? 'Pause' : 'Play') + ' (K)'; b.setAttribute('aria-label', PL.on ? 'Pause' : 'Play'); }
+    const pv = $('#mo37Pv'); if (pv) pv.hidden = !PL.view || PL.on;
+  }
+  const trIcon = (k) => ({ cut: '│', fade: '◐', slide: '→', push: '↑', zoom: '⤢', wipe: '▸' }[k] || '◐');
+  function tlHTML() {
+    const d = ED.d, tl = TL(), host = $('#edPages'), LBL = lbl(), avail = Math.max(200, (host ? host.clientWidth : 900) - LBL - 150); // room for the + Scene button at the end
+    // fit the whole video, but never squeeze a scene under ~84 px: the timeline scrolls sideways instead
+    K = clamp(Math.max(avail / Math.max(1000, tl.total), 84 / Math.max(500, Math.min(...tl.scenes.map((s) => s.dur)))), 0.02, 0.3);
+    const span = tl.total * K, step = [1000, 2000, 5000, 10000].find((s) => s * K >= 40) || 10000;
+    const ticks = Array.from({ length: Math.floor(tl.total / step) + 1 }, (_, i) => `<span style="left:${i * step * K}px">${MO.fmtTime(i * step, false)}</span>`).join('');
+    const scenes = tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
+      return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${s.dur * K < 130 ? ' sm' : ''}" style="left:${s.start * K}px;width:${s.dur * K}px">
+        <button class="mo-sc-b" data-act="mo37Scene" data-i="${s.i}" title="${esc(lab)} · ${secs(s.dur)}" aria-label="${esc(lab)}, ${secs(s.dur)}" aria-current="${s.i === ED.pi}">${thumb(d.pages[s.i], d.ratio, 34, 44)}<span class="mo-sc-l"><b>${esc(lab)}</b><small>${secs(s.dur)}${s.i && s.tr !== 'cut' ? ` · ${trIcon(s.tr)} ${MO.TRANSITIONS[s.tr]}` : ''}</small></span></button>
+        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${s.start * K}px" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('')
+      + `<button class="mo-addend${insAt === tl.scenes.length && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${tl.scenes.length}" style="left:${span + 10}px" title="Add a scene at the end">${ic('plus', 16)}<span>Scene</span></button>`;
+    const cur = tl.scenes[ED.pi], pg = curP(), sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
+    const rows = pg.layers.filter((l) => l.type !== 'group' && !isBg(l)).reverse();
+    const lane = (l) => { const a = MO.anim(l), on = a.in !== 'none';
+      return `<div class="mo-lane${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}"><span class="mo-life" style="left:${cur.start * K}px;width:${cur.dur * K}px"></span>
+        ${on ? `<span class="mo-bar" data-bar="${l.id}" style="left:${(cur.start + a.d) * K}px;width:${Math.max(6, a.t * K)}px" title="${MO.ENTER[a.in][0]} · starts at ${secs(a.d)} · lasts ${secs(a.t)}. Drag to move, drag the end to change the length.">${a.t * K >= 44 ? `<span>${MO.ENTER[a.in][0]}</span>` : ''}<i class="mo-bh"></i></span>` : ''}
+        ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${(cur.start + cur.dur - a.ot) * K}px;width:${Math.max(6, a.ot * K)}px" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
+        ${a.loop !== 'none' ? `<span class="mo-lp" style="left:${(cur.start + cur.dur) * K - 18}px" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; };
+    return `<div class="pgs-head mo-head">
+        <span class="mo-ctl"><button class="tb" data-act="mo37Rew" title="Back to the start" aria-label="Back to the start">${ic('rew37', 15)}</button><button class="mo-play" id="mo37Play" data-act="mo37Play"></button><button class="tb ${PL.loop ? 'on' : ''}" data-act="mo37Loop" title="Loop playback" aria-label="Loop playback" aria-pressed="${PL.loop}">${ic('loop37', 15)}</button></span>
+        <span class="mo-time"><b id="mo37T">${MO.fmtTime(PL.t)}</b><span> / ${MO.fmtTime(tl.total)}</span></span>
+        <button class="btn link sm mo-pv" id="mo37Pv" data-act="mo37Edit" hidden>Previewing · back to editing</button>
+        <span class="sp"></span>
+        <button class="tb" data-act="mo37More" title="More" aria-label="More video actions" aria-haspopup="menu">${ic('more', 16)}</button>
+        <button class="tb fold" data-act="mo37Fold" title="${folded ? 'Show timeline' : 'Hide timeline'}" aria-label="${folded ? 'Show timeline' : 'Hide timeline'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
+      </div>
+      <div class="mo-tl"><div class="mo-grid" style="--lbl:${LBL}px">
+        <div class="mo-gl"><div class="mo-gl-r mo-r0">Time</div><div class="mo-gl-r mo-r1">Scenes</div>${AU.labels()}
+          ${rows.map((l) => `<button class="mo-gl-r mo-nm${sel.has(l.id) ? ' on' : ''}" data-act="mo37Pick" data-id="${l.id}" title="${esc(l.name)}">${ic(l.type === 'text' ? 'type' : l.type === 'image' ? 'image' : 'shapes', 13, 'faint')}<span>${esc(l.name)}</span></button>`).join('')}
+          ${rows.length ? '' : '<div class="mo-gl-r mo-nm muted">No layers</div>'}</div>
+        <div class="mo-gr" id="mo37Lanes" style="width:${span + 130}px">
+          <div class="mo-ruler" data-scrub>${ticks}</div>
+          <div class="mo-scrow">${scenes}</div>${AU.lanes(K, tl)}
+          ${rows.map(lane).join('')}${rows.length ? '' : '<div class="mo-lane"></div>'}
+          <div class="mo-ph" id="mo37Ph" style="transform:translateX(${PL.t * K}px)"><i data-scrub></i></div>
+        </div></div></div>`;
+  }
+  const _pg37 = edPages;
+  edPages = function () {
+    const host = $('#edPages'); if (!host || !ED.d) return;
+    if (!isMo(ED.d)) { host.classList.remove('mo37'); return _pg37.apply(this, arguments); }
+    const stage = host.closest('.ed-stage'), old = $('.mo-tl', host), sl = old ? [old.scrollLeft, old.scrollTop] : null;
+    if (stage) stage.dataset.pgs = folded ? 'c' : 'o';
+    host.classList.add('mo37'); host.innerHTML = tlHTML(); controls();
+    const tl = $('.mo-tl', host); if (tl && sl) { tl.scrollLeft = sl[0]; tl.scrollTop = sl[1]; }
+  };
+
+  /* drags in the timeline: scrub the playhead, change a scene's length, move or stretch an animation */
+  document.addEventListener('pointerdown', (e) => {
+    if (!ED.d || !isMo(ED.d) || e.button !== 0) return;
+    const lanes = $('#mo37Lanes'); if (!lanes || !lanes.contains(e.target)) return;
+    const x0 = lanes.getBoundingClientRect().left, at = (ev) => (ev.clientX - x0) / K, tl = TL();
+    const rs = e.target.closest('[data-rs]'), bar = e.target.closest('[data-bar]'), scrub = e.target.closest('[data-scrub]') || (!e.target.closest('button') && !rs && !bar);
+    let move = null, done = null;
+    if (rs) {
+      const i = +rs.dataset.rs, s = tl.scenes[i], pg = ED.d.pages[i], pre = snap();
+      move = (ev) => { pg.scene = { ...MO.sceneOf(pg), dur: clamp(Math.round((at(ev) - s.start) / 100) * 100, 500, 60000) }; const b = rs.parentNode; b.style.width = pg.scene.dur * K + 'px'; const sm = b.querySelector('small'); sm && (sm.textContent = secs(pg.scene.dur)); };
+      done = () => { commit(pre); edPages(); edProps(); };
+    } else if (bar) {
+      const l = curP().layers.find((x) => x.id === bar.dataset.bar), s = tl.scenes[ED.pi]; if (!l) return;
+      const a = MO.anim(l), pre = snap(), r = bar.getBoundingClientRect(), edge = e.clientX > r.right - 8, grab = at(e) - (s.start + a.d);
+      ED.sel = l.id; drawSel();
+      move = (ev) => {
+        const v = Math.round((edge ? at(ev) - s.start - a.d : at(ev) - grab - s.start) / 50) * 50;
+        if (edge) a.t = clamp(v, 100, s.dur - a.d); else a.d = clamp(v, 0, Math.max(0, s.dur - a.t));
+        l.anim = { ...a }; bar.style.left = (s.start + a.d) * K + 'px'; bar.style.width = Math.max(6, a.t * K) + 'px';
+      };
+      done = (moved) => { if (moved) commit(pre); edPages(); edProps(); };
+    } else if (scrub) {
+      const total = tl.total; pause();
+      move = (ev) => { PL.t = clamp(at(ev), 0, total - 1); draw(PL.t); };
+      move(e); done = () => controls();
+    } else return;
+    e.preventDefault(); let moved = false;
+    const mv = (ev) => { moved = true; move(ev); }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); done(moved); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  });
+
+  const isEmpty = (pg) => pg.layers.every((l) => isBg(l) || l.hidden);
+  const KIND_GROUPS = { intro: 'Intros', body: 'Scenes', outro: 'Outros' };
+  /** Where the next scene from the library goes: null = after the open scene; a number = before that scene index
+      (set by a + of the timeline). When the scene just before it is empty, the pick fills that scene instead. */
+  let insAt = null;
+  const target = () => { const at = insAt == null ? ED.pi + 1 : insAt, fill = at > 0 && ED.d.pages[at - 1] && isEmpty(ED.d.pages[at - 1]) ? at - 1 : -1; return { at, fill }; };
+  /** Opens the Motion sidebar on its library, aimed at `at` */
+  function openLibrary(at) {
+    insAt = at; ED.tab = 'motion'; ACT.edTab({ dataset: { k: 'motion' } }); edPages();
+    requestAnimationFrame(() => { const lib = $('#mo37Lib'); if (!lib) return; lib.scrollIntoView({ block: 'start', behavior: 'smooth' }); lib.classList.remove('flash'); void lib.offsetWidth; lib.classList.add('flash'); });
+  }
+  function addScene(kind, key, at, fill = -1) {
+    const [w, h] = dim(), pg = newPage(kind, key, w, h), d = ED.d, label = MO.STARTERS[kind][key][0];
+    exitPreview(true);
+    mutate(() => {
+      if (fill >= 0) { const keep = d.pages[fill]; Object.assign(keep, { bg: pg.bg, layers: pg.layers, scene: { ...pg.scene, tr: MO.sceneOf(keep).tr } }); ED.pi = fill; }
+      else { d.pages.splice(at, 0, pg); ED.pi = at; }
+      order(d); ED.sel = null; ED.ms = [];
+      d.pages.forEach((p, i) => { p.scene = { ...MO.sceneOf(p), tr: !i ? 'cut' : MO.sceneOf(p).tr === 'cut' && p === pg ? 'fade' : MO.sceneOf(p).tr }; });
+    });
+    toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
+  }
+  function moreMenu(btn) {
+    const r = btn.getBoundingClientRect(), n = ED.d.pages.length; $$('#ctx').forEach((x) => x.remove());
+    const rows = [['Duplicate this scene', 'copy', () => dupScene(ED.pi)], ['Delete this scene', 'trash', () => delScene(ED.pi), n < 2, 'dng']]; // video-wide actions: the Motion panel's ⋯
+    const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
+    c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
+    document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
+    c.style.left = clamp(r.right - w, 8, innerWidth - w - 8) + 'px'; c.style.top = clamp(r.top - h - 6, 8, innerHeight - h - 8) + 'px';
+    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); rows[+b.dataset.k][2](); } };
+    c.onkeydown = (e) => { e.stopPropagation(); const bs = $$('button:not(:disabled)', c), j = bs.indexOf(document.activeElement); if (e.key === 'ArrowDown') { e.preventDefault(); bs[(j + 1) % bs.length].focus(); } else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(j - 1 + bs.length) % bs.length].focus(); } else if (e.key === 'Escape') { c.remove(); btn.focus(); } };
+    const f = $('button', c); f && f.focus();
+  }
+  function dupScene(i) { exitPreview(true); mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; }); }
+  function delScene(i) { if (ED.d.pages.length < 2) return toast('A video needs at least one scene'); exitPreview(true); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); }
+
+  /* ---------- targets of the animation controls: the selection ---------- */
+  const targets = () => { const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; return curP().layers.filter((l) => ids.includes(l.id)); };
+  function setAnim(patch, opts = {}) {
+    const ls = targets(); if (!ls.length) return;
+    mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), ...patch }; if (opts.stagger) l.anim.d = (patch.d ?? MO.anim(l).d) + i * opts.stagger; }));
+    if (opts.preview) { const a = MO.anim(ls[ls.length - 1]); previewScene(ED.pi, a.d + a.t + 500); }
+  }
+
+  /* ---------- left panel: Motion. A video: what it is, then the scene library (the + of the timeline aim it).
+     A still design: turn it into a video. ---------- */
+  const ti = RAIL.findIndex((r) => r[0] === 'templates'); RAIL.splice(ti + 1, 0, ['motion', 'Motion', 'film37']);
+  const _pn37 = edPanel;
+  edPanel = function () {
+    if (ED.tab !== 'motion') return _pn37.apply(this, arguments);
+    const p = $('#edPanel'), d = ED.d; p.classList.remove('agent');
+    if (!isMo(d)) {
+      p.innerHTML = `<h3>Motion</h3><div class="mo2-hero">${ic('film37', 22)}<b>Make it a video</b><span>Each slide becomes an animated scene.</span><button class="btn primary" data-act="mo37Make">${ic('play37', 14)}Animate this design</button></div>`;
+      return;
+    }
+    const tl = TL(), [w, h] = dim(), o = look(), F = MO.formatOf(d.motion.fmt), n = tl.scenes.length, { at, fill } = target(), kind = S37.kind;
+    const where = fill >= 0 ? `Fills ${esc(kindLabel(d, fill))}` : at >= n ? 'Adds at the end' : `Adds before ${esc(kindLabel(d, at))}`;
+    const KINDS = [['all', 'layout', 'All'], ['intro', 'play37', 'Intro'], ['body', 'slides', 'Scene'], ['outro', 'stop38', 'Outro']];
+    const cards = Object.entries(MO.STARTERS).filter(([k]) => kind === 'all' || kind === k).flatMap(([k, set]) => Object.entries(set).map(([v, st]) => `<button class="mo2-card" data-act="mo37Lib" data-k="${k}" data-v="${v}" title="${esc(st[0])} · ${MO.KINDS[k]}">${thumb({ bg: o.bg, layers: st[1](w, h, o) }, d.ratio, 76, 92)}<span><i class="mo2-dot k-${k}"></i>${esc(st[0])}</span></button>`)).join('');
+    p.innerHTML = `<div class="au2-head"><h3>Motion</h3><button type="button" class="btn ghost icon sm" data-act="mo37PanelMenu" data-tip="More" aria-label="More">${ic('more', 16)}</button></div>
+      <div class="mo2-info"><span data-tip="Format">${ic('film37', 14)}${esc(F.n)}</span><span data-tip="Length">${ic('clock', 14)}${MO.fmtTime(tl.total, false)}</span><span data-tip="Scenes">${ic('slides', 14)}${n}</span></div>
+      <div class="mo-lib" id="mo37Lib">
+        <div class="mo2-filter" role="tablist" aria-label="Scene types">${KINDS.map(([k, icon, l]) => `<button role="tab" aria-selected="${kind === k}" class="${kind === k ? 'on' : ''}" data-act="mo37Kind" data-k="${k}">${ic(icon, 14)}<span>${l}</span></button>`).join('')}</div>
+        <div class="mo2-where">${ic(fill >= 0 ? 'layout' : 'plus', 13)}<span>${where}</span>${insAt != null ? `<button class="btn ghost icon sm" data-act="mo37Aim" aria-label="Add after the open scene instead" data-tip="Reset">${ic('x', 12)}</button>` : ''}</div>
+        <div class="mo2-grid">${cards}</div>
+      </div>`;
+  };
+  const S37 = { kind: 'all' };
+  /** A small menu under a ⋯ button: rows [label, icon, fn, disabled, cls] or '-' */
+  function menu37(btn, rows) {
+    $$('#ctx').forEach((x) => x.remove()); const r = btn.getBoundingClientRect();
+    const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
+    c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 15)}${x[0]}</span></button>`)).join('');
+    document.body.append(c); const hh = c.offsetHeight, ww = c.offsetWidth;
+    c.style.left = clamp(r.right - ww, 8, innerWidth - ww - 8) + 'px'; c.style.top = (r.bottom + 6 + hh < innerHeight ? r.bottom + 6 : Math.max(8, r.top - hh - 6)) + 'px';
+    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); rows[+b.dataset.k][2](); } };
+    c.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Escape') { c.remove(); btn.focus(); } };
+    const f = $('button:not(:disabled)', c); f && f.focus();
+  }
+
+  /* ---------- an empty scene: a card on the canvas says how to start ---------- */
+  function emptyCard() {
+    const stage = $('.ed-stage'); if (!stage) return; let c = $('#mo37Empty');
+    if (!ED.d || !isMo(ED.d) || !isEmpty(curP())) { c && c.remove(); return; }
+    if (!c) { c = document.createElement('div'); c.id = 'mo37Empty'; c.className = 'mo-emptyc'; stage.append(c); }
+    c.innerHTML = `<b>Start ${esc(kindLabel(ED.d, ED.pi))}</b><p>Add your own content, or pick a ready-made scene.</p>
+      <div class="mo-emptyc-a"><button class="btn secondary sm" data-act="edText" data-k="h">${ic('type', 15)}Heading</button><button class="btn secondary sm" data-act="edTab" data-k="elements">${ic('shapes', 15)}Elements</button><button class="btn secondary sm" data-act="edTab" data-k="uploads">${ic('upload', 15)}Image</button></div>
+      <button class="btn primary sm" data-act="mo37Fill">${ic('layout', 15)}Pick a ready-made scene</button>`;
+  }
+
+  /* ---------- properties: Scene (nothing selected) and Animation (a selection) ---------- */
+  const sec = (key, title, body, act = '') => `<section class="ps9 mo37s" data-sec="${key}"><div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a">${act}</span></div><div class="ps9-b">${body}</div></section>`;
+  const fxChips = (set, cur, key) => `<div class="mo-fx" role="radiogroup">${Object.entries(set).map(([k, [n]]) => `<button type="button" role="radio" aria-checked="${cur === k}" class="${cur === k ? 'on' : ''}" data-act="mo37Fx" data-key="${key}" data-v="${k}" title="${n}"><i class="mo-g g-${key}-${k}"></i><span>${n}</span></button>`).join('')}</div>`;
+  const numS = (lbl, key, v, max, step = 0.1) => `<label class="num"><span>${lbl}</span><input type="number" min="0" max="${max}" step="${step}" data-mo="${key}" value="${Math.round(v / 100) / 10}"></label>`;
+  function sceneSec() {
+    const pg = curP(), s = MO.sceneOf(pg), first = ED.pi === 0, n = ED.d.pages.length;
+    return sec('scene', esc(kindLabel(ED.d, ED.pi)), `<span class="label">Used as</span><div class="seg" role="radiogroup" aria-label="Part of the video">${Object.entries(MO.KINDS).map(([k, l]) => `<button role="radio" aria-checked="${s.k === k}" class="${s.k === k ? 'on' : ''}" data-act="mo37SetKind" data-k="${k}">${l}</button>`).join('')}</div>
+      <label class="lab">Length <output class="mo-out">${secs(s.dur)}</output><input type="range" min="500" max="20000" step="100" data-mo="dur" value="${s.dur}"></label>
+      ${first ? '<p class="xs-t muted">The first scene opens the video: it has no transition.</p>' : `<div><span class="label">Transition in</span><div class="chips mo-trs">${Object.entries(MO.TRANSITIONS).map(([k, l]) => `<button class="chip ${s.tr === k ? 'on' : ''}" data-act="mo37SetTr" data-k="${k}"><span class="mo-tri">${trIcon(k)}</span>${l}</button>`).join('')}</div></div>
+        ${s.tr !== 'cut' ? `<label class="lab">Transition length <output class="mo-out">${secs(s.trd)}</output><input type="range" min="200" max="1500" step="50" data-mo="trd" value="${s.trd}"></label>` : ''}`}
+      <button class="btn secondary sm mo-magic" data-act="mo37Magic" data-all="0">${ic('wand', 15)}Magic animate this scene</button>`,
+      `<button class="btn ghost icon sm" data-act="mo37Dup" data-tip="Duplicate scene" aria-label="Duplicate scene">${ic('copy', 14)}</button>${n > 1 ? `<button class="btn ghost icon sm" data-act="mo37Del" data-tip="Delete scene" aria-label="Delete scene">${ic('trash', 14)}</button>` : ''}`);
+  }
+  function animSec(ls) {
+    const a = MO.anim(ls[0]), s = MO.sceneOf(curP()), many = ls.length > 1;
+    return sec('anim', many ? `Animation · ${ls.length} layers` : 'Animation', `
+      <span class="label">Enter</span>${fxChips(MO.ENTER, a.in, 'in')}
+      ${a.in !== 'none' ? `<div class="g2f">${numS('Start', 'd', a.d, s.dur / 1000)}${numS('Length', 't', a.t, 10)}</div>
+        <label class="lab">Easing<select class="field sm" data-mo="e">${Object.entries(MO.EASES).map(([k, [n]]) => `<option value="${k}" ${a.e === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        ${many ? `<button class="btn secondary sm" data-act="mo37Stagger">${ic('slides', 15)}Stagger, one after the other</button>` : ''}` : ''}
+      <span class="label">Exit</span>${fxChips(MO.EXIT, a.out, 'out')}
+      ${a.out !== 'none' ? `<div class="g2f">${numS('Length', 'ot', a.ot, 5)}</div>` : ''}
+      <span class="label">Loop</span>${fxChips(MO.LOOP, a.loop, 'loop')}`,
+      `<button class="btn ghost icon sm" data-act="mo37PlayScene" data-tip="Preview (K plays the video)" aria-label="Preview the animation">${ic('play37', 13)}</button>`);
+  }
+  const _ep37 = edProps;
+  edProps = function () {
+    const r = _ep37.apply(this, arguments), pb = $('#edProps .body');
+    if (pb && ED.rtab === 'design' && !curL()) { // already in the top bar: the size (Magic resize) and the safe zones
+      const seg = pb.querySelector('[data-act=edRatio]'), blk = seg && seg.closest('.seg') && seg.closest('.seg').parentElement;
+      if (blk && blk !== pb && blk.querySelector(':scope > .label')) blk.remove();
+      const sw = pb.querySelector('.switch[data-act=edSafe]'), row = sw && sw.closest('.row'); if (row && row !== pb) row.remove();
+    }
+    if (!ED.d || !isMo(ED.d) || ED.rtab !== 'design') return r;
+    const b = $('#edProps .body'); if (!b) return r;
+    const ls = targets(), tmp = document.createElement('div');
+    tmp.innerHTML = ls.length ? animSec(ls) : sceneSec();
+    const after = ls.length && b.querySelector('.ps9[data-sec=pos]');
+    if (after) after.after(...tmp.children); else { const h = b.querySelector(':scope > .row'); h && ls.length ? h.after(...tmp.children) : b.prepend(...tmp.children); }
+    return r;
+  };
+  /* number, range and select inputs of the Motion panel and the Scene / Animation sections */
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.mo || t.type !== 'range') return;
+    const o = t.closest('label') && t.closest('label').querySelector('.mo-out'); if (o) o.textContent = secs(+t.value);
+    if (t.dataset.mo === 'dur') { const s = TL().scenes[ED.pi], b = $(`#edPages .mo-sc-b[data-i="${ED.pi}"]`); if (s && b) b.parentNode.style.width = +t.value * K + 'px'; }
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target, k = t.dataset && t.dataset.mo; if (!k || !ED.d || !t.closest('#edProps, #edPanel')) return;
+    const v = +t.value, pg = curP();
+    if (k === 'fps') { ED.d.motion.fps = v; touch(); save(); edPanel(); return; }
+    if (k === 'dur' || k === 'trd') return mutate(() => { pg.scene = { ...MO.sceneOf(pg), [k]: v }; });
+    if (k === 'e') return setAnim({ e: t.value }, { preview: true });
+    if (['d', 't', 'ot'].includes(k) && !isNaN(v)) setAnim({ [k]: Math.round(clamp(v, 0, 60) * 1000) }, { preview: k !== 'ot' });
+  });
+
+  /* ---------- actions ---------- */
+  Object.assign(ACT, {
+    mo37Play: () => toggle(),
+    mo37Rew: () => { pause(); PL.t = 0; if (PL.view) draw(0); else head(0); },
+    mo37Loop: () => { PL.loop = !PL.loop; edPages(); },
+    mo37Edit: () => exitPreview(),
+    mo37Fold: () => { folded = !folded; try { localStorage.setItem('boga.mo37Folded', folded ? '1' : '0'); } catch (e) {} edPages(); if (ED.fit) requestAnimationFrame(fitZoom); },
+    mo37Scene: (a) => { const i = +a.dataset.i, s = TL().scenes[i]; exitPreview(true); insAt = null; PL.t = s ? s.start : 0; if (i !== ED.pi) { ED.pi = i; ED.sel = null; ED.ms = []; edAll(); } else head(PL.t); },
+    mo37Pick: (a) => { exitPreview(true); ED.sel = a.dataset.id; ED.ms = []; ED.rtab = 'design'; edAll(); },
+    mo37Ins: (a) => openLibrary(+a.dataset.at),
+    mo37Fill: () => openLibrary(ED.pi + 1),
+    mo37Aim: () => { insAt = null; edPanel(); edPages(); },
+    mo37Kind: (a) => { S37.kind = a.dataset.k; edPanel(); },
+    mo37PanelMenu: (b) => { const fps = ED.d.motion.fps || 30; menu37(b, [
+      ...[24, 30, 60].map((f) => [`${f} fps${fps === f ? '  ✓' : ''}`, 'film37', () => { ED.d.motion.fps = f; touch(); save(); edPanel(); }]),
+      '-', ['Magic animate every scene', 'wand', () => ACT.mo37Magic({ dataset: { all: '1' } })],
+      ['Make it a still design', 'image', () => ACT.mo37Off()],
+    ]); },
+    mo37Lib: (a) => { const { at, fill } = target(); insAt = null; addScene(a.dataset.k, a.dataset.v, at, fill); },
+    mo37More: (a) => moreMenu(a),
+    mo37Dup: () => dupScene(ED.pi), mo37Del: () => delScene(ED.pi),
+    mo37PlayScene: () => previewScene(ED.pi),
+    mo37SetKind: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), k: a.dataset.k }; order(ED.d); ED.d.pages.forEach((p, i) => { if (!i) p.scene = { ...MO.sceneOf(p), tr: 'cut' }; }); }); },
+    mo37SetTr: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), tr: a.dataset.k }; }); if (a.dataset.k !== 'cut') { const s = TL().scenes[ED.pi]; play(Math.max(0, s.start - 600), s.start + s.trd + 400, true); } },
+    mo37Fx: (a) => { const k = a.dataset.key, v = a.dataset.v; setAnim({ [k]: v }, { preview: v !== 'none' }); },
+    mo37Stagger: () => { const ls = targets().sort((x, y) => x.y - y.y || x.x - y.x); if (ls.length < 2) return; const base = MO.anim(ls[0]).d; mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), d: base + i * 150 }; if (l.anim.in === 'none') l.anim.in = 'fade'; })); previewScene(ED.pi); },
+    mo37Magic: (a) => {
+      const [w, h] = dim(), all = a.dataset.all === '1';
+      exitPreview(true); mutate(() => (all ? ED.d.pages : [curP()]).forEach((pg) => MO.autoAnimate(pg.layers, MO.sceneOf(pg), w, h)));
+      toast(all ? 'Every scene is animated' : 'Scene animated'); previewScene(ED.pi);
+    },
+    mo37Make: () => { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); toast('Your design is now a video. Press K to play it'); },
+    mo37Off: () => {
+      modal(`<div class="mh"><h2>Make it a still design?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div><div class="mb"><p class="sm-t">The scenes become slides again and the animations are removed. You can undo this with <span class="kbd">Ctrl Z</span>.</p></div><div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mo37OffGo">Make it still</button></div>`, {
+        onMount: (bg, close) => $('#mo37OffGo', bg).addEventListener('click', () => {
+          close(); exitPreview(true); const pre = snap(), m = ED.d.motion;
+          ED.d.pages.forEach((pg) => { delete pg.scene; pg.layers.forEach((l) => delete l.anim); }); delete ED.d.motion;
+          ED.undo.push(pre); ED.redo = []; ED.d._mo37 = m; touch(); edAll(); save(); toast("It’s a still design again. Undo brings the video back");
+        }),
+      });
+    },
+  });
+  /* undo / redo of "animate this design" or "make it still": the motion settings follow the scenes (they live outside the history) */
+  function syncMotion() {
+    const d = ED.d, scenes = !!d && d.pages.some((p) => p.scene);
+    if (d && d.motion && !scenes) { d._mo37 = d.motion; delete d.motion; edAll(); }
+    else if (d && !d.motion && scenes) { d.motion = d._mo37 || { fmt: 'post', fps: 30 }; delete d._mo37; edAll(); }
+  }
+  const _undo37 = doUndo, _redo37 = doRedo;
+  doUndo = function () { exitPreview(true); const r = _undo37.apply(this, arguments); syncMotion(); return r; };
+  doRedo = function () { exitPreview(true); const r = _redo37.apply(this, arguments); syncMotion(); return r; };
+  Object.assign(ACT, { edUndo: () => doUndo(), edRedo: () => doRedo() }); // the toolbar buttons kept the first functions
+
+  /* a layer added to a video scene comes in with a gentle entrance, after the ones already there */
+  const _al37 = addLayer;
+  addLayer = function (l) {
+    if (ED.d && isMo(ED.d) && l && !l.anim && !isBg(l)) { const n = curP().layers.filter((x) => x.anim && x.anim.in !== 'none').length; l.anim = { ...MO.ANIM_DEFAULT, in: l.type === 'text' ? 'rise' : l.type === 'image' ? 'zoom' : 'fade', d: Math.min(200 + n * 150, Math.max(0, MO.sceneOf(curP()).dur - 900)) }; }
+    return _al37.apply(this, arguments);
+  };
+
+  /* keyboard: K play / pause, comma / period previous / next scene (motion designs) */
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || !ED.d || !isMo(ED.d) || ED.editing || e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const k = e.key.toLowerCase();
+    if (k === 'k') { e.preventDefault(); toggle(); }
+    else if (k === ',' || k === '.') { e.preventDefault(); const i = clamp(ED.pi + (k === '.' ? 1 : -1), 0, ED.d.pages.length - 1); ACT.mo37Scene({ dataset: { i } }); }
+    else if (k === 'escape' && PL.view) exitPreview();
+  });
+
+  /* the editor: opens on the Motion tab, the canvas leaves a preview whenever it redraws */
+  const _oe37 = openEditor;
+  openEditor = function () {
+    pause(); PL.view = null; PL.cache.clear(); PL.t = 0;
+    const r = _oe37.apply(this, arguments);
+    if (isMo(ED.d)) { order(ED.d); insAt = null; ED.tab = 'motion'; edRail(); edPanel(); edPages(); emptyCard(); requestAnimationFrame(fitZoom); }
+    return r;
+  };
+  const _st37 = edStage;
+  edStage = function () { if (PL.view) { pause(); PL.view.remove(); PL.view = null; PL.cache.clear(); const ed = $('.ed'); ed && ed.classList.remove('mo-live'); } const r = _st37.apply(this, arguments); emptyCard(); return r; };
+  const _ds37 = drawSel;
+  drawSel = function () { const r = _ds37.apply(this, arguments); if (PL.view) { const s = $('#sel'); s && (s.hidden = true); } return r; };
+  addEventListener('hashchange', () => pause());
+  addEventListener('resize', () => { if (ED.d && isMo(ED.d) && $('#mo37Lanes')) edPages(); });
+
+  /* ---------- export: a video, recorded from the scenes ----------
+     Each layer is rendered once to its own bitmap (the same renderer as image exports), then every frame is
+     composited the way the preview's HTML is: each scene on its own canvas, the layers in order with their blend mode
+     and their background blur rebuilt from what is under them, and the animation's offset, scale, rotation, blur,
+     clip and opacity. The scenes then meet with their transition, and the result is recorded. */
+  const MIMES = [['video/mp4;codecs=avc1.640028,mp4a.40.2', 'mp4'], ['video/mp4;codecs=avc1,mp4a.40.2', 'mp4'], ['video/webm;codecs=vp9,opus', 'webm'], ['video/webm;codecs=vp8,opus', 'webm'], ['video/mp4;codecs=avc1.640028', 'mp4'], ['video/mp4;codecs=avc1', 'mp4'], ['video/mp4', 'mp4'], ['video/webm;codecs=vp9', 'webm'], ['video/webm;codecs=vp8', 'webm'], ['video/webm', 'webm']];
+  const mimes = () => (window.MediaRecorder ? MIMES.filter(([m]) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) : []);
+  /** CSS mix-blend-mode → canvas composite operation (same names, but for "normal" and "plus-lighter") */
+  const COMPOSITE = { normal: 'source-over', 'plus-lighter': 'lighter' };
+  /** How far past the canvas a layer's bitmap reaches: a full-bleed image that zooms or drifts never shows its edge */
+  const BLEED = 0.3;
+  async function prepare(d, s, onStep) {
+    const [W, H] = RATIOS[d.ratio], todo = d.pages.reduce((n, pg) => n + pg.layers.filter((l) => !l.hidden && l.type !== 'group').length + 1, 0); let n = 0;
+    const scenes = [];
+    for (const pg of d.pages) {
+      const T = treeOf(pg), bg = await RT.renderPage({ id: 'bg', bg: pg.bg, layers: [] }, W, H, s, false), items = []; onStep(++n / todo);
+      for (const l of pg.layers) {
+        if (l.hidden || l.type === 'group') continue;
+        const b = aabb(l), pad = Math.round(Math.max(24, (l.shb || 0) * 2 + Math.abs(l.shx || 0) + Math.abs(l.shy || 0), ...(l.fxs || []).map((x) => (x.b || 0) * 2 + Math.abs(x.x || 0) + Math.abs(x.y || 0) + (x.s || 0)), (l.sw || 0) * 2, (l.bl || 0) * 3));
+        // the layer's box with its shadows, kept within the canvas plus a margin (a 2 500 px background stays a sane size)
+        const x0 = Math.max(Math.floor(b.x - pad), Math.floor(-W * BLEED)), y0 = Math.max(Math.floor(b.y - pad), Math.floor(-H * BLEED));
+        const x1 = Math.min(Math.ceil(b.x + b.w + pad), Math.ceil(W * (1 + BLEED))), y1 = Math.min(Math.ceil(b.y + b.h + pad), Math.ceil(H * (1 + BLEED)));
+        if (x1 <= x0 || y1 <= y0) continue;
+        const x = x0, y = y0, w = x1 - x0, h = y1 - y0;
+        // blend and background blur need what is under the layer: they are applied when the frame is composited
+        const c = JSON.parse(JSON.stringify(l)); c.x -= x; c.y -= y; if (c._x != null) { c._x -= x; c._y -= y; } delete c.pid; delete c.blend; delete c.bbl;
+        const blend = l.blend && l.blend !== 'normal' ? COMPOSITE[l.blend] || l.blend : 'source-over';
+        items.push({ l, cv: await RT.renderPage({ id: 'mo', bg: 'transparent', layers: [c] }, w, h, s, false), x, y, w, h, blend, bbl: l.type !== 'text' && l.bbl > 0 ? l.bbl : 0 });
+        onStep(++n / todo);
+      }
+      scenes.push({ bg, items, T });
+    }
+    return scenes;
+  }
+  /** The layer's own shape (its box, rounded corners, rotation) moved by its animation state: where its background blur shows */
+  function shapePath(ctx, l, ls, s) {
+    const cx = (l.x + l.w / 2 + ls.tx) * s, cy = (l.y + l.h / 2 + ls.ty) * s, w = l.w * s, h = l.h * s, r = Math.min(Math.max(0, +l.r || 0) * s, w / 2, h / 2);
+    ctx.translate(cx, cy); ctx.rotate((((l.rot || 0) + ls.r) * Math.PI) / 180); ctx.scale(ls.s, ls.s);
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-w / 2, -h / 2, w, h, r) : ctx.rect(-w / 2, -h / 2, w, h);
+  }
+  /** Canvases reused from frame to frame: one per scene drawn, and one for the background-blur snapshot */
+  const PAD = new Map();
+  function pad(k, w, h) { let c = PAD.get(k); if (!c || c.width !== w || c.height !== h) { c = document.createElement('canvas'); c.width = w; c.height = h; PAD.set(k, c); } return c; }
+  /** One scene at its local time, on its own canvas (blend modes only mix with this scene's layers, as in the preview) */
+  function sceneFrame(key, P, sc, local, s, D, cw, ch) {
+    const c = pad(key, cw, ch), g = c.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.filter = 'none'; g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, cw, ch);
+    g.drawImage(P.bg, 0, 0, cw, ch);
+    P.items.forEach((it) => {
+      const ls = stateOf(P.T, it.l, local, sc.dur, D); if (ls.o <= 0.002 || ls.s <= 0.001) return;
+      const l = it.l, cx = (l.x + l.w / 2) * s, cy = (l.y + l.h / 2) * s;
+      if (it.bbl) { // frosted glass: what is under the layer, blurred, inside its shape
+        const snap = pad('snap', cw, ch), sg = snap.getContext('2d'); sg.clearRect(0, 0, cw, ch); sg.drawImage(c, 0, 0);
+        g.save(); g.globalAlpha = ls.o; shapePath(g, l, ls, s); g.clip(); g.setTransform(1, 0, 0, 1, 0, 0);
+        g.filter = `blur(${(it.bbl * s).toFixed(1)}px)`; g.drawImage(snap, 0, 0); g.restore();
+      }
+      g.save(); g.globalAlpha = ls.o; g.globalCompositeOperation = it.blend;
+      g.translate(cx + ls.tx * s, cy + ls.ty * s); g.rotate((ls.r * Math.PI) / 180); g.scale(ls.s, ls.s); g.translate(-cx, -cy);
+      if (ls.clip) { const k = ls.clip; g.beginPath(); g.rect((l.x + l.w * k[3] / 100) * s, (l.y + l.h * k[0] / 100) * s, l.w * s * (1 - (k[1] + k[3]) / 100), l.h * s * (1 - (k[0] + k[2]) / 100)); g.clip(); }
+      if (ls.blur > 0.3) g.filter = `blur(${(ls.blur * s).toFixed(1)}px)`;
+      g.drawImage(it.cv, it.x * s, it.y * s, it.w * s, it.h * s); g.restore();
+    });
+    return c;
+  }
+  function frame(ctx, d, prep, tl, t, s) {
+    const [W, H] = RATIOS[d.ratio], D = Math.min(W, H) * 0.08, f = MO.frameAt(tl, t), [a, b] = f.prev ? MO.transition(f.cur.tr, f.p, W, H) : [MO.ID(), null];
+    const cw = ctx.canvas.width, ch = ctx.canvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
+    [...(f.prev ? [[f.prev, f.prev.dur, b, 'prev']] : []), [f.cur, f.local, a, 'cur']].forEach(([sc, local, st, key]) => {
+      const img = sceneFrame(key, prep[sc.i], sc, local, s, D, cw, ch); ctx.save();
+      ctx.translate((W / 2 + st.tx) * s, (H / 2 + st.ty) * s); ctx.scale(st.s, st.s); ctx.translate(-W / 2 * s, -H / 2 * s);
+      if (st.clip) { ctx.beginPath(); ctx.rect(W * s * st.clip[3] / 100, H * s * st.clip[0] / 100, W * s * (1 - (st.clip[1] + st.clip[3]) / 100), H * s * (1 - (st.clip[0] + st.clip[2]) / 100)); ctx.clip(); }
+      ctx.globalAlpha = st.o; ctx.drawImage(img, 0, 0, W * s, H * s);
+      ctx.restore();
+    });
+    AU.drawCaption(ctx, d, tl, t, s, W, H);
+  }
+  async function record(d, { s, fps, mime, onStep, signal }) {
+    const [W, H] = RATIOS[d.ratio], prep = await prepare(d, s, (p) => onStep('prep', p)); if (signal.stop) return null;
+    const tl = MO.timeline(d.pages), c = document.createElement('canvas'); c.width = Math.round(W * s / 2) * 2; c.height = Math.round(H * s / 2) * 2; // even sizes for H.264
+    const ctx = c.getContext('2d'); frame(ctx, d, prep, tl, 0, s);
+    const au = await AU.exportSetup(d, tl); if (signal.stop) { au && au.stop(); return null; } // music and voice, mixed with Web Audio
+    const stream = new MediaStream([...c.captureStream(fps).getVideoTracks(), ...(au ? au.tracks : [])]), rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: Math.round(Math.min(16e6, c.width * c.height * fps * 0.12)) }), chunks = [];
+    rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+    const stopped = new Promise((r) => (rec.onstop = r));
+    rec.start(250); const t0 = performance.now() + (au ? au.start() : 0); // the audio starts a few ms later: the frames wait for it
+    await new Promise((done) => {
+      const step = () => {
+        if (signal.stop) return done(); const t = Math.max(0, performance.now() - t0);
+        if (t >= tl.total) { frame(ctx, d, prep, tl, tl.total - 1, s); return setTimeout(done, 1000 / fps * 2); }
+        frame(ctx, d, prep, tl, t, s); onStep('rec', t / tl.total); requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+    rec.stop(); await stopped; stream.getTracks().forEach((x) => x.stop()); au && au.stop(); PAD.clear();
+    return signal.stop ? null : new Blob(chunks, { type: mime.split(';')[0] });
+  }
+  const _ox37 = openExport;
+  openExport = function (d, pi) {
+    if (!isMo(d)) return _ox37.apply(this, arguments);
+    exitPreview(true);
+    const ms = mimes(), [W, H] = RATIOS[d.ratio], tl = MO.timeline(d.pages), short = Math.min(W, H);
+    const sizes = [[1, `${W} × ${H} (full)`], ...(short > 720 ? [[720 / short, `${Math.round(W * 720 / short)} × ${Math.round(H * 720 / short)} (smaller file)`]] : [])];
+    const kinds = [...new Map(ms.map(([m, e]) => [e, m])).entries()];
+    let job = null;
+    modal(`<div class="mh"><h2>Export video</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb mo-ex"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 80, 100)}<div class="grow"><b class="sm-t">${esc(d.name)}</b><p class="xs-t muted">${tl.scenes.length} scene${tl.scenes.length > 1 ? 's' : ''} · ${MO.fmtTime(tl.total)} · ${W} × ${H}</p></div></div>
+        ${kinds.length ? `<div class="g2f"><label class="lab">Format<select class="field sm" id="mxF">${kinds.map(([e]) => `<option value="${e}">${e === 'mp4' ? 'MP4 (H.264)' : 'WebM'}</option>`).join('')}</select></label>
+          <label class="lab">Frame rate<select class="field sm" id="mxR">${[24, 30, 60].map((f) => `<option value="${f}" ${(d.motion.fps || 30) === f ? 'selected' : ''}>${f} fps</option>`).join('')}</select></label></div>
+          <label class="lab">Size<select class="field sm" id="mxS">${sizes.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+          ${kinds.some(([e]) => e === 'mp4') ? '' : `<div class="note warn">${ic('alert', 16)}<span>This browser records WebM only. Instagram and TikTok need MP4: export from Chrome or Safari, or convert the file.</span></div>`}
+          <div class="mo-prog" id="mxP" hidden><div class="mo-bar2"><i></i></div><span class="xs-t muted" id="mxPt"></span></div>
+          <p class="xs-t muted">The video records in real time (${Math.ceil(tl.total / 1000)} s). Keep this tab open and visible until it finishes.</p>`
+        : `<div class="note warn">${ic('alert', 16)}<span>This browser can’t record video. Use a recent Chrome, Edge or Safari, or export the scenes as images.</span></div>`}</div>
+      <div class="mf"><button class="btn link sm" id="mxStill">Export still images instead</button><span class="grow"></span><button class="btn secondary" data-close>Cancel</button>${kinds.length ? `<button class="btn primary" id="mxGo">${ic('download', 16)}Export video</button>` : ''}</div>`, {
+      onClose: () => { if (job) job.stop = true; },
+      onMount: (bg, close) => {
+        $('#mxStill', bg).addEventListener('click', () => { close(); _ox37.call(this, d, pi); });
+        const go = $('#mxGo', bg); if (!go) return;
+        go.addEventListener('click', async () => {
+          const ext = $('#mxF', bg).value, mime = kinds.find(([e]) => e === ext)[1], fps = +$('#mxR', bg).value, s = +$('#mxS', bg).value;
+          const bar = $('#mxP i', bg), txt = $('#mxPt', bg); $('#mxP', bg).hidden = false; go.disabled = true; $$('select', bg).forEach((x) => (x.disabled = true));
+          job = { stop: false };
+          try {
+            const blob = await record(d, { s, fps, mime, signal: job, onStep: (k, p) => { bar.style.width = (k === 'prep' ? p * 30 : 30 + p * 70).toFixed(1) + '%'; txt.textContent = k === 'prep' ? 'Preparing layers…' : `Recording ${MO.fmtTime(p * tl.total, false)} / ${MO.fmtTime(tl.total, false)}`; } });
+            if (!blob) return; RT.download(blob, RT.fileBase(d) + '.' + ext); job = null; close(); toast(`Video exported (${ext.toUpperCase()}, ${(blob.size / 1048576).toFixed(1)} MB)`);
+          } catch (e) { console.error('[motion] export failed', e); job = null; go.disabled = false; $$('select', bg).forEach((x) => (x.disabled = false)); txt.textContent = 'The video could not be recorded. Try a smaller size or another browser.'; }
+        });
+      },
+    });
+  };
+  RT.motion = { play, pause, exitPreview, record }; // for the agent and tests
+})();
+
+/* ============ v38 · audio in videos: music, a voice-over per scene (script by Claude, voice by AI or recorded), captions ============ */
+/* `d.audio` holds the music bed and the options, `pg.scene.vo` the line of each scene and its clip. The Audio tab edits them,
+   the timeline shows a Music and a Voice lane, the preview plays them in sync and the export mixes them into the MP4.
+   Script: Claude (POST /ai/voice-script). Voice: local and free on the API's server, Kokoro for English and French, Piper for
+   Arabic (POST /ai/voiceover). Music: composed in the browser (composer.js). Math: audio.js. */
+(function () {
+  Object.assign(IC, {
+    music38: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    mic38: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+    wave38: '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
+    cc38: '<rect width="18" height="14" x="3" y="5" rx="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/>',
+    stop38: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  });
+  const isMo = (d) => !!(d && d.motion), TL = () => MO.timeline(ED.d.pages), A = () => AUD.audioOf(ED.d);
+  const setA = (patch) => { ED.d.audio = { ...A(), ...patch }; touch(); save(); };
+  const label = (i) => { const k = MO.sceneOf(ED.d.pages[i]).k; return k !== 'body' ? MO.KINDS[k] : 'Scene ' + ED.d.pages.slice(0, i + 1).filter((p) => MO.sceneOf(p).k === 'body').length; };
+  const setVo = (pg, patch) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), ...patch } }; };
+  const S = { opts: null, busy: '', rec: null, play: null, prompt: '' }; // panel state: AI options, running job, recording, clip preview
+
+  /* ---------- files: upload, recording, length ---------- */
+  const toDataUrl = (blob) => new Promise((r, j) => { const f = new FileReader(); f.onload = () => r(f.result); f.onerror = j; f.readAsDataURL(blob); });
+  async function upload(blob) {
+    if (blob.size > 12 * 1024 * 1024) throw new Error('This audio file is larger than 12 MB');
+    return api('/media/audio', { method: 'POST', body: { dataUrl: await toDataUrl(blob) } });
+  }
+  let actx = null; const ac = () => actx || (actx = new (window.AudioContext || window.webkitAudioContext)());
+  /** Length in ms, decoded (recorded WebM files often report no duration) */
+  async function lengthOf(url) { try { const b = await ac().decodeAudioData(await (await fetch(url)).arrayBuffer()); return Math.round(b.duration * 1000); } catch (e) { return 0; } }
+  async function options() { if (S.opts) return S.opts; try { S.opts = await api('/ai/audio/options'); } catch (e) { S.opts = { voices: [], ready: false, error: e.message }; } return S.opts; }
+
+  /* ---------- preview: <audio> elements kept in sync with the playhead ---------- */
+  const els = new Map();
+  const el = (src) => { let a = els.get(src); if (!a) { a = new Audio(); a.crossOrigin = 'anonymous'; a.preload = 'auto'; a.src = src; els.set(src, a); } return a; };
+  const sync = (a, sec) => { if (a.paused) { try { a.currentTime = sec; } catch (e) {} a.play().catch(() => {}); } else if (Math.abs(a.currentTime - sec) > 0.3) { try { a.currentTime = sec; } catch (e) {} } };
+  const AU = RT.moAudio;
+  AU.tick = (t) => {
+    const d = ED.d; if (!d) return; const a = A(), tl = TL(), cl = AUD.clips(d.pages, tl, a), on = new Set();
+    if (a.music && a.music.src) { const m = el(a.music.src); m.loop = true; on.add(m); m.volume = AUD.musicGain(t, tl.total, a, cl); if (m.duration) sync(m, (t / 1000) % m.duration); else if (m.paused) m.play().catch(() => {}); }
+    cl.filter((c) => t >= c.start && t < c.end).forEach((c) => { const v = el(c.src); on.add(v); v.volume = Math.min(1, c.vol); sync(v, (t - c.start) / 1000); });
+    els.forEach((x) => { if (!on.has(x) && !x.paused && x !== S.play) x.pause(); });
+  };
+  AU.stop = () => els.forEach((x) => { if (x !== S.play) x.pause(); });
+  AU.caption = (t) => (ED.d ? AUD.captionAt(ED.d.pages, TL(), t, A()) : null);
+
+  /* ---------- export: decoded buffers scheduled on a Web Audio graph, recorded with the frames ---------- */
+  AU.exportSetup = async (d, tl) => {
+    if (!AUD.hasAudio(d)) return null;
+    const a = AUD.audioOf(d), cl = AUD.clips(d.pages, tl, a), ctx = new (window.AudioContext || window.webkitAudioContext)(), dest = ctx.createMediaStreamDestination();
+    const buf = async (url) => ctx.decodeAudioData(await (await fetch(url)).arrayBuffer());
+    const music = a.music && a.music.src ? await buf(a.music.src).catch(() => null) : null;
+    const voices = await Promise.all(cl.map(async (c) => ({ c, b: await buf(c.src).catch(() => null) })));
+    return {
+      tracks: dest.stream.getAudioTracks(),
+      start() {
+        const T0 = ctx.currentTime + 0.08, end = T0 + tl.total / 1000;
+        // a limiter on the mix: a loud voice over the music never clips
+        const bus = ctx.createDynamicsCompressor(); bus.threshold.value = -6; bus.knee.value = 4; bus.ratio.value = 12; bus.attack.value = 0.003; bus.release.value = 0.2; bus.connect(dest);
+        if (music) { const s = ctx.createBufferSource(), g = ctx.createGain(); s.buffer = music; s.loop = true; g.gain.setValueCurveAtTime(AUD.musicCurve(tl.total, a, cl), T0, tl.total / 1000); s.connect(g).connect(bus); s.start(T0); s.stop(end); }
+        voices.forEach(({ c, b }) => { if (!b) return; const s = ctx.createBufferSource(), g = ctx.createGain(); s.buffer = b; g.gain.value = Math.min(1, c.vol); s.connect(g).connect(bus); s.start(T0 + c.start / 1000); });
+        return 80;
+      },
+      stop() { ctx.close().catch(() => {}); },
+    };
+  };
+  AU.drawCaption = (ctx, d, tl, t, s, W, H) => {
+    const text = AUD.captionAt(d.pages, tl, t, AUD.audioOf(d)); if (!text) return;
+    const fs = Math.round(W * 0.046) * s, pad = fs * 0.55, maxW = W * s * 0.84, font = (brand().fonts && brand().fonts.body) || 'Inter';
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.font = `700 ${fs}px '${font}', sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const lines = AUD.wrap(text, maxW - pad * 2, (x) => ctx.measureText(x).width), lh = fs * 1.25, bw = Math.min(maxW, Math.max(...lines.map((x) => ctx.measureText(x).width)) + pad * 2), bh = lines.length * lh + pad * 1.2;
+    const cx = W * s / 2, y = H * s * (H > W ? 0.72 : 0.82) - bh / 2;
+    ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(cx - bw / 2, y, bw, bh, fs * 0.4) : ctx.rect(cx - bw / 2, y, bw, bh); ctx.fill();
+    ctx.fillStyle = '#fff'; lines.forEach((x, i) => ctx.fillText(x, cx, y + pad * 0.6 + lh * (i + 0.5)));
+    ctx.restore();
+  };
+
+  /* ---------- timeline: a Music and a Voice lane under the scenes ---------- */
+  AU.labels = () => (ED.d && isMo(ED.d) ? `<div class="mo-gl-r au-lbl">${ic('music38', 13, 'faint')}<span>Music</span></div><div class="mo-gl-r au-lbl">${ic('mic38', 13, 'faint')}<span>Voice</span></div>` : '');
+  AU.lanes = (K, tl) => {
+    const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track);
+    const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${tl.total * K}px" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
+    const lines = tl.scenes.map((s) => { const vo = AUD.voOf(d.pages[s.i]), c = cl.find((x) => x.i === s.i), text = vo && String(vo.text || '').trim(); if (!c && !text) return '';
+      const name = text || vo.name || 'Voice';
+      return c ? `<button class="au-clip au-v${c.over ? ' over' : ''}" data-act="au38Open" style="left:${c.start * K}px;width:${Math.max(8, c.dur * K)}px" title="${esc(label(s.i))}: ${text ? `“${esc(text)}”` : esc(name)}${c.over ? ' · runs past the scene' : ''}">${ic('wave38', 11)}<span>${esc(name)}</span></button>`
+        : `<button class="au-clip au-s" data-act="au38Open" style="left:${(s.start + AUD.LEAD) * K}px;width:${Math.max(8, s.dur * K - AUD.LEAD * K - 4)}px" title="Script only: no voice yet">${esc(text)}</button>`; }).join('');
+    const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${tr.start * K}px;width:${Math.max(8, tr.dur * K)}px" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
+    return `<div class="mo-lane au-lane">${music}</div><div class="mo-lane au-lane">${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}</div>`;
+  };
+
+  /* ---------- left rail: Audio, for videos ---------- */
+  const ri = RAIL.findIndex((r) => r[0] === 'motion'); RAIL.splice(ri + 1, 0, ['audio', 'Audio', 'music38']);
+  const _rl38 = edRail;
+  edRail = function () {
+    if (ED.d && !isMo(ED.d) && ED.tab === 'audio') ED.tab = 'templates';
+    const r = _rl38.apply(this, arguments), b = ED.d && !isMo(ED.d) && $('#edRail [data-k=audio]'); b && b.remove();
+    return r;
+  };
+  const sw = (on, act, lbl) => `<button type="button" class="switch ${on ? 'on' : ''}" data-act="${act}" aria-label="${lbl}" aria-pressed="${on}"></button>`;
+  /** The local voices that speak the script's language: Kokoro (English, French…); for Arabic, SILMA and the Habibi
+      dialects, each with the built-in sample voice and the brand's own voice samples (brand.voices) */
+  const LANG_CODES = { English: ['en-us', 'en-gb'], French: ['fr-fr'], Arabic: ['ar'], Spanish: ['es'], Italian: ['it'], Portuguese: ['pt-br'], German: ['de'], Turkish: ['tr'] };
+  const langOf = (a) => a.language || brand().lang || 'English';
+  function voiceChoice(a, o) {
+    const all = o.voices || [], codes = LANG_CODES[langOf(a)] || [], fit = all.filter((v) => codes.includes(v.lang)), own = brandVoices();
+    const groups = [...new Map(fit.filter((v) => v.engine === 'f5').map((v) => [v.model, v.group])).entries()];
+    const list = [...fit.filter((v) => v.engine !== 'f5'), ...groups.flatMap(([m, g]) => [
+      ...fit.filter((v) => v.model === m), ...own.map((r) => ({ id: `f5:${m}:b:${r.id}`, name: r.name, lang: 'ar', engine: 'f5', model: m, group: g, own: r }))])];
+    const cur = list.find((v) => v.id === a.voice) || list.find((v) => v.id === 'af_heart') || list.find((v) => v.id === 'f5:silma:silma') || list[0];
+    return { list, cur, missing: !!o.ready && !list.length };
+  }
+  /** The brand's own voice samples ({ id, name, src, text }), for the Arabic models that speak in the voice of a clip */
+  const brandVoices = () => (Array.isArray(brand().voices) ? brand().voices : []).filter((r) => r && r.id && r.src && r.text);
+  const mediaId = (src) => (/\/media\/([0-9a-f]{24})\./.exec(String(src || '')) || [])[1];
+  /** Short model names for the closed voice list: "Egyptian · Silma voice" */
+  const MODEL_SHORT = { silma: 'SILMA Fusha', 'habibi-MSA': 'Habibi Fusha', 'habibi-EGY': 'Egyptian', 'habibi-MAR': 'Moroccan', 'habibi-ALG': 'Algerian' };
+  /** 16-bit PCM WAV from Web Audio buffer data (mono) */
+  function wavOf(buf) {
+    const ch = buf.numberOfChannels > 1 ? buf.getChannelData(0).map((x, i) => (x + buf.getChannelData(1)[i]) / 2) : buf.getChannelData(0), n = ch.length, out = new DataView(new ArrayBuffer(44 + n * 2)), sr = buf.sampleRate;
+    const w = (o, t) => [...t].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); out.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+    out.setUint32(24, sr, true); out.setUint32(28, sr * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) { const v = Math.max(-1, Math.min(1, ch[i])); out.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true); }
+    return new Blob([out.buffer], { type: 'audio/wav' });
+  }
+  const decode = async (url) => ac().decodeAudioData(await (await fetch(url)).arrayBuffer());
+  const slug = (x) => String(x || '').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40) || 'voice';
+  const ibtn = (act, icon, tip, extra = '') => `<button type="button" class="btn ghost icon sm au2-ib" data-act="${act}" data-tip="${esc(tip)}" aria-label="${esc(tip)}" ${extra}>${ic(icon, 15)}</button>`;
+  const playing = (src) => S.play && S.play.src === src && !S.play.paused;
+  const moodKey = (a) => (a.mood && a.mood !== 'auto' ? a.mood : COMP.moodFor(a.tone, TL().total / Math.max(1, ED.d.pages.length)));
+
+  /* ---------- the Audio panel: one action, two tracks, the script folded ---------- */
+  function panelHTML(a, o) {
+    const d = ED.d, tl = TL(), m = a.music, tk = a.track, { list, cur, missing } = voiceChoice(a, o);
+    const lines = d.pages.map((pg, i) => ({ i, s: tl.scenes[i], vo: AUD.voOf(pg) || {} })), voiced = lines.filter((x) => x.vo.src).length, texted = lines.filter((x) => String(x.vo.text || '').trim()).length;
+    const anyAudio = !!(m || tk || voiced), busy = S.busy, spin = '<i class="au-spin"></i>';
+    const opt = (v) => `<option value="${esc(v.id)}" ${cur && cur.id === v.id ? 'selected' : ''}>${v.model ? `${esc(MODEL_SHORT[v.model] || v.model)} · ` : ''}${esc(v.name)}${v.gender ? ` · ${v.gender === 'female' ? 'F' : 'M'}` : ''}${langOf(a) === 'English' ? ` · ${v.lang === 'en-gb' ? 'UK' : 'US'}` : ''}</option>`;
+    const voiceOpts = list.filter((v) => !v.group).map(opt).join('') + [...new Set(list.filter((v) => v.group).map((v) => v.group))].map((g) => `<optgroup label="${esc(g)}">${list.filter((v) => v.group === g).map(opt).join('')}</optgroup>`).join('');
+    const moods = [['auto', 'Auto mood'], ...Object.entries(COMP.MOODS).map(([k, x]) => [k, x.name]), ['none', 'No music']];
+    const gen = `<div class="au2-gen">
+        <div class="au2-pick">${o.ready && list.length ? `<label class="au2-sel" data-tip="Voice">${ic('mic38', 15)}<select data-au="voice" aria-label="Voice">${voiceOpts}</select></label>` : ''}
+          <label class="au2-sel" data-tip="Music mood">${ic('music38', 15)}<select data-au="mood" aria-label="Music mood">${moods.map(([k, n]) => `<option value="${k}" ${(a.mood || 'auto') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label></div>
+        <button class="btn primary au2-go" data-act="au38Make" ${busy ? 'disabled' : ''}>${busy === 'make' ? spin + esc(S.progress || 'Working…') : ic('wand', 16) + (anyAudio ? 'Regenerate voice & music' : 'Generate voice & music')}</button>
+        ${missing ? `<p class="au2-warn">${ic('alert', 14)}No ${esc(langOf(a))} voice installed: music only.${langOf(a) === 'Arabic' ? ' Run backend/tts/setup.sh to add the Arabic voice.' : ''}</p>` : ''}
+        ${!o.ready ? `<p class="au2-warn">${ic('alert', 14)}${o.error ? 'The voice engine did not answer: ' + esc(o.error) + '.' : 'No voice engine on the server yet: run backend/tts/setup.sh once, then restart the API. It is free and works offline.'} Music still works.</p>` : ''}</div>`;
+    const musicRow = m ? `<div class="au2-tr" data-drop="music"><span class="au2-ic m">${ic('music38', 15)}</span>
+        <div class="au2-meta"><b>${esc(m.name || 'Music')}</b><small>${m.gen ? 'Composed for this video' : 'Your file'}${m.dur ? ' · ' + MO.fmtTime(m.dur, false) : ''}</small></div>
+        <input type="range" class="au2-vol" min="0" max="1" step="0.05" data-au="mvol" value="${m.vol ?? 0.35}" aria-label="Music volume" data-tip="Volume">
+        ${ibtn('au38Prev', playing(m.src) ? 'pause37' : 'play37', 'Play the music', `data-src="${esc(m.src)}"`)}${ibtn('au38Compose', 'refresh', 'New variation', busy ? 'disabled' : '')}${ibtn('au38MusicMenu', 'more', 'More')}</div>`
+      : `<div class="au2-tr empty" data-drop="music"><span class="au2-ic m">${ic('music38', 15)}</span><div class="au2-meta"><b>Music</b><small>${busy === 'music' ? 'Composing…' : 'None yet'}</small></div>
+        <button class="btn secondary sm" data-act="au38Compose" ${busy ? 'disabled' : ''}>${busy === 'music' ? spin : ic('wand', 14)}Compose</button>${ibtn('au38MusicMenu', 'more', 'More')}</div>`;
+    const vName = tk ? tk.name || 'Voiceover' : cur ? cur.name : 'Voice';
+    const voiceRow = (voiced || tk) ? `<div class="au2-tr" data-drop="voice"><span class="au2-ic v">${ic('mic38', 15)}</span>
+        <div class="au2-meta"><b>${esc(vName)}</b><small>${tk ? 'Whole video · ' + AUD.fmtSec(tk.dur || 0) : `${voiced}/${lines.length} lines voiced`}${(a.speed || 1) !== 1 ? ` · ${(a.speed).toFixed(2)}×` : ''}</small></div>
+        ${ibtn('au38PlayAll', 'play37', 'Play the video with sound')}${o.ready && !missing ? ibtn('au38VoiceAll', 'refresh', 'Regenerate every line', busy || !texted ? 'disabled' : '') : ''}${ibtn('au38Wav', 'download', 'Download the voice-over (WAV)', busy ? 'disabled' : '')}${ibtn('au38VoiceMenu', 'more', 'More')}</div>`
+      : `<div class="au2-tr empty" data-drop="voice"><span class="au2-ic v">${ic('mic38', 15)}</span><div class="au2-meta"><b>Voice</b><small>${busy === 'all' ? esc(S.progress || 'Generating…') : texted ? `${texted} line${texted > 1 ? 's' : ''} written, not voiced` : 'None yet'}</small></div>
+        ${o.ready && !missing && texted ? `<button class="btn secondary sm" data-act="au38VoiceAll" ${busy ? 'disabled' : ''}>${busy === 'all' ? spin : ic('wave38', 14)}Voice</button>` : ''}${ibtn('au38VoiceMenu', 'more', 'More')}</div>`;
+    const lineHTML = ({ i, s, vo }) => {
+      const f = AUD.fit(vo.text, s.dur), stale = vo.src && vo.by !== 'file' && vo.srcText !== vo.text, rec = S.rec && S.rec.i === i, has = String(vo.text || '').trim(), over = vo.src && vo.dur > s.dur - AUD.LEAD;
+      return `<div class="au2-line${ED.pi === i ? ' cur' : ''}" data-i="${i}"><div class="au2-lh">
+          <button class="au2-scene" data-act="mo37Scene" data-i="${i}">${esc(label(i))}</button><small class="au2-len">${AUD.fmtSec(s.dur)}</small>
+          ${has && !f.ok ? `<small class="au2-bad" data-tip="About ${f.ideal} words fit">Too long</small>` : over ? `<small class="au2-bad" data-tip="The voice is longer than the scene">Voice too long</small>` : stale ? `<small class="au2-bad">Changed</small>` : vo.src ? `<small class="au2-ok">${ic('check', 12)}${AUD.fmtSec(vo.dur || 0)}</small>` : ''}
+          <span class="grow"></span>
+          ${rec ? `<button class="btn danger sm" data-act="au38Rec" data-i="${i}">${ic('stop38', 13)}<span class="au-timer" id="au38T">0:00</span></button>`
+            : `${vo.src ? ibtn('au38Prev', playing(vo.src) ? 'pause37' : 'play37', 'Play', `data-src="${esc(vo.src)}"`) : ''}${o.ready && !missing ? ibtn('au38Voice', 'wave38', vo.src ? 'Regenerate' : 'Generate', `data-i="${i}" ${!has || busy ? 'disabled' : ''}`) : ''}${ibtn('au38LineMenu', 'more', 'More', `data-i="${i}"`)}`}</div>
+        <textarea class="field au2-ta" data-au="line" data-i="${i}" dir="auto" rows="2" maxlength="600" placeholder="What is said here?">${esc(vo.text || '')}</textarea></div>`;
+    };
+    const script = `<div class="au2-script"><div class="au2-sh"><button type="button" class="au2-tog" data-act="au38ScriptToggle" aria-expanded="${!!S.scriptOpen}">${ic(S.scriptOpen ? 'chevD' : 'chevR', 15)}<b>Script</b><small>${texted}/${lines.length}</small></button>
+        <span class="grow"></span><select class="au2-lang" data-au="language" aria-label="Language">${AUD.LANGUAGES.map((x) => `<option ${langOf(a) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        ${ibtn('au38Script', 'studio', texted ? 'Rewrite with Claude' : 'Write with Claude', busy ? 'disabled' : '')}</div>
+      ${S.scriptOpen ? `<div class="au2-lines">${lines.map(lineHTML).join('')}</div>` : ''}</div>`;
+    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(!!a.captions, 'au38Cc', 'Show captions')}</div>
+        <div class="au2-opt">${ic('music38', 15)}<span>Lower music under the voice</span>${sw(a.duck !== false, 'au38Duck', 'Lower the music under the voice')}</div></div>`;
+    return `<div class="au2-head"><h3>Audio</h3>${user.role === 'admin' ? ibtn('au38PanelMenu', 'more', 'More') : ''}</div>${gen}<div class="au2-tracks">${musicRow}${voiceRow}</div>${script}${opts}`;
+  }
+  const _pn38 = edPanel;
+  edPanel = function () {
+    if (ED.tab !== 'audio' || !ED.d || !isMo(ED.d)) return _pn38.apply(this, arguments);
+    const p = $('#edPanel'), o = S.opts || { voices: [], ready: false }; p.classList.remove('agent');
+    p.innerHTML = panelHTML(A(), o);
+    if (!S.opts) options().then(() => { if (ED.tab === 'audio') edPanel(); });
+  };
+  const redraw = () => { if (ED.tab === 'audio') { const p = $('#edPanel'), y = p ? p.scrollTop : 0; edPanel(); if (p) p.scrollTop = y; } edPages(); };
+
+  /* ---------- AI: script (Claude), voice (Kokoro / Piper on the server, free), music (in the browser) ---------- */
+  const scenesBrief = () => { const tl = TL(); return ED.d.pages.map((pg, i) => ({ kind: MO.sceneOf(pg).k, seconds: Math.max(0.5, tl.scenes[i].dur / 1000), texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim()).sort((x, y) => (y.size || 0) - (x.size || 0)).map((l) => String(l.text).replace(/\s+/g, ' ').trim().slice(0, 400)).slice(0, 12) })); };
+  async function voiceFor(i) {
+    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {}, text = String(vo.text || '').trim(); if (!text) return;
+    const o = await options(), a = A(), { cur } = voiceChoice(a, o);
+    if (!cur) throw new Error(`No ${langOf(a)} voice is installed`);
+    const voice = cur.own ? { voice: `f5:${cur.model}:custom`, refMedia: mediaId(cur.own.src), refText: cur.own.text } : { voice: cur.id };
+    const r = await api('/ai/voiceover', { method: 'POST', body: { text, ...voice, speed: a.speed || 1, ...(cur.engine === 'kokoro' ? { lang: cur.lang } : {}) } });
+    const dur = await lengthOf(r.url);
+    if (vo.src && vo.src !== r.url) drop(vo.src);
+    const pre = snap(); setVo(pg, { src: r.url, dur, by: 'ai', srcText: vo.text }); commit(pre);
+  }
+  async function job(kind, fn, done) {
+    if (!canEdit() || S.busy) return; S.busy = kind; redraw();
+    try { await fn(); done && toast(done); } catch (e) { toast(e.message || 'Something went wrong'); }
+    S.busy = ''; S.progress = ''; redraw();
+  }
+
+  /* ---------- recording with the microphone ---------- */
+  async function startRec(i) {
+    if (!navigator.mediaDevices || !window.MediaRecorder) return toast('This browser can’t record audio');
+    let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); } catch (e) { return toast('Microphone access was blocked. Allow it in the browser to record.'); }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || '';
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined), chunks = [], t0 = Date.now();
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach((x) => x.stop()); clearInterval(S.rec && S.rec.timer); S.rec = null;
+      const ms = Date.now() - t0; if (ms < 400) return redraw();
+      await job('v' + i, async () => { const r = await upload(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); const pg = ED.d.pages[i], pre = snap(), old = (AUD.voOf(pg) || {}).src; if (old && old !== r.url) drop(old); setVo(pg, { src: r.url, dur: (await lengthOf(r.url)) || ms, by: 'rec', srcText: (AUD.voOf(pg) || {}).text || '' }); commit(pre); }, 'Recording saved');
+    };
+    rec.start(); S.rec = { i, rec, timer: setInterval(() => { const t = $('#au38T'); if (t) t.textContent = MO.fmtTime(Date.now() - t0, false); }, 250) };
+    redraw();
+  }
+
+  /* ---------- stored files: clips taken off a video are deleted once you leave it (undo still works while you're in it) ---------- */
+  const dropped = new Map(); // design id → audio URLs it stopped using
+  const drop = (src) => { if (!src || !ED.d) return; const k = ED.d.id; if (!dropped.has(k)) dropped.set(k, new Set()); dropped.get(k).add(src); };
+  const fileId = (src) => (/\/media\/([0-9a-f]{24})\./.exec(src || '') || [])[1];
+  async function purge(d) {
+    const set = d && dropped.get(d.id); if (!set || !set.size) return; dropped.delete(d.id);
+    const json = JSON.stringify(getD(d.id) || {}), ids = [...set].map(fileId).filter((id) => id && !json.includes(id));
+    if (!ids.length) return;
+    await persist.flush().catch(() => {}); // the server must see the design without them first
+    for (const id of ids) await api('/media/audio/' + id, { method: 'DELETE' }).catch(() => {}); // still used elsewhere: the server keeps it
+  }
+  const _oe38 = openEditor;
+  openEditor = function () { const prev = ED.d; const r = _oe38.apply(this, arguments); if (prev && prev !== ED.d) purge(prev); return r; };
+  addEventListener('hashchange', () => { if (ED.d && !location.hash.startsWith('#/editor/' + ED.d.id)) purge(ED.d); });
+
+  /* ---------- importing voice files (e.g. made with Claude Code) ---------- */
+  const isAudio = (f) => /^audio\//.test(f.type) || /\.(mp3|wav|m4a|ogg|oga|flac|webm|aac)$/i.test(f.name);
+  const nameOf = (f) => f.name.replace(/\.[^.]+$/, '').slice(0, 60);
+  function importVoice(list) {
+    const files = AUD.byName([...list].filter(isAudio)); if (!files.length) return toast('Choose audio files (MP3, WAV, M4A or OGG)');
+    if (files.length === 1) return job('v-track', async () => {
+      const r = await upload(files[0]), dur = await lengthOf(r.url), old = A().track; if (old && old.src !== r.url) drop(old.src);
+      setA({ track: { src: r.url, name: nameOf(files[0]), dur, vol: 1, at: 0 } });
+    }, 'Voiceover added to the whole video');
+    const n = Math.min(files.length, ED.d.pages.length);
+    return job('all', async () => {
+      const pre = snap();
+      for (let i = 0; i < n; i++) {
+        S.progress = `Uploading ${i + 1}/${n}…`; redraw();
+        const r = await upload(files[i]), pg = ED.d.pages[i], old = (AUD.voOf(pg) || {}).src; if (old && old !== r.url) drop(old);
+        setVo(pg, { src: r.url, dur: await lengthOf(r.url), by: 'file', name: nameOf(files[i]) });
+      }
+      commit(pre);
+      if (files.length > n) toast(`${n} files placed on the ${n} scenes. ${files.length - n} extra file${files.length - n > 1 ? 's were' : ' was'} left out`);
+    }, files.length > n ? '' : `${n} voice files placed, one per scene`);
+  }
+  async function importLine(i, f) {
+    if (!f || !isAudio(f)) return toast('Choose an audio file (MP3, WAV, M4A or OGG)');
+    await job('v' + i, async () => { const r = await upload(f), pg = ED.d.pages[i], old = (AUD.voOf(pg) || {}).src; if (old && old !== r.url) drop(old); const pre = snap(); setVo(pg, { src: r.url, dur: await lengthOf(r.url), by: 'file', name: nameOf(f) }); commit(pre); }, 'Voice added to ' + label(i));
+  }
+  /* drag and drop on the drop zones */
+  document.addEventListener('dragover', (e) => { const z = e.target.closest && e.target.closest('[data-drop]'); if (!z) return; e.preventDefault(); z.classList.add('over'); });
+  document.addEventListener('dragleave', (e) => { const z = e.target.closest && e.target.closest('[data-drop]'); if (z && !z.contains(e.relatedTarget)) z.classList.remove('over'); });
+  document.addEventListener('drop', (e) => {
+    const z = e.target.closest && e.target.closest('[data-drop]'); if (!z) return; e.preventDefault(); e.stopPropagation(); z.classList.remove('over');
+    const files = e.dataTransfer && e.dataTransfer.files; if (!files || !files.length || !canEdit()) return;
+    if (z.dataset.drop === 'voice') importVoice(files);
+    else uploadMusic(files);
+  }, true);
+
+  /* ---------- actions ---------- */
+  const stopPreview = () => { if (S.play) { S.play.pause(); S.play = null; } };
+  Object.assign(ACT, {
+    au38Open: () => ACT.edTab({ dataset: { k: 'audio' } }),
+    au38Clean: () => job('clean', async () => {
+      await persist.flush().catch(() => {});
+      const n = await api('/media/audio/cleanup', { method: 'POST', body: { dry: true } }), mb = (n.bytes / 1048576).toFixed(1);
+      if (!n.unused) return toast('No unused audio files to delete');
+      modal(`<div class="mh"><h2>Delete ${n.unused} unused audio file${n.unused > 1 ? 's' : ''}?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+        <div class="mb"><p class="sm-t">${n.unused} music or voice file${n.unused > 1 ? 's' : ''} (${mb} MB) that no video, saved version or template uses, in any brand. Files added in the last hour are kept. This can’t be undone.</p></div>
+        <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="au38CleanGo">${ic('trash', 16)}Delete ${n.unused} file${n.unused > 1 ? 's' : ''}</button></div>`, {
+        onMount: (bg, close) => $('#au38CleanGo', bg).addEventListener('click', () => { close(); job('clean', async () => { const r = await api('/media/audio/cleanup', { method: 'POST', body: {} }); toast(`Deleted ${r.deleted} unused file${r.deleted === 1 ? '' : 's'} (${(r.bytes / 1048576).toFixed(1)} MB)`); }); }),
+      });
+    }),
+    au38TrackDel: () => { stopPreview(); drop((A().track || {}).src); setA({ track: null }); redraw(); },
+    au38Fit: () => {
+      const tk = A().track; if (!tk || !tk.dur) return;
+      const durs = AUD.fitScenes(ED.d.pages.map((pg) => MO.sceneOf(pg).dur), (tk.at || 0) + tk.dur + 400);
+      mutate(() => ED.d.pages.forEach((pg, i) => { pg.scene = { ...MO.sceneOf(pg), dur: durs[i] }; }), () => {}); redraw(); toast('Scenes stretched to match the voice. Fine-tune them in the timeline');
+    },
+    au38MusicDel: () => { stopPreview(); drop((A().music || {}).src); setA({ music: null }); redraw(); },
+    au38FadeIn: () => { const m = A().music; m && setA({ music: { ...m, fadeIn: m.fadeIn === false } }); redraw(); },
+    au38FadeOut: () => { const m = A().music; m && setA({ music: { ...m, fadeOut: m.fadeOut === false } }); redraw(); },
+    au38Duck: () => { setA({ duck: A().duck === false }); redraw(); },
+    au38Cc: () => { setA({ captions: !A().captions }); redraw(); },
+    au38Prev: (a) => { const src = a.dataset.src; RT.motion.pause(); if (S.play && S.play.src === src && !S.play.paused) stopPreview(); else { stopPreview(); const x = new Audio(src); x.crossOrigin = 'anonymous'; x.onended = () => { S.play = null; redraw(); }; x.play().catch(() => toast('This audio can’t be played')); S.play = x; } redraw(); },
+    au38Script: () => job('script', async () => {
+      const a = A(), r = await api('/ai/voice-script', { method: 'POST', body: { brand: brand().name, voice: brand().voice || '', language: a.language || brand().lang || 'English', tone: a.tone || 'Auto', topic: a.topic || '', scenes: scenesBrief() } });
+      mutate(() => ED.d.pages.forEach((pg, i) => { if (r.lines[i] != null) setVo(pg, { text: r.lines[i] }); }), () => {});
+    }, 'Script written. Check each line, then make the voices'),
+    au38Voice: (a) => job('v' + a.dataset.i, () => voiceFor(+a.dataset.i), 'Voice ready'),
+    au38LineWav: async (a) => {
+      const i = +a.dataset.i, vo = AUD.voOf(ED.d.pages[i]); if (!vo || !vo.src) return;
+      try {
+        const name = `${RT.fileBase(ED.d)}-${slug(label(i))}.wav`;
+        if (/\.wav(\?|$)/i.test(vo.src)) return RT.download(await (await fetch(vo.src)).blob(), name); // the engine's own WAV, untouched
+        RT.download(wavOf(await decode(vo.src)), name); // a recording or an upload in another format
+      } catch (e) { toast('This voice could not be converted to WAV'); }
+    },
+    au38Wav: () => job('wav', async () => {
+      const d = ED.d, tl = TL(), cl = AUD.clips(d.pages, tl, A()); if (!cl.length) return toast('Generate or add a voice first');
+      const sr = 48000, end = Math.max(tl.total, ...cl.map((c) => c.end)), ctx = new OfflineAudioContext(1, Math.ceil((end / 1000) * sr), sr);
+      for (const c of cl) { const b = await decode(c.src).catch(() => null); if (!b) continue; const s0 = ctx.createBufferSource(), g = ctx.createGain(); s0.buffer = b; g.gain.value = Math.min(1, c.vol); s0.connect(g).connect(ctx.destination); s0.start(c.start / 1000); }
+      RT.download(wavOf(await ctx.startRendering()), `${RT.fileBase(d)}-voiceover.wav`);
+    }, 'Voice-over downloaded as WAV'),
+    au38VoiceAll: () => job('all', async () => {
+      const lines = ED.d.pages.map((pg, i) => ({ i, vo: AUD.voOf(pg) || {} })).filter((x) => String(x.vo.text || '').trim());
+      const missing = lines.filter((x) => !x.vo.src || x.vo.srcText !== x.vo.text), todo = missing.length ? missing : lines; // nothing missing: every line again
+      for (const [n, x] of todo.entries()) { S.progress = `Generating ${n + 1}/${todo.length}…`; redraw(); await voiceFor(x.i); }
+      fitToVoices();
+    }, 'All voices are ready. Press K to play the video'),
+    au38Rec: (a) => { const i = +a.dataset.i; if (S.rec && S.rec.i === i) return S.rec.rec.stop(); if (!canEdit()) return; stopPreview(); RT.motion.pause(); startRec(i); },
+    au38VoDel: (a) => { const pg = ED.d.pages[+a.dataset.i]; drop((AUD.voOf(pg) || {}).src); mutate(() => setVo(pg, { src: '', dur: 0, by: '', srcText: '' }), () => {}); redraw(); },
+  });
+  /* ---------- music composed for the video, and the one-click flow ---------- */
+  async function composeMusic(mood, seed = Math.floor(Math.random() * 1e9)) {
+    const tl = TL(), M = COMP.MOODS[mood] || COMP.MOODS.corporate;
+    const buf = await COMP.compose({ seconds: tl.total / 1000, mood, pace: tl.total / Math.max(1, tl.scenes.length), seed });
+    const r = await upload(wavOf(buf)), old = (A().music || {}).src; if (old && old !== r.url) drop(old);
+    setA({ music: { src: r.url, name: M.name, dur: Math.round(buf.duration * 1000), vol: (A().music || {}).vol ?? 0.35, gen: { mood, seed } } });
+  }
+  /** Scenes too short for their voice grow to fit it (a beat before and after) */
+  function fitToVoices() {
+    const need = ED.d.pages.map((pg) => { const vo = AUD.voOf(pg), s = MO.sceneOf(pg); return vo && vo.src && vo.dur + AUD.LEAD + 300 > s.dur ? Math.ceil((vo.dur + AUD.LEAD + 300) / 100) * 100 : 0; });
+    if (!need.some(Boolean)) return 0;
+    mutate(() => ED.d.pages.forEach((pg, i) => { if (need[i]) pg.scene = { ...MO.sceneOf(pg), dur: need[i] }; }), () => {});
+    return need.filter(Boolean).length;
+  }
+  const step = (t) => { S.progress = t; redraw(); };
+  /** File picker opened from a menu */
+  const pick = (multiple, cb) => { const i = document.createElement('input'); i.type = 'file'; i.accept = 'audio/*'; i.multiple = multiple; i.onchange = () => i.files && i.files.length && cb(i.files); i.click(); };
+  /** A small menu under a ⋯ button: rows [label, icon, fn, disabled, cls] or '-' */
+  /* ---------- a brand's own voice sample: the Arabic models (SILMA, Habibi) speak in the voice of a short clip ---------- */
+  function openSample() {
+    if (!canEdit()) return;
+    let clip = null, rec = null;
+    modal(`<div class="mh"><h2>Add a voice sample</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t muted" style="margin-bottom:12px">SILMA and Habibi speak in the voice of a short clip: 5 to 8 seconds of one person, clear, without music. Type exactly what is said in it.</p>
+        <label class="lab">Name<input class="field" id="vsN" maxlength="40" placeholder="e.g. Sara, our presenter" autocomplete="off"></label>
+        <div class="row" style="gap:8px;margin:12px 0"><button class="btn secondary sm" id="vsRec">${ic('mic38', 14)}Record</button><button class="btn secondary sm" id="vsFile">${ic('upload', 14)}Choose a file</button><span class="sm-t muted" id="vsInfo">No clip yet</span></div>
+        <label class="lab">What is said in the clip<textarea class="field" id="vsT" rows="3" maxlength="400" dir="auto"></textarea></label>
+        <label class="row sm-t" style="gap:8px;margin-top:12px;align-items:flex-start"><input type="checkbox" id="vsOk"><span>The person in this clip agreed to have their voice used for this brand's videos.</span></label></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="vsGo">Save sample</button></div>`, {
+      onMount: (bg, close) => {
+        const info = $('#vsInfo', bg), set = async (b) => { clip = b; const ms = await (async () => { try { return Math.round((await ac().decodeAudioData(await b.arrayBuffer())).duration * 1000); } catch (e) { return 0; } })(); info.textContent = ms ? `Clip ready · ${AUD.fmtSec(ms)}${ms > 10000 ? ' (only the first 8 s are used)' : ms < 3000 ? ' (a bit short)' : ''}` : 'Clip ready'; };
+        $('#vsFile', bg).addEventListener('click', () => pick(false, (f) => set(f[0])));
+        $('#vsRec', bg).addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          if (rec) { rec.stop(); return; }
+          let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); } catch (err) { return toast('Microphone access was blocked. Allow it in the browser to record.'); }
+          const chunks = []; rec = new MediaRecorder(stream); rec.ondataavailable = (x) => x.data.size && chunks.push(x.data);
+          rec.onstop = () => { stream.getTracks().forEach((x) => x.stop()); btn.innerHTML = `${ic('mic38', 14)}Record again`; set(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); rec = null; };
+          rec.start(); btn.innerHTML = `${ic('stop38', 14)}Stop`; info.textContent = 'Recording…';
+        });
+        $('#vsGo', bg).addEventListener('click', async () => {
+          const name = $('#vsN', bg).value.trim(), text = $('#vsT', bg).value.trim();
+          if (!name) return toast('Give the voice a name');
+          if (!clip) return toast('Record or choose a clip');
+          if (!text) return toast('Type what is said in the clip');
+          if (!$('#vsOk', bg).checked) return toast('Only use a voice with the person’s agreement');
+          const go = $('#vsGo', bg); go.disabled = true;
+          try {
+            const r = await upload(clip), b = brand();
+            b.voices = [...brandVoices(), { id: uid(), name: name.slice(0, 40), src: r.url, text: text.slice(0, 400), at: Date.now() }];
+            save(); close(); redraw(); toast(`“${name}” added: pick it in the voice list`);
+          } catch (err) { go.disabled = false; toast(err.message || 'The clip could not be saved'); }
+        });
+        setTimeout(() => $('#vsN', bg).focus(), 30);
+      },
+    });
+  }
+  function dropSample(r) {
+    const b = brand(); b.voices = brandVoices().filter((x) => x.id !== r.id); save();
+    if (String(A().voice || '').endsWith(':b:' + r.id)) setA({ voice: '' });
+    redraw(); toast(`“${r.name}” removed`);
+  }
+  function menu(btn, rows) {
+    $$('#ctx').forEach((x) => x.remove()); const r = btn.getBoundingClientRect();
+    const c = document.createElement('div'); c.className = 'ctx au2-menu'; c.id = 'ctx'; c.setAttribute('role', 'menu');
+    c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 15)}${x[0]}</span></button>`)).join('');
+    document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
+    c.style.left = clamp(r.right - w, 8, innerWidth - w - 8) + 'px'; c.style.top = (r.bottom + 6 + h < innerHeight ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + 'px';
+    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); rows[+b.dataset.k][2](); } };
+    c.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Escape') { c.remove(); btn.focus(); } };
+    const f = $('button:not(:disabled)', c); f && f.focus();
+  }
+  const uploadMusic = (files) => { const f = [...files].find(isAudio); if (!f) return toast('Choose an audio file (MP3, WAV, M4A or OGG)'); job('upload', async () => { const r = await upload(f); stopPreview(); const old = (A().music || {}).src; if (old && old !== r.url) drop(old); setA({ music: { src: r.url, name: nameOf(f), dur: await lengthOf(r.url), vol: 0.5 } }); }, 'Music added'); };
+  Object.assign(ACT, {
+    au38Make: () => job('make', async () => {
+      const o = await options(), a = A(), d = ED.d;
+      if (d.pages.some((pg) => !String((AUD.voOf(pg) || {}).text || '').trim())) { // Claude writes the lines still missing
+        step('Writing the script…');
+        try {
+          const r = await api('/ai/voice-script', { method: 'POST', body: { brand: brand().name, voice: brand().voice || '', language: langOf(a), tone: a.tone || 'Auto', topic: a.topic || '', scenes: scenesBrief() } });
+          mutate(() => d.pages.forEach((pg, i) => { if (!String((AUD.voOf(pg) || {}).text || '').trim() && r.lines[i]) setVo(pg, { text: r.lines[i] }); }), () => {});
+        } catch (e) { toast('The script could not be written (' + (e.message || 'AI unavailable') + '). Write the lines in Script, then generate again.'); }
+      }
+      if (o.ready && !voiceChoice(a, o).missing) {
+        const todo = d.pages.map((pg, i) => ({ i, vo: AUD.voOf(pg) || {} })).filter((x) => String(x.vo.text || '').trim() && (!x.vo.src || (x.vo.by !== 'file' && x.vo.srcText !== x.vo.text)));
+        for (const [n, x] of todo.entries()) { step(`Voicing ${n + 1}/${todo.length}…`); await voiceFor(x.i); }
+        fitToVoices();
+      }
+      if ((a.mood || 'auto') !== 'none') { step('Composing music…'); await composeMusic(moodKey(a)); }
+    }, 'Voice and music ready. Press K to play the video'),
+    au38Compose: () => { const a = A(), mood = (A().music || {}).gen ? A().music.gen.mood : moodKey(a); job('music', () => composeMusic(mood === 'none' ? 'corporate' : mood), 'New music composed for this video'); },
+    au38PlayAll: () => { stopPreview(); RT.motion.play(0); },
+    au38ScriptToggle: () => { S.scriptOpen = !S.scriptOpen; redraw(); },
+    au38MusicMenu: (b) => { const m = A().music; menu(b, [
+      ['Compose new music', 'wand', () => ACT.au38Compose(), !!S.busy],
+      ['Upload your own…', 'upload', () => pick(false, uploadMusic)],
+      ...(m ? ['-', [`Fade in: ${m.fadeIn === false ? 'off' : 'on'}`, 'music38', () => ACT.au38FadeIn()], [`Fade out: ${m.fadeOut === false ? 'off' : 'on'}`, 'music38', () => ACT.au38FadeOut()], '-', ['Remove music', 'trash', () => ACT.au38MusicDel(), false, 'dng']] : []),
+    ]); },
+    au38VoiceMenu: (b) => { const a = A(), sp = a.speed || 1, any = ED.d.pages.some((pg) => (AUD.voOf(pg) || {}).src), f5 = ((S.opts || {}).voices || []).some((v) => v.engine === 'f5'); menu(b, [
+      ['Upload a voiceover…', 'upload', () => pick(true, (f) => importVoice(f))],
+      ...(f5 ? ['-', ['Add a voice sample…', 'mic38', () => openSample()], ...brandVoices().map((r) => [`Remove “${r.name}”`, 'trash', () => dropSample(r), false, 'dng'])] : []),
+      ...(a.track ? [['Fit the scenes to the voice', 'clock', () => ACT.au38Fit()], ['Remove the voiceover file', 'trash', () => ACT.au38TrackDel(), false, 'dng']] : []),
+      '-', ...[0.9, 1, 1.1, 1.2].map((v) => [`Speed ${v.toFixed(1)}×${Math.abs(sp - v) < 0.01 ? '  ✓' : ''}`, 'wave38', () => { setA({ speed: v }); redraw(); }]),
+      ...(any ? ['-', ['Remove all voices', 'trash', () => { ED.d.pages.forEach((pg) => drop((AUD.voOf(pg) || {}).src)); mutate(() => ED.d.pages.forEach((pg) => setVo(pg, { src: '', dur: 0, by: '', srcText: '' })), () => {}); redraw(); }, false, 'dng']] : []),
+    ]); },
+    au38LineMenu: (b) => { const i = +b.dataset.i, vo = AUD.voOf(ED.d.pages[i]) || {}; menu(b, [
+      ['Record it', 'mic38', () => ACT.au38Rec({ dataset: { i } }), !!S.busy],
+      ['Upload a file…', 'upload', () => pick(false, (f) => importLine(i, f[0]))],
+      ...(vo.src ? [['Download WAV', 'download', () => ACT.au38LineWav({ dataset: { i } })], '-', ['Remove the voice', 'trash', () => ACT.au38VoDel({ dataset: { i } }), false, 'dng']] : []),
+    ]); },
+    au38PanelMenu: (b) => menu(b, [['Delete unused audio files…', 'trash', () => ACT.au38Clean()]]),
+  });
+  /* inputs of the Audio tab */
+  let pre = null;
+  document.addEventListener('focusin', (e) => { if (e.target.dataset && e.target.dataset.au === 'line') pre = snap(); });
+  document.addEventListener('input', (e) => {
+    const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
+    if (k === 'line') { const i = +t.dataset.i, pg = ED.d.pages[i]; setVo(pg, { text: t.value }); touch();
+      const s = TL().scenes[i], f = AUD.fit(t.value, s.dur), box = t.closest('.au-line, .au2-line'), b = box && box.querySelector('.au-fit'); if (b) { b.className = 'au-fit ' + (f.ok ? 'ok' : 'bad'); b.textContent = `${f.words}/${f.max} words${f.ok ? '' : ' · too long'}`; } }
+    else if (k === 'speed') { const o = t.closest('label').querySelector('.mo-out'); o && (o.textContent = (+t.value).toFixed(2) + '×'); }
+    else if (k === 'tvol') { const tk = A().track; if (tk) { ED.d.audio.track = { ...tk, vol: +t.value }; const o = t.closest('label').querySelector('.mo-out'); o && (o.textContent = Math.round(t.value * 100) + '%'); } }
+    else if (k === 'mvol') { const m = A().music; if (m) { ED.d.audio.music = { ...m, vol: +t.value }; const o = t.closest('label') && t.closest('label').querySelector('.mo-out'); o && (o.textContent = Math.round(t.value * 100) + '%'); } }
+  });
+  document.addEventListener('change', async (e) => {
+    const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
+    if (k === 'line') { if (pre) commit(pre); pre = null; edPages(); if (ED.tab === 'audio') redraw(); }
+    else if (k === 'mvol' || k === 'tvol') { save(); edPages(); }
+    else if (k === 'tat') { const tk = A().track; if (tk) { setA({ track: { ...tk, at: Math.max(0, Math.round((+t.value || 0) * 1000)) } }); redraw(); } }
+    else if (k === 'vfiles') { const f = t.files; t.value = ''; if (f && f.length && canEdit()) importVoice(f); }
+    else if (k === 'lfile') { const f = t.files && t.files[0]; t.value = ''; if (canEdit()) importLine(+t.dataset.i, f); }
+    else if (k === 'speed') setA({ speed: +t.value });
+    else if (['tone', 'language', 'voice', 'topic', 'mood'].includes(k)) { setA({ [k]: t.value }); if (k === 'language') redraw(); }
+    else if (k === 'mfile') {
+      const f = t.files && t.files[0]; t.value = ''; if (!f) return;
+      if (!/^audio\//.test(f.type) && !/\.(mp3|wav|m4a|ogg|flac|webm)$/i.test(f.name)) return toast('Choose an audio file (MP3, WAV, M4A or OGG)');
+      job('upload', async () => { const r = await upload(f); stopPreview(); if ((A().music || {}).src !== r.url) drop((A().music || {}).src); setA({ music: { src: r.url, name: f.name.replace(/\.[^.]+$/, '').slice(0, 60), dur: await lengthOf(r.url), vol: 0.6 } }); }, 'Music added');
+    }
+  });
+  addEventListener('hashchange', () => { stopPreview(); AU.stop(); if (S.rec) S.rec.rec.stop(); });
+})();
+
+/* ============ v39 · select several designs in the Studio and delete them at once ============ */
+/* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a
+   range, the bar above the cards selects every design matching the search and deletes the selection after one confirmation.
+   In All brands each design is deleted from its own brand, with the planned posts that use it (as a single delete does). */
+(function () {
+  Object.assign(IC, { chk39: '<path d="M20 6 9 17l-5-5"/>', sel39: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>' });
+  const SEL = { on: false, ids: new Set(), last: null };
+  const q = () => ST.q.trim().toLowerCase();
+  const matching = () => S.designs.filter((d) => !q() || String(d.name || '').toLowerCase().includes(q())); // the order the cards are shown in
+  const exit = () => { SEL.on = false; SEL.ids.clear(); SEL.last = null; };
+  const ownerData = (id) => { for (const b of S.brands) { const D = S.data[b.id]; if (D && (D.designs || []).some((x) => x.id === id)) return D; } return null; };
+
+  /* cards: a checkbox, and the selected state */
+  const _dc39 = designCard;
+  designCard = function (d) {
+    const html = _dc39.apply(this, arguments); if (persist.readOnly) return html;
+    const on = SEL.ids.has(d.id);
+    return html.replace('<div class="card dc"', `<div class="card dc${on ? ' sel39' : ''}${SEL.on ? ' selmode39' : ''}"`)
+      .replace(/(<div class="card dc[^"]*" data-id="[^"]+">)/, `$1<button type="button" class="dc-chk" data-sel39="${d.id}" role="checkbox" aria-checked="${on}" aria-label="Select ${esc(d.name)}">${ic('chk39', 14)}</button>`);
+  };
+
+  /* the bar: Select next to the search, or the selection's actions */
+  const _sv39 = PAGES.studio.view;
+  PAGES.studio.view = function () {
+    let html = _sv39.apply(this, arguments);
+    if (ST.tab !== 0 || persist.readOnly || !S.designs.length) { if (ST.tab !== 0) exit(); return html; }
+    const all = matching(), n = SEL.ids.size;
+    // not selecting: Select sits with the search, on the right
+    if (!SEL.on) return html.replace(/(<label class="lib-q">[\s\S]*?<\/label>)/, `<div class="lib-tools">$1<button class="btn secondary sel39-go" data-act="sel39On" title="Select several designs">${ic('sel39', 16)}Select</button></div>`);
+    // selecting: the same row becomes the selection's row (nothing moves)
+    const row = `<div class="lib-bar sel39-row" role="toolbar" aria-label="Selection">
+        <div class="sel39-l"><button class="btn ghost icon" data-act="sel39Off" aria-label="Stop selecting" title="Done (Esc)">${ic('x', 18)}</button>
+          <b aria-live="polite">${n ? `${n} selected` : 'Select designs'}</b><span class="sel39-sep" aria-hidden="true"></span>
+          <button class="btn ghost" data-act="sel39All">${n === all.length && n ? 'Clear selection' : `Select all ${all.length}${q() ? ' matching' : ''}`}</button></div>
+        <div class="sel39-r"><span class="sel39-hint">Shift+click to select a range</span>
+          <button class="btn danger" data-act="sel39Del" ${n ? '' : 'disabled'}>${ic('trash', 16)}Delete${n ? ` ${n}` : ''}</button></div></div>`;
+    return html.replace(/<div class="lib-bar">[\s\S]*?<\/label><\/div>/, row);
+  };
+
+  const redraw = () => { const y = scrollY; route(); scrollTo(0, y); };
+  function toggle(id, range) {
+    if (range && SEL.last) {
+      const list = matching().map((d) => d.id), a = list.indexOf(SEL.last), b = list.indexOf(id);
+      if (a > -1 && b > -1) { const add = !SEL.ids.has(id); list.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => (add ? SEL.ids.add(x) : SEL.ids.delete(x))); SEL.last = id; return redraw(); }
+    }
+    SEL.ids.has(id) ? SEL.ids.delete(id) : SEL.ids.add(id); SEL.last = id; redraw();
+  }
+  /* while selecting, a click on a card selects it instead of opening it (capture: before the card's own action) */
+  document.addEventListener('click', (e) => {
+    if (!/^#\/studio/.test(location.hash) || persist.readOnly) return;
+    const chk = e.target.closest('[data-sel39]'), card = e.target.closest('.card.dc');
+    if (chk) { e.preventDefault(); e.stopPropagation(); if (!canEdit()) return; SEL.on = true; return toggle(chk.dataset.sel39, e.shiftKey); }
+    if (SEL.on && card && !e.target.closest('.dc-more')) { e.preventDefault(); e.stopPropagation(); toggle(card.dataset.id, e.shiftKey); }
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && SEL.on && /^#\/studio/.test(location.hash) && !$('.modal-bg')) { exit(); redraw(); } });
+  addEventListener('hashchange', () => { if (!/^#\/studio/.test(location.hash)) exit(); });
+
+  Object.assign(ACT, {
+    sel39On: () => { if (!canEdit()) return; SEL.on = true; redraw(); },
+    sel39Off: () => { exit(); redraw(); },
+    sel39All: () => { const all = matching(); if (SEL.ids.size === all.length && SEL.ids.size) SEL.ids.clear(); else all.forEach((d) => SEL.ids.add(d.id)); redraw(); },
+    sel39Del: () => {
+      if (!canEdit()) return;
+      const ds = [...SEL.ids].map((id) => getD(id)).filter(Boolean); if (!ds.length) return;
+      const ids = new Set(ds.map((d) => d.id)), posts = S.posts.filter((p) => ids.has(p.d)).length, n = ds.length;
+      modal(`<div class="mh"><h2>Delete ${n} design${n > 1 ? 's' : ''}?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+        <div class="mb"><div class="sel39-thumbs">${ds.slice(0, 6).map((d) => thumb(d.pages[0], d.ratio, 64, 80)).join('')}${n > 6 ? `<span class="sel39-more">+${n - 6}</span>` : ''}</div>
+          <p class="sm-t">${n > 1 ? 'They are' : 'It is'} removed ${allOn() ? 'from their brands' : `from ${esc(brand().name)}`} for everyone. This can’t be undone.</p>
+          ${posts ? `<div class="note warn">${ic('alert', 16)}<span>${posts} planned post${posts > 1 ? 's use' : ' uses'} ${n > 1 ? 'them' : 'it'} and will be removed from the planner too.</span></div>` : ''}</div>
+        <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="sel39Go">${ic('trash', 16)}Delete ${n} design${n > 1 ? 's' : ''}</button></div>`, {
+        onMount: (bg, close) => $('#sel39Go', bg).addEventListener('click', () => {
+          ids.forEach((id) => { const D = ownerData(id); if (!D) return; D.designs = D.designs.filter((x) => x.id !== id); D.posts = (D.posts || []).filter((p) => p.d !== id); });
+          exit(); save(); close(); synced(`${n} design${n > 1 ? 's' : ''} deleted`);
+        }),
+      });
+    },
+  });
+})();
+
+ 
 
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle

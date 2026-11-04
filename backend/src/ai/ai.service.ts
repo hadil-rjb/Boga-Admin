@@ -9,7 +9,7 @@ import { GscService } from "../gsc/gsc.service";
 import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
-import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto } from "./dto/ai.dto";
 import { AGENT_PROMPT, AGENT_TOOLS, AgentCall, cleanMessages, toAnthropic, toOpenAi } from "./agent";
 import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
@@ -248,6 +248,27 @@ Only state facts that appear on the slides; never invent figures, dates or promi
     const { text, model } = await this.complete(system, user, { maxTokens: 1500, images: m ? [{ media: m[1], data: m[2] }] : [], feature: "Post captions" });
     return { caption: text.trim().replace(/^["“]|["”]$/g, ""), model };
   }
+
+  /** One spoken line per scene, as many words as fit the scene at a natural pace (about 2.5 words a second) */
+  async voiceScript(d: VoiceScriptDto, actor: Actor) {
+    this.throttle(actor.id ?? "anon");
+    const lang = d.language || "English";
+    const system = `You write the voice-over of a short social video for the brand "${clip(d.brand, 120)}". Write in ${lang}. ${d.tone && d.tone !== "Auto" ? `Tone: ${d.tone}.` : ""}
+Brand voice: ${clip(d.voice, 2000) || "clear, friendly and expert"}.
+The video has ${d.scenes.length} scenes. Write exactly one spoken line per scene, in order. A line must be natural to say aloud, with no hashtags, emojis, stage directions or scene numbers.
+Each scene has a length: write about 2.3 words per second of that scene, never more than 2.6, so the voice finishes before the scene ends. The intro hooks, the middle scenes explain, the outro ends with a short call to action.
+Only use facts that appear in the scene texts; never invent figures, dates or promises.
+Reply with JSON only: {"lines": ["…", "…"]} with exactly ${d.scenes.length} strings.`;
+    const user = `${d.topic ? `Topic: ${clip(d.topic, 200)}\n` : ""}Scenes:\n${d.scenes.map((x, i) => `${i + 1}. ${x.kind}, ${Math.round(x.seconds * 10) / 10} s. On screen: ${(x.texts ?? []).map((t) => clip(t, 200)).join(" | ") || "(no text)"}`).join("\n")}`;
+    const { text, model } = await this.complete(system, user, { maxTokens: 2000, json: true, feature: "Video voice-over" });
+    let lines: string[] = [];
+    try { const j = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)); lines = Array.isArray(j.lines) ? j.lines.map((x: unknown) => String(x ?? "").trim()) : []; } catch { /* repli ci-dessous */ }
+    if (!lines.length) lines = text.split(/\n+/).map((x: string) => x.replace(/^\s*\d+[.)]\s*/, "").trim()).filter(Boolean);
+    while (lines.length < d.scenes.length) lines.push("");
+    return { lines: lines.slice(0, d.scenes.length).map((x) => clip(x, 600)), model };
+  }
+  /** Hugging Face token from Settings → Cover images (decrypted), or null */
+  async hfKey() { return this.hfToken(await this.load()); }
 
   private throttle(user: string) {
     const now = Date.now(), h = (this.hits.get(user) ?? []).filter(t => now - t < 3_600_000);
