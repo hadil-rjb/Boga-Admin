@@ -111,7 +111,7 @@ describe('JobsService chain', () => {
 describe('JobsService queue races', () => {
   it('a step requested while the final status=ready is being saved still runs', async () => {
     let fired = false, release!: () => void;
-    model.hooks.before = async (id, set) => {
+    model.hooks.before = async (id: string, set: any) => {
       if (set.status === 'ready' && !fired) {
         fired = true;
         const gate = new Promise<void>((r) => (release = r));
@@ -188,7 +188,7 @@ describe('JobsService recovery and cube', () => {
   it('the cube file name is versioned by the SDR peak', () => expect(HLG_CUBE_NAME).toBe('hlg2709-300.cube'));
   it('ensureCube generates through grade.py hlg2709 into the versioned file, with a timeout', async () => {
     rmSync(svc.cube);
-    const r = vi.fn(async (_c: string, args: string[]) => { writeFileSync(args.at(-1)!, 'c'); return { stdout: '{"ok": true}', stderr: '' }; });
+    const r = vi.fn(async (_c: string, args: string[], _o?: any) => { writeFileSync(args.at(-1)!, 'c'); return { stdout: '{"ok": true}', stderr: '' }; });
     svc.runner = r as any;
     await svc.ensureCube();
     expect(r.mock.calls[0][1].slice(0, 2)[1]).toBe('hlg2709'); expect(r.mock.calls[0][2]).toMatchObject({ timeoutMs: 120_000 });
