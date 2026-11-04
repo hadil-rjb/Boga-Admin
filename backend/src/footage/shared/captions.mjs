@@ -92,6 +92,27 @@ export function merge(a, b) {
   return mkLine([...a.words, ...b.words], a.start, b.end);
 }
 
+// Scales a line (and its word times) linearly into [start, end]; a zero-length line only shifts.
+export function retime(line, start, end) {
+  const os = line.start, span = line.end - line.start, k = span > 0 ? (end - start) / span : 1;
+  const map = (t) => Math.round(start + (t - os) * k);
+  return { ...line, start, end, words: line.words.map((w) => ({ ...w, s: map(w.s), e: map(w.e) })) };
+}
+
+const NEW_LINE_MS = 1500, MIN_NEW_MS = 200;
+// Inserts a 1500 ms line at atMs (or after the line it falls in), shortened to end before the next line.
+// With less than 200 ms of room the same array comes back.
+export function addLine(lines, atMs, text = '') {
+  const prev = lines.filter((l) => l.start <= atMs).pop();
+  const start = Math.max(0, Math.round(prev ? Math.max(atMs, prev.end) : atMs));
+  const next = lines.find((l) => l.start >= start && l !== prev);
+  const end = Math.round(Math.min(start + NEW_LINE_MS, next ? next.start : Infinity));
+  if (end - start < MIN_NEW_MS) return lines;
+  const line = retext(mkLine([], start, end), text);
+  const at = next ? lines.indexOf(next) : lines.length;
+  return [...lines.slice(0, at), line, ...lines.slice(at)];
+}
+
 export function lineAt(lines, ms) {
   return lines.find((l) => l.words.length && ms >= l.start && ms < l.end) || null;
 }

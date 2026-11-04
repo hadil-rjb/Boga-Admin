@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
-import { analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry } from './footage-editor.js';
+import { clampDrag, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry } from './footage-editor.js';
 import { DEFAULT_STYLE } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e, p: 1 });
@@ -89,5 +89,39 @@ describe('expired proxy links', () => {
   it('not twice within 30 s (a broken file would loop)', () => {
     expect(shouldRefreshProxy({ code: 4 }, url(1000), 1000, 990)).toBe(false);
     expect(shouldRefreshProxy({ code: 4 }, url(1000), 1000, 960)).toBe(true);
+  });
+});
+
+describe('subtitle lane', () => {
+  const L = (id, start, end) => ({ id, start, end, words: [] });
+  const ls = [L('a', 0, 1000), L('b', 1500, 2500), L('c', 3000, 4000)];
+  it('clampDrag keeps 200 ms and the neighbours', () => {
+    expect(clampDrag(ls, 1, 'start', 900)).toEqual({ start: 1000, end: 2500 });
+    expect(clampDrag(ls, 1, 'start', 2490)).toEqual({ start: 2300, end: 2500 });
+    expect(clampDrag(ls, 1, 'end', 1510)).toEqual({ start: 1500, end: 1700 });
+    expect(clampDrag(ls, 1, 'end', 9000)).toEqual({ start: 1500, end: 3000 });
+    expect(clampDrag(ls, 1, 'start', 1200)).toEqual({ start: 1200, end: 2500 });
+  });
+  it('clampDrag moves the block without changing its length and stops at neighbours and the video ends', () => {
+    expect(clampDrag(ls, 1, 'move', 1700)).toEqual({ start: 1700, end: 2700 });
+    expect(clampDrag(ls, 1, 'move', 0)).toEqual({ start: 1000, end: 2000 });
+    expect(clampDrag(ls, 1, 'move', 5000)).toEqual({ start: 2000, end: 3000 });
+    expect(clampDrag(ls, 0, 'move', -300)).toEqual({ start: 0, end: 1000 });
+    expect(clampDrag(ls, 2, 'move', 9000, 4500)).toEqual({ start: 3500, end: 4500 });
+    expect(clampDrag(ls, 2, 'end', 9000, 4500)).toEqual({ start: 3000, end: 4500 });
+  });
+  it('peakBuckets takes the loudest sample of each bucket', () => {
+    const p = peakBuckets(Float32Array.from([0.1, -0.5, 0.2, 0.9, -1.5, 0]), 3);
+    expect(Array.from(p).map((v) => +v.toFixed(2))).toEqual([0.5, 0.9, 1]);
+    expect(peakBuckets(new Float32Array(0), 4)).toHaveLength(4);
+  });
+  it('fitPeaks gives one value per pixel, wider or narrower than the peak array', () => {
+    expect(Array.from(fitPeaks(Float32Array.from([0.2, 0.8, 0.4, 0.6]), 2))).toEqual([Math.fround(0.8), Math.fround(0.6)]);
+    expect(fitPeaks(Float32Array.from([0.5, 1]), 4)).toHaveLength(4);
+    expect(fitPeaks(null, 5)).toHaveLength(5);
+  });
+  it('labels', () => {
+    expect(rangeLabel({ start: 12400, end: 14100 })).toBe('0:12.4 – 0:14.1');
+    expect(lineText({ words: [{ t: 'a' }, { t: 'b' }] })).toBe('a b');
   });
 });

@@ -7,7 +7,7 @@
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, DEFAULT_STYLE } from './captions.js';
+import { group, retext, retime, addLine, split, merge, DEFAULT_STYLE } from './captions.js';
 import { parseCube } from './look.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
 
@@ -68,6 +68,49 @@ export function shouldRefreshProxy(err, url, nowSec, lastSec = 0) {
   return !!err && (err.code === 2 || err.code === 4);
 }
 
+/* ---- subtitle lane: drag constraints and waveform peaks ---- */
+export const MIN_LINE_MS = 200;
+const clampN = (v, a, b) => Math.min(Math.max(v, a), b);
+/**
+ * Where line `i` lands when an edge or the block is dragged: 'start' / 'end' take the new edge time, 'move' the new start time
+ * (the length stays). At least 200 ms long, inside the video, and never over the previous or next line.
+ */
+export function clampDrag(lines, i, edge, ms, dur = Infinity) {
+  const l = lines[i], lo = i > 0 ? lines[i - 1].end : 0, top = dur > 0 ? dur : Infinity, hi = i < lines.length - 1 ? Math.min(lines[i + 1].start, top) : top;
+  const t = Math.round(+ms || 0), len = l.end - l.start;
+  if (edge === 'start') return { start: clampN(t, lo, Math.max(lo, l.end - MIN_LINE_MS)), end: l.end };
+  if (edge === 'end') return { start: l.start, end: clampN(t, Math.min(hi, l.start + MIN_LINE_MS), hi) };
+  const s = clampN(t, lo, Math.max(lo, hi - len));
+  return { start: s, end: s + len };
+}
+/** `n` peak buckets (max absolute sample each, 0..1) of decoded samples */
+export function peakBuckets(samples, n) {
+  const out = new Float32Array(Math.max(0, n | 0)), len = samples.length;
+  if (!len || !out.length) return out;
+  for (let b = 0; b < out.length; b++) {
+    const from = Math.floor((b * len) / out.length), to = Math.max(from + 1, Math.floor(((b + 1) * len) / out.length));
+    let m = 0; for (let k = from; k < to && k < len; k++) { const v = Math.abs(samples[k]); if (v > m) m = v; }
+    out[b] = Math.min(1, m);
+  }
+  return out;
+}
+/** The fixed peak array shown at `w` pixels: the max of the buckets each pixel covers (one peak per pixel) */
+export function fitPeaks(peaks, w) {
+  const n = Math.max(0, w | 0), out = new Float32Array(n);
+  if (!peaks || !peaks.length || !n) return out;
+  for (let x = 0; x < n; x++) {
+    const from = Math.floor((x * peaks.length) / n), to = Math.max(from + 1, Math.floor(((x + 1) * peaks.length) / n));
+    let m = 0; for (let k = from; k < to && k < peaks.length; k++) if (peaks[k] > m) m = peaks[k];
+    out[x] = m;
+  }
+  return out;
+}
+/** "0:12.4 – 0:14.1" */
+export const rangeLabel = (l) => `${fmtMs(l.start)} – ${fmtMs(l.end)}`;
+/** The text of a line as the field shows it */
+export const lineText = (l) => (l.words || []).map((w) => w.t).join(' ');
+
+const PEAK_BUCKETS = 2000;
 const GOOGLE_FONTS = 'https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@400;600;700;800;900&family=Lalezar&family=Noto+Naskh+Arabic:wght@400;700&family=Noto+Sans+Arabic:wght@400;600;700;800&display=swap';
 
 export function installFootageEditor(ctx, FT) {
@@ -81,7 +124,7 @@ export function installFootageEditor(ctx, FT) {
   /* ---------- 2. session ---------- */
   function start(d) {
     stop();
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '' };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
     ED.tab = 'ftSubs';
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -91,7 +134,7 @@ export function installFootageEditor(ctx, FT) {
     if (!F) return;
     clearTimeout(F.timer); F.gen++;
     if (F.player) F.player.destroy();
-    F.ro && F.ro.disconnect();
+    F.ro && F.ro.disconnect(); F.lro && F.lro.disconnect(); F.ac.abort();
     F = null;
   }
   const alive = (S) => F === S && ED.d === S.d && document.body.classList.contains('in-editor');
@@ -118,7 +161,8 @@ export function installFootageEditor(ctx, FT) {
   /** Loads the words and the cube once the analysis is over, and commits what the design still lacks in one undoable step */
   async function results(S) {
     const A = analysis(S.rec, S.refRec), ft = S.d.footage;
-    const needWords = !(ft.captions.lines || []).length && A.transcribe.state === 'done';
+    const redo = S.retx && A.transcribe.state === 'done';
+    const needWords = (redo || !(ft.captions.lines || []).length) && A.transcribe.state === 'done';
     const wantCube = A.grade.state === 'done' && (!ft.look.lut || ft.look.lut === lookPath(S.id));
     const [words, cubeText] = await Promise.all([
       needWords ? api(`/footage/${S.id}/words`).catch(() => []) : [],
@@ -128,8 +172,13 @@ export function installFootageEditor(ctx, FT) {
     const cur = ED.d.footage; // an undo during the requests replaces the object
     if (cubeText) { try { S.cube = parseCube(cubeText); } catch (e) { S.cube = null; S.note = 'The colour grade file could not be read.'; } }
     const refStyle = S.refRec && S.refRec.captionStyle ? S.refRec.captionStyle : null;
-    const patch = analysisPatch(cur, { id: S.id, words, refStyle, hasCube: !!S.cube });
-    if (patch) { mutate(() => applyPatch(ED.d.footage, patch)); save(); }
+    const patch = analysisPatch(cur, { id: S.id, words, refStyle, hasCube: !!S.cube }) || {};
+    if (redo) { // Re-transcribe: the new words replace the edited lines
+      S.retx = false;
+      patch.lines = group(Array.isArray(words) ? words : [], patch.style || cur.captions.style || DEFAULT_STYLE);
+      if (!patch.lines.length) toast('No speech was found in this video.');
+    }
+    if (Object.keys(patch).length) { mutate(() => applyPatch(ED.d.footage, patch)); save(); }
     sync();
   }
 
@@ -147,7 +196,7 @@ export function installFootageEditor(ctx, FT) {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: ft.captions,
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : null),
       onTime: (ms, playing) => transport(ms, playing),
-      onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); },
+      onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); },
       onError: (err) => refreshProxy(S, err),
     });
     S.player.setSplit(S.split);
@@ -222,16 +271,186 @@ export function installFootageEditor(ctx, FT) {
     if (sc && document.activeElement !== sc) { sc.max = String(Math.max(1, Math.round(dur))); sc.value = String(Math.round(ms)); }
     if (sc) sc.style.setProperty('--p', dur ? (ms / dur) * 100 + '%' : '0%');
     if (pb && pb.dataset.on !== String(!!playing)) { pb.dataset.on = String(!!playing); pb.innerHTML = ic(playing ? 'pause37' : 'play37', 16); pb.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)'); }
-    hilite(ms);
+    const hd = $('#ftHead'); if (hd && dur) hd.style.left = Math.min(100, Math.max(0, (ms / dur) * 100)) + '%';
+    hilite(ms, playing);
   }
   /** The subtitle row being spoken */
   let lastRow = null;
-  function hilite(ms) {
+  function hilite(ms, playing) {
     const lines = ED.d && ED.d.footage ? ED.d.footage.captions.lines : [];
     const i = lines.findIndex((l) => ms >= l.start && ms < l.end), id = i >= 0 ? lines[i].id : null;
     if (id === lastRow) return; lastRow = id;
     document.querySelectorAll('#edPanel .ft-row.on').forEach((x) => x.classList.remove('on'));
-    if (id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); r && r.classList.add('on'); }
+    if (id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) { r.classList.add('on'); if (playing && !r.contains(document.activeElement)) r.scrollIntoView({ block: 'nearest' }); } }
+  }
+
+  /* ---------- timeline lane: waveform and one block per subtitle ---------- */
+  const pc = (v) => Math.max(0, Math.min(100, +v || 0)).toFixed(3);
+  function blockHTML(l, i, dur) {
+    const left = pc((l.start / dur) * 100), w = pc(((l.end - l.start) / dur) * 100), ro = canEdit && !canEdit();
+    return `<div class="ft-blk${ro ? ' ro' : ''}" data-i="${i | 0}" data-id="${esc(l.id)}" style="left:${left}%;width:${w}%" title="${esc(rangeLabel(l))}">${ro ? '' : '<i class="ft-h s" data-edge="start"></i>'}<span dir="auto">${esc(lineText(l))}</span>${ro ? '' : '<i class="ft-h e" data-edge="end"></i>'}</div>`;
+  }
+  function blocksHTML() {
+    const dur = F && F.dur; if (!dur || !ED.d || !isFt(ED.d)) return '';
+    return (ED.d.footage.captions.lines || []).map((l, i) => blockHTML(l, i, dur)).join('');
+  }
+  /** Redraws the blocks (after an edit, undo or redo) and the waveform */
+  function lane() { const b = $('#ftBlks'); if (!b || !F) return; b.innerHTML = blocksHTML(); drawWave(); }
+  function laneInit() {
+    F && F.lro && F.lro.disconnect();
+    const el = $('#ftLane'); if (!el || !F) return;
+    if (typeof ResizeObserver !== 'undefined') { F.lro = new ResizeObserver(() => drawWave()); F.lro.observe(el); }
+    drawWave();
+  }
+  function drawWave() {
+    const cv = $('#ftWave'), el = $('#ftLane'); if (!cv || !el || !F) return;
+    const r = el.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (!w || !h) return;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const c = cv.getContext('2d'); c.clearRect(0, 0, w, h);
+    if (!F.peaks) return;
+    const px = fitPeaks(F.peaks, w); // one peak per device pixel column
+    c.fillStyle = getComputedStyle(el).getPropertyValue('--ft-wave').trim() || 'rgba(100,116,139,.5)';
+    const mid = h / 2;
+    for (let x = 0; x < w; x++) { const a = Math.max(1, px[x] * h * 0.9); c.fillRect(x, mid - a / 2, 1, a); }
+  }
+  /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the lane has no waveform */
+  async function loadPeaks(S) {
+    if (S.peaks || S.peaksBusy || !S.rec || !S.rec.proxyUrl) return; S.peaksBusy = true;
+    const AC = window.AudioContext || window.webkitAudioContext; let actx = null;
+    try {
+      if (!AC) return;
+      const res = await fetch(apiUrl(S.rec.proxyUrl), { signal: S.ac.signal });
+      if (!res.ok) return;
+      const buf = await res.arrayBuffer();
+      if (!alive(S)) return;
+      actx = new AC();
+      const audio = await actx.decodeAudioData(buf);
+      if (!alive(S)) return;
+      S.peaks = peakBuckets(audio.getChannelData(0), PEAK_BUCKETS);
+      for (let ch = 1; ch < audio.numberOfChannels; ch++) { const o = peakBuckets(audio.getChannelData(ch), PEAK_BUCKETS); for (let k = 0; k < o.length; k++) if (o[k] > S.peaks[k]) S.peaks[k] = o[k]; }
+      drawWave();
+    } catch (e) { /* no audio track, no decoder or the request stopped: the lane stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
+  }
+
+  /* ---------- editing: every change is one mutate() ---------- */
+  const can = () => !canEdit || canEdit();
+  const lineIdx = (id) => ED.d.footage.captions.lines.findIndex((l) => l.id === id);
+  /** Applies fn(lines) -> new lines in one undoable step */
+  function editLines(fn, redraw) {
+    if (!F || !can()) return;
+    mutate(() => { const c = ED.d.footage.captions; c.lines = fn(c.lines || []); }, redraw); save();
+  }
+  /** After a text edit the rows keep focus: only the preview and the lane follow */
+  const light = () => { sync(); lane(); };
+  function commitText(inp) {
+    if (!F || !can()) return;
+    const i = lineIdx(inp.dataset.ftText); if (i < 0) return;
+    const cur = ED.d.footage.captions.lines[i];
+    if (inp.value.trim().split(/\s+/).filter(Boolean).join(' ') === lineText(cur)) { inp.value = lineText(cur); return; }
+    editLines((ls) => ls.map((l, k) => (k === i ? retext(l, inp.value) : l)), light);
+  }
+  function openMenu(btn, rows) {
+    document.querySelectorAll('#ctx').forEach((x) => x.remove());
+    const r = btn.getBoundingClientRect(), c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
+    c.innerHTML = rows.map((x, k) => `<button role="menuitem" data-k="${k}" class="${x[2] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${x[0]}</span></button>`).join('');
+    document.body.append(c);
+    const hh = c.offsetHeight, ww = c.offsetWidth;
+    c.style.left = Math.max(8, Math.min(r.right - ww, innerWidth - ww - 8)) + 'px';
+    c.style.top = (r.bottom + 6 + hh < innerHeight ? r.bottom + 6 : Math.max(8, r.top - hh - 6)) + 'px';
+    const gone = (ev) => { if (!c.contains(ev.target)) { c.remove(); removeEventListener('pointerdown', gone, true); } };
+    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); removeEventListener('pointerdown', gone, true); rows[+b.dataset.k][1](); } };
+    c.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Escape') { c.remove(); removeEventListener('pointerdown', gone, true); btn.focus(); } };
+    setTimeout(() => addEventListener('pointerdown', gone, true));
+    const f = c.querySelector('button:not(:disabled)'); f && f.focus();
+  }
+  function rowMenu(btn) {
+    if (!F || !can()) return;
+    const id = btn.dataset.id, i = lineIdx(id), ls = ED.d.footage.captions.lines; if (i < 0) return;
+    openMenu(btn, [
+      ['Split at playhead', () => splitAt(id)],
+      ['Merge with next', () => { const k = lineIdx(id); if (k >= 0 && k < ED.d.footage.captions.lines.length - 1) editLines((a) => [...a.slice(0, k), merge(a[k], a[k + 1]), ...a.slice(k + 2)]); }, '', i >= ls.length - 1],
+      ['Delete', () => editLines((a) => a.filter((l) => l.id !== id)), 'dl'],
+    ]);
+  }
+  function splitAt(id) {
+    const t = F.player ? F.player.time() : 0, i = lineIdx(id), l = ED.d.footage.captions.lines[i];
+    if (!l || !(t > l.start && t < l.end) || !l.words.some((w) => w.s >= t) || !l.words.some((w) => w.s < t)) { toast('Move the playhead inside the subtitle, between two words, to split it.'); return; }
+    editLines((a) => [...a.slice(0, i), ...split(a[i], t), ...a.slice(i + 1)]);
+  }
+  function addAtPlayhead() {
+    if (!F || !can()) return;
+    const before = ED.d.footage.captions.lines || [], after = addLine(before, F.player ? Math.round(F.player.time()) : 0);
+    if (after === before) { toast('There is no room for a line here. Move the playhead to a gap.'); return; }
+    const old = new Set(before.map((l) => l.id)), fresh = after.find((l) => !old.has(l.id));
+    editLines(() => after);
+    const inp = fresh && document.querySelector(`#edPanel [data-ft-text="${CSS.escape(fresh.id)}"]`);
+    if (inp) { inp.focus(); inp.scrollIntoView({ block: 'nearest' }); }
+  }
+  /** A small confirmation: onOk runs on the button, onNo on any other way out */
+  function ask(title, text, okLabel, onOk, onNo) {
+    let ok = false;
+    ctx.modal(`<div class="mh"><h2>${esc(title)}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">${esc(text)}</p></div>
+      <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-ok>${esc(okLabel)}</button></div>`,
+      { onClose: () => { if (!ok && onNo) onNo(); }, onMount: (bg, close) => { const b = bg.querySelector('[data-ft-ok]'); b.addEventListener('click', () => { ok = true; close(); onOk(); }); b.focus(); } });
+  }
+  function regroup(inp) {
+    if (!F || !can()) return;
+    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = Math.round(+(ft.captions.style && ft.captions.style.maxWords) || DEFAULT_STYLE.maxWords);
+    inp.value = n; if (n === was) return;
+    ask('Change words per line?', 'This replaces your line breaks', 'Replace', async () => {
+      try {
+        const words = await api(`/footage/${S.id}/words`);
+        if (!alive(S)) return;
+        if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
+        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.lines = group(words, c.style); }); save();
+      } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
+    }, () => { inp.value = was; });
+  }
+  function retranscribe() {
+    if (!F || !can()) return; const S = F;
+    ask('Re-transcribe?', 'This replaces your edited subtitles', 'Re-transcribe', async () => {
+      try {
+        await api(`/footage/${S.id}/retry`, { method: 'POST', body: { step: 'transcribe' } });
+        if (!alive(S)) return;
+        toast('Transcribing again'); S.retx = true; S.applied = false; S.err = null; S.sig = ''; S.gen++; poll();
+      } catch (e) { toast((e && e.message) || 'Could not start the transcription'); }
+    });
+  }
+
+  /* dragging a block edge, or the block: preview through the player, one mutate() on release */
+  function dragStart(e) {
+    if (!F || !can() || e.button > 0 || F.drag) return;
+    const blk = e.target.closest('.ft-blk'), lnEl = $('#ftLane'); if (!lnEl) return;
+    if (!blk) { // an empty spot of the lane: seek there
+      if (e.target.closest('#ftLane') && F.dur && F.player) { const r = lnEl.getBoundingClientRect(); F.player.seek(((e.clientX - r.left) / r.width) * F.dur); }
+      return;
+    }
+    const ls = ED.d.footage.captions.lines, i = lineIdx(blk.dataset.id); if (i < 0 || !F.dur) return;
+    e.preventDefault();
+    const S = F, h = e.target.closest('.ft-h'), edge = h ? h.dataset.edge : 'move', r = lnEl.getBoundingClientRect(), orig = ls[i];
+    const d = S.drag = { i, id: orig.id, edge, x0: e.clientX, pid: e.pointerId, orig, to: { start: orig.start, end: orig.end }, moved: false, blk };
+    blk.classList.add('drag');
+    try { blk.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+    const at = (ev) => {
+      const dx = ((ev.clientX - d.x0) / r.width) * S.dur;
+      if (Math.abs(ev.clientX - d.x0) > 2) d.moved = true;
+      d.to = clampDrag(ls, i, edge, edge === 'end' ? orig.end + dx : edge === 'start' ? orig.start + dx : orig.start + dx, S.dur);
+      const l = retime(orig, d.to.start, d.to.end), cap = ED.d.footage.captions;
+      blk.style.left = pc((d.to.start / S.dur) * 100) + '%'; blk.style.width = pc(((d.to.end - d.to.start) / S.dur) * 100) + '%';
+      S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x, k) => (k === i ? l : x)) });
+    };
+    const done = (commit) => {
+      blk.removeEventListener('pointermove', at); blk.removeEventListener('pointerup', up); blk.removeEventListener('pointercancel', cancel); blk.removeEventListener('lostpointercapture', cancel);
+      blk.classList.remove('drag'); S.drag = null;
+      if (!alive(S)) return;
+      const changed = d.to.start !== orig.start || d.to.end !== orig.end;
+      if (commit && changed) editLines((a) => a.map((x) => (x.id === d.id ? retime(x, d.to.start, d.to.end) : x)));
+      else { sync(); lane(); if (commit && !d.moved && S.player) S.player.seek(orig.start); }
+    };
+    const up = () => done(true), cancel = () => done(false);
+    blk.addEventListener('pointermove', at); blk.addEventListener('pointerup', up); blk.addEventListener('pointercancel', cancel); blk.addEventListener('lostpointercapture', cancel);
   }
 
   function pagesHTML() {
@@ -242,18 +461,34 @@ export function installFootageEditor(ctx, FT) {
       <input type="range" class="ft-scrub" id="ftScrub" min="0" max="${Math.max(1, Math.round(dur))}" step="1" value="${Math.round(ms)}" aria-label="Playback position" ${F && F.player ? '' : 'disabled'}>
       <button class="btn ${on ? 'secondary on' : 'ghost'} sm ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line)">${ic('ftCmp10', 15)}Before / After</button>
       <span class="ft-keys xs-t muted" title="J / L: 5 s back / forward · ← / →: one frame">J K L · ← →</span>
-    </div>`;
+    </div>
+    <div class="ft-lane" id="ftLane" aria-label="Subtitle timeline"><canvas id="ftWave" aria-hidden="true"></canvas><div class="ft-blks" id="ftBlks">${blocksHTML()}</div><i class="ft-head" id="ftHead" style="left:${F && F.dur ? Math.min(100, (ms / F.dur) * 100) : 0}%"></i></div>`;
   }
 
   function subsHTML() {
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage, lines = ft.captions.lines || [];
     let body;
-    if (lines.length) body = `<div class="ft-rows">${lines.map((l) => `<button class="ft-row" data-act="ftSeek" data-ms="${l.start}" data-id="${esc(l.id)}"><small>${fmtMs(l.start)}</small><span dir="auto">${esc(l.words.map((w) => w.t).join(' '))}</span></button>`).join('')}</div>`;
+    if (lines.length) body = `<div class="ft-rows">${lines.map((l) => rowHTML(l)).join('')}</div>`;
     else if (A.transcribe.state === 'failed') body = failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe');
     else if (A.busy(A.transcribe) || !F.rec) body = `<p class="xs-t muted">Listening to your video…${pct(A.transcribe)}</p>${skel(6)}`;
     else if (A.transcribe.state === 'skipped') body = '<p class="sm-t muted">This video has no sound, so there is nothing to subtitle.</p>';
     else body = '<p class="sm-t muted">No speech was found in this video.</p>';
-    return `<h3>Subtitles</h3>${body}`;
+    return `<h3>Subtitles</h3>${body}${footHTML(ft, A)}`;
+  }
+  /** One subtitle: the time (seeks), the text (editable) and its menu. Every design value goes through esc() or a number. */
+  function rowHTML(l) {
+    const ro = canEdit && !canEdit() ? 'readonly' : '';
+    return `<div class="ft-row" data-id="${esc(l.id)}"><button class="ft-t" data-act="ftSeek" data-ms="${+l.start || 0}" title="Go to this subtitle">${esc(rangeLabel(l))}</button>
+      <input class="ft-in" dir="auto" data-ft-text="${esc(l.id)}" value="${esc(lineText(l))}" placeholder="Type the subtitle" aria-label="Subtitle text" spellcheck="false" ${ro}>
+      ${ro ? '' : `<button class="btn ghost icon sm ft-more" data-act="ftMore" data-id="${esc(l.id)}" aria-haspopup="menu" aria-label="Subtitle actions" title="More">${ic('more', 16)}</button>`}</div>`;
+  }
+  function footHTML(ft, A) {
+    if (canEdit && !canEdit()) return '';
+    const has = (ft.captions.lines || []).length, mw = Math.min(8, Math.max(1, Math.round(+(ft.captions.style && ft.captions.style.maxWords) || DEFAULT_STYLE.maxWords)));
+    const busyT = A.busy(A.transcribe);
+    return `<div class="ft-foot"><button class="btn secondary sm" data-act="ftAdd">${ic('plus', 15)}Add a line at the playhead</button>
+      <label class="ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${mw}" data-ft-wpl aria-label="Words per line" ${has ? '' : 'disabled'}></label>
+      <button class="btn ghost sm" data-act="ftRetx" ${busyT || !F.rec ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button></div>`;
   }
 
   function lookHTML() {
@@ -296,7 +531,7 @@ export function installFootageEditor(ctx, FT) {
     edPages: (orig) => function () {
       const host = $('#edPages'); if (!host) return;
       if (!isFt(ED.d)) { host.classList.remove('ft10'); return orig.apply(this, arguments); }
-      host.classList.add('ft10'); host.innerHTML = pagesHTML();
+      host.classList.add('ft10'); host.innerHTML = pagesHTML(); laneInit();
     },
   });
   /* leaving the editor (or opening another design) stops the video */
@@ -307,6 +542,9 @@ export function installFootageEditor(ctx, FT) {
   Object.assign(ACT, {
     ftPlay: () => F && F.player && F.player.toggle(),
     ftSplit: () => setSplit(F && F.split == null ? 0.5 : null),
+    ftMore: (a) => rowMenu(a),
+    ftAdd: () => addAtPlayhead(),
+    ftRetx: () => retranscribe(),
     ftSeek: (a) => { if (F && F.player) { F.player.seek(+a.dataset.ms); } },
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
@@ -320,6 +558,13 @@ export function installFootageEditor(ctx, FT) {
       } catch (e) { a.disabled = false; toast((e && e.message) || 'Could not retry'); }
     },
   });
+  document.addEventListener('focusout', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-text]')) commitText(e.target); });
+  document.addEventListener('change', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-wpl]')) regroup(e.target); });
+  document.addEventListener('keydown', (e) => {
+    const t = e.target; if (!F || !t || !t.matches || !t.matches('[data-ft-text]')) return;
+    if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = ED.d.footage.captions.lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
+  }, true);
+  document.addEventListener('pointerdown', dragStart);
   document.addEventListener('input', (e) => { if (e.target && e.target.id === 'ftScrub' && F && F.player) F.player.seek(+e.target.value); });
   /* the split line: drag anywhere on the frame while Before / After is on */
   document.addEventListener('pointerdown', (e) => {

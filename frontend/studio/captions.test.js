@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_STYLE, FONT_STACKS, group, retext, split, merge, lineAt, activeWord, layout, draw, animAt } from './captions.js';
+import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e });
 const fakeCtx = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
@@ -40,5 +40,18 @@ describe('captions', () => {
     const line = { words: ['مرحبا', 'بكم', 'في', 'برنامجنا'].map((t, i) => W(t, i, i + 1)) };
     const L = layout(fakeCtx, line, { ...DEFAULT_STYLE, lines: 2 }, 200, 1000);
     expect(L.words[0].x).toBeGreaterThan(L.words[1].x);
+  });
+  it('retime scales words into the new range', () => { expect(retime({ id:'x', start:0, end:200, words:[W('a',0,100),W('b',100,200)] }, 1000, 1400).words.map((w) => [w.s, w.e])).toEqual([[1000,1200],[1200,1400]]); });
+  it('retime of a zero-length line only shifts', () => { const l = retime({ id:'x', start:50, end:50, words:[W('a',50,50)] }, 100, 300); expect([l.start, l.end]).toEqual([100, 300]); expect(l.words[0].s).toBe(100); });
+  it('addLine fits before the next line', () => { const ls = addLine([{ id:'n', start:1000, end:2000, words:[W('z',1000,2000)] }], 500); expect(ls[0]).toMatchObject({ start: 500, end: 1000 }); });
+  it('addLine is 1500 ms when there is room, carries the text and keeps order', () => {
+    const ls = addLine([{ id:'a', start:0, end:400, words:[W('x',0,400)] }, { id:'n', start:5000, end:6000, words:[W('z',5000,6000)] }], 1000, 'hello world');
+    expect(ls.map((l) => l.id)[0]).toBe('a'); expect(ls[2].id).toBe('n');
+    expect(ls[1]).toMatchObject({ start: 1000, end: 2500 }); expect(ls[1].words.map((w) => w.t)).toEqual(['hello', 'world']);
+  });
+  it('addLine inside a line starts after it, and with no room changes nothing', () => {
+    const a = [{ id:'a', start:0, end:1000, words:[W('x',0,1000)] }, { id:'n', start:1100, end:2000, words:[W('z',1100,2000)] }];
+    expect(addLine(a, 500)).toBe(a);
+    expect(addLine([a[0]], 500)[1]).toMatchObject({ start: 1000, end: 2500 });
   });
 });
