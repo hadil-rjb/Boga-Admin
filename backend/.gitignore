@@ -1,3 +1,4 @@
 
 # Kokoro voice engine: Python venv and model files (see tts/README.md)
 .tts/
+storage/
