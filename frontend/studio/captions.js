@@ -1,0 +1,187 @@
+// Subtitle grouping, editing and drawing shared by the studio preview and the
+// headless export render. Pure ESM, no imports; the only DOM use is the passed ctx2d.
+// Backend gets a byte-identical copy (sync-shared).
+
+export const DEFAULT_STYLE = {
+  font: 'sans-bold', size: 0.045, weight: 800, case: 'none', color: '#FFFFFF', stroke: null,
+  shadow: { color: 'rgba(0,0,0,.55)', blur: 0.006, y: 0.002 }, box: null,
+  highlight: { mode: 'box', color: '#E8B54A', text: '#1A1A1A', radius: 0.18 },
+  y: 0.65, maxWords: 3, maxChars: 22, lines: 1, anim: 'none',
+};
+
+export const FONT_STACKS = {
+  'sans-bold': '"Cairo", "Noto Sans Arabic", "Inter", sans-serif',
+  sans: '"Noto Sans Arabic", "Cairo", "Inter", sans-serif',
+  serif: '"Noto Naskh Arabic", "Noto Sans Arabic", Georgia, serif',
+  mono: '"Noto Sans Arabic", "Cairo", Menlo, monospace',
+};
+
+const PAUSE_MS = 350;
+const END_PUNCT = /[.!?؟…,،;:؛]$/;
+const RTL_CHAR = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
+const STRONG_LTR = /[A-Za-zÀ-ɏ]/;
+
+const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const mkLine = (words, start = 0, end = 0) => ({
+  id: rid(), start: words.length ? words[0].s : start, end: words.length ? words[words.length - 1].e : end, words,
+});
+
+function breaksBefore(cur, w, style) {
+  if (!cur.length) return false;
+  const prev = cur[cur.length - 1];
+  const chars = cur.reduce((n, x) => n + x.t.length + 1, 0) + w.t.length;
+  return cur.length >= style.maxWords || chars > style.maxChars
+    || w.s - prev.e >= PAUSE_MS || END_PUNCT.test(prev.t);
+}
+
+export function group(words, style) {
+  const lines = [];
+  let cur = [];
+  for (const w of words) {
+    if (breaksBefore(cur, w, style)) { lines.push(mkLine(cur)); cur = []; }
+    cur.push(w);
+  }
+  if (cur.length) lines.push(mkLine(cur));
+  return lines;
+}
+
+// Token-level LCS: returns [oldIdx, newIdx] pairs of kept tokens, in order.
+function lcsPairs(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  }
+  const pairs = [];
+  for (let i = 0, j = 0; i < a.length && j < b.length;) {
+    if (a[i] === b[j]) { pairs.push([i++, j++]); } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return pairs;
+}
+
+function fillRun(tokens, from, to, s, e, out) {
+  const step = (e - s) / (to - from);
+  for (let k = from; k < to; k++) {
+    out.push({ t: tokens[k], s: Math.round(s + step * (k - from)), e: Math.round(s + step * (k - from + 1)) });
+  }
+}
+
+export function retext(line, text) {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return { ...line, words: [] };
+  const old = line.words;
+  const pairs = lcsPairs(old.map((w) => w.t), tokens);
+  const out = [];
+  let ni = 0;
+  let gapStart = line.start;
+  for (const [oi, nj] of [...pairs, [-1, tokens.length]]) {
+    const gapEnd = oi < 0 ? line.end : old[oi].s;
+    if (nj > ni) fillRun(tokens, ni, nj, gapStart, gapEnd, out);
+    if (oi >= 0) { out.push(old[oi]); gapStart = old[oi].e; }
+    ni = nj + 1;
+  }
+  return { ...line, start: out[0].s, end: out[out.length - 1].e, words: out };
+}
+
+export function split(line, atMs) {
+  const k = line.words.findIndex((w) => w.s >= atMs);
+  const at = k < 0 ? line.words.length : k;
+  return [mkLine(line.words.slice(0, at), line.start, atMs), mkLine(line.words.slice(at), atMs, line.end)];
+}
+
+export function merge(a, b) {
+  return mkLine([...a.words, ...b.words], a.start, b.end);
+}
+
+export function lineAt(lines, ms) {
+  return lines.find((l) => l.words.length && ms >= l.start && ms < l.end) || null;
+}
+
+export function activeWord(line, ms) {
+  return line.words.findIndex((w) => ms >= w.s && ms < w.e);
+}
+
+const shown = (t, style) => (style.case === 'upper' ? t.toUpperCase() : style.case === 'lower' ? t.toLowerCase() : t);
+const isRtl = (text) => {
+  for (const ch of text) {
+    if (RTL_CHAR.test(ch)) return true;
+    if (STRONG_LTR.test(ch)) return false;
+  }
+  return false;
+};
+const fontOf = (style, px) => `${style.weight} ${px}px ${FONT_STACKS[style.font] || FONT_STACKS['sans-bold']}`;
+
+export function layout(ctx, line, style, w, h) {
+  const px = style.size * h;
+  ctx.font = fontOf(style, px);
+  const widths = line.words.map((x) => ctx.measureText(shown(x.t, style)).width);
+  const gap = ctx.measureText(' ').width;
+  const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, widths.length - 1);
+  const rtl = isRtl(line.words.map((x) => x.t).join(' '));
+  const order = widths.map((_, i) => i);
+  if (rtl) order.reverse();
+  const x0 = w / 2 - total / 2;
+  const y = style.y * h - px / 2;
+  const words = [];
+  let x = x0;
+  for (const i of order) { words[i] = { i, x, y, w: widths[i], h: px }; x += widths[i] + gap; }
+  return { x: x0, y, w: total, h: px, words };
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawWord(ctx, text, b, style, fill, scale, h) {
+  const cx = b.x + b.w / 2;
+  const cy = b.y + b.h / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  ctx.font = fontOf(style, b.h);
+  if (style.stroke) {
+    ctx.lineWidth = style.stroke.width * h; ctx.strokeStyle = style.stroke.color; ctx.lineJoin = 'round';
+    ctx.strokeText(text, -b.w / 2, 0);
+  }
+  ctx.fillStyle = fill;
+  ctx.fillText(text, -b.w / 2, 0);
+  ctx.restore();
+}
+
+export function draw(ctx, lines, style, ms, w, h) {
+  const line = lineAt(lines, ms);
+  if (!line) return;
+  const L = layout(ctx, line, style, w, h);
+  const act = activeWord(line, ms);
+  const hl = style.highlight;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  if (style.box) {
+    const pad = (style.box.pad || 0.012) * h;
+    ctx.fillStyle = style.box.color;
+    roundRect(ctx, L.x - pad * 2, L.y - pad, L.w + pad * 4, L.h + pad * 2, (style.box.radius || 0.18) * L.h);
+    ctx.fill();
+  }
+  if (style.shadow) {
+    ctx.shadowColor = style.shadow.color; ctx.shadowBlur = style.shadow.blur * h; ctx.shadowOffsetY = style.shadow.y * h;
+  }
+  for (const b of L.words) {
+    const on = b.i === act && hl;
+    if (on && hl.mode === 'box') {
+      const pad = b.h * 0.12;
+      ctx.fillStyle = hl.color;
+      roundRect(ctx, b.x - pad, b.y, b.w + pad * 2, b.h, hl.radius * b.h);
+      ctx.fill();
+    }
+    const fill = on && hl.mode === 'box' ? hl.text : on && hl.mode === 'color' ? hl.color : style.color;
+    drawWord(ctx, shown(line.words[b.i].t, style), b, style, fill, on && hl.mode === 'scale' ? 1.12 : 1, h);
+  }
+  ctx.restore();
+}

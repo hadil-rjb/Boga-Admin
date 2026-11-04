@@ -14,4 +14,13 @@ describe('shared modules', () => {
     expect(typeof look.identityCube).toBe('function');
     expect(look.identityCube(3).size).toBe(3);
   });
+  it('backend copy of captions.js is byte-identical to the frontend source', () => {
+    const a = readFileSync(join(__dirname, 'shared', 'captions.mjs'));
+    const b = readFileSync(join(__dirname, '..', '..', '..', 'frontend', 'studio', 'captions.js'));
+    expect(a.equals(b)).toBe(true);
+  });
+  it('loadShared exposes captions.DEFAULT_STYLE', async () => {
+    const { captions } = await loadShared();
+    expect(captions.DEFAULT_STYLE.maxWords).toBe(3);
+  });
 });

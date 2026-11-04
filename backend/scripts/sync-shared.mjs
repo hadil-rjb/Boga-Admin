@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SHARED = [
   ['frontend/studio/look.js', 'backend/src/footage/shared/look.mjs'],
+  ['frontend/studio/captions.js', 'backend/src/footage/shared/captions.mjs'],
 ];
 
 for (const [from, to] of SHARED) {
