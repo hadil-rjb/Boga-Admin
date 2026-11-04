@@ -75,6 +75,9 @@ _BT2020_TO_709 = np.array([  # BT.2087 linear-light primaries conversion
     [-0.124550, 1.132900, -0.008349],
     [-0.018151, -0.100579, 1.118730],
 ])
+# SDR display peak the EETF rolls off to; code 1.0 = this many nits. 100 nit made
+# real HLG phone footage far too bright (HLG 75% ref white -> 0.95), 300 nit gives ~0.79.
+SDR_PEAK_NITS = 300.0
 _PQ = dict(m1=2610 / 16384, m2=2523 / 4096 * 128, c1=3424 / 4096, c2=2413 / 4096 * 32, c3=2392 / 4096 * 32)
 
 
@@ -102,7 +105,7 @@ def pq_decode(e):
     return 10000 * (np.maximum(x - p["c1"], 0) / (p["c2"] - p["c3"] * x)) ** (1 / p["m1"])
 
 
-def bt2390_eetf(nits, src_peak=1000.0, dst_peak=100.0):
+def bt2390_eetf(nits, src_peak=1000.0, dst_peak=SDR_PEAK_NITS):
     """BT.2390 EETF roll-off in the PQ domain (black level 0), nits -> nits."""
     lo, span = pq_encode(0.0), pq_encode(src_peak) - pq_encode(0.0)
     e1 = (pq_encode(nits) - lo) / span
@@ -115,7 +118,7 @@ def bt2390_eetf(nits, src_peak=1000.0, dst_peak=100.0):
     return pq_decode(e2 * span + lo)
 
 
-def hlg_to_709(code, peak=1000.0, sdr_white=100.0):
+def hlg_to_709(code, peak=1000.0, sdr_peak_nits=SDR_PEAK_NITS):
     """HLG BT.2020 code values [..., 3] -> BT.709 SDR code values (sRGB OETF).
 
     The EETF acts on max(R, G, B) and scales all three channels by the same
@@ -125,7 +128,7 @@ def hlg_to_709(code, peak=1000.0, sdr_white=100.0):
     disp = hlg_ootf(hlg_inverse_oetf(code), peak)
     disp = np.maximum(disp @ _BT2020_TO_709.T, 0)
     m = disp.max(axis=-1)
-    mapped = bt2390_eetf(m, peak, sdr_white)
+    mapped = bt2390_eetf(m, peak, sdr_peak_nits)
     ratio = np.where(m > 1e-9, mapped / np.maximum(m, 1e-9), 0.0)
-    lin = np.clip(disp * ratio[..., None] / sdr_white, 0, 1)
+    lin = np.clip(disp * ratio[..., None] / sdr_peak_nits, 0, 1)
     return np.clip(srgb_encode(lin), 0, 1)
