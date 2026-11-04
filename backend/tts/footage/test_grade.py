@@ -30,8 +30,8 @@ def scene(seed):
     """Smooth synthetic frame (0..1 RGB) with a skin-toned face blob in the middle."""
     rng = np.random.default_rng(seed)
     y, x = np.mgrid[0:H, 0:W] / np.array([H, W])[:, None, None]
-    base = np.stack([0.25 + 0.4 * x, 0.3 + 0.3 * y, 0.45 - 0.2 * x * y], -1)
-    base += rng.uniform(-0.08, 0.08, 3)
+    base = np.stack([0.2 + 0.25 * x, 0.3 + 0.25 * y, 0.55 - 0.1 * x * y], -1)  # cool, never skin-like
+    base += rng.uniform(-0.05, 0.05, 3)
     base += 0.03 * np.sin(np.stack([x * 9 + seed, y * 7, x * y * 11], -1))
     cx, cy = 0.5 + rng.uniform(-0.05, 0.05), 0.45
     face = ((x - cx) / 0.12) ** 2 + ((y - cy) / 0.25) ** 2 < 1
@@ -169,3 +169,27 @@ def test_textframes_none_when_no_text(tmp_path):
     assert res["frames"] == []
     assert res["colors"]["text"] is None
     assert res["colors"]["highlight"] is None
+
+
+def test_skin_mask_ignores_warm_neutral_wall():
+    import color
+    import grade
+
+    h, w = 256, 144  # portrait talking head
+    wall = np.array([0.83, 0.76, 0.72])  # warm beige: skin-like Cb/Cr and hue (~58 deg), low chroma
+    img = np.tile(wall, (h, w, 1))
+    y, x = np.mgrid[0:h, 0:w]
+    face = ((x - 0.5 * w) / (0.15 * w)) ** 2 + ((y - 0.33 * h) / (0.10 * h)) ** 2 < 1
+    img[face] = [0.82, 0.6, 0.48]
+    wood = (y >= 0.20 * h) & (y < 0.24 * h) & (x >= 0.35 * w) & (x < 0.65 * w)  # touches the face, inside the prior
+    img[wood] = [0.85, 0.65, 0.35]  # saturated yellow-orange: skin-like Cb/Cr and chroma, wrong hue
+    # precondition: the wall passes the Cb/Cr box and is low chroma
+    cb, cr = color.ycbcr(wall * 255)
+    assert 77 <= cb <= 127 and 133 <= cr <= 173
+    assert np.hypot(*color.rgb_to_lab(wall)[1:]) < 12
+    wcb, wcr = color.ycbcr(np.array([0.85, 0.65, 0.35]) * 255)
+    assert 77 <= wcb <= 127 and 133 <= wcr <= 173
+    mask = grade.skin_mask(img)
+    assert mask[face].mean() > 0.95
+    assert mask[~face].mean() < 0.01
+    assert not mask[wood & ~face].any()

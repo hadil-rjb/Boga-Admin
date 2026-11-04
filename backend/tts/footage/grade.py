@@ -19,6 +19,12 @@ import cube
 LUT_SIZE = 33
 SKIN_WEIGHT = 0.6
 MIN_SKIN = 0.02
+STD_PRIOR = 4.0  # Lab units added to both stds before the ratio
+SKIN_MIN_CHROMA = 12  # Lab C*; neutral/cream walls sit below this
+# Lab hue angle (deg). Real frames: face ~42-44, warm wall / wood map ~78-80 at
+# the same chroma, so chroma alone cannot separate them.
+SKIN_MAX_HUE = 65
+FACE_CX, FACE_CY, FACE_RX, FACE_RY = 0.5, 0.33, 0.22, 0.16  # face prior, relative to w/h
 BAND = (0.40, 0.85)
 EDGE_STEP = 48  # |d luma / dx| on 0..255 that counts as a strong edge
 DENSE_ROW = 0.08  # fraction of strong-edge pixels that makes a row "edge-dense"
@@ -54,31 +60,43 @@ def label_components(mask):
             return np.where(mask, lab, 0)
 
 
-def skin_mask(rgb):
-    """Largest Cb/Cr skin component whose centroid lies in the middle third."""
+def face_prior(h, w):
+    """Ellipse where a talking-head face sits (center 0.5w, 0.33h; radii 0.22w x 0.16h)."""
+    y, x = np.mgrid[0:h, 0:w]
+    return ((x + 0.5 - FACE_CX * w) / (FACE_RX * w)) ** 2 + ((y + 0.5 - FACE_CY * h) / (FACE_RY * h)) ** 2 <= 1
+
+
+def skin_mask(rgb, lab=None):
+    """Largest component of Cb/Cr box AND C* >= SKIN_MIN_CHROMA AND hue <= SKIN_MAX_HUE
+    AND the face prior.
+
+    The chroma floor drops cream/beige walls that pass the Cb/Cr box, the hue cap
+    drops yellow-orange wood and warm walls of skin-like chroma; the prior
+    keeps walls, hands and wood from merging with the face. The prior is convex,
+    so any component inside it already has its centroid inside it.
+    """
+    if lab is None:
+        lab = color.rgb_to_lab(rgb)
     cb, cr = color.ycbcr(rgb * 255)
     mask = (cb >= 77) & (cb <= 127) & (cr >= 133) & (cr <= 173)
+    mask &= np.hypot(lab[..., 1], lab[..., 2]) >= SKIN_MIN_CHROMA
+    mask &= np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) <= SKIN_MAX_HUE
+    mask &= face_prior(*mask.shape)
     if not mask.any():
         return mask
-    lab = label_components(mask)
-    _, w = mask.shape
-    ids, counts = np.unique(lab[mask], return_counts=True)
-    best, best_n = 0, 0
-    for i, n in zip(ids, counts):
-        if n <= best_n:
-            continue
-        xs = np.nonzero(lab == i)[1]
-        if w / 3 <= xs.mean() <= 2 * w / 3:  # horizontal middle third (faces sit high in portrait)
-            best, best_n = i, n
-    return lab == best if best else np.zeros_like(mask)
+    labels = label_components(mask)
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    return labels == int(np.argmax(counts))
 
 
 def clip_lab(imgs):
     """All pixels as Lab plus a parallel skin flag."""
     labs, skins = [], []
     for img in imgs:
-        labs.append(color.rgb_to_lab(img).reshape(-1, 3))
-        skins.append(skin_mask(img).reshape(-1))
+        lab = color.rgb_to_lab(img)
+        labs.append(lab.reshape(-1, 3))
+        skins.append(skin_mask(img, lab).reshape(-1))
     return np.concatenate(labs), np.concatenate(skins)
 
 
@@ -106,7 +124,10 @@ def l_curve(src_l, ref_l, bins=256):
 
 
 def _moments(ab):
-    return ab.mean(axis=0), np.maximum(ab.std(axis=0), 1e-3)
+    # STD_PRIOR shrinks the std ratio toward 1: a small, flat region (a face
+    # patch with std < 1 Lab unit) would otherwise give ratios like 2x that the
+    # 0.6 skin weight then applies to every non-skin color far from skin.
+    return ab.mean(axis=0), ab.std(axis=0) + STD_PRIOR
 
 
 def ab_transfer(src_lab, src_skin, ref_lab, ref_skin):
@@ -122,7 +143,7 @@ def ab_transfer(src_lab, src_skin, ref_lab, ref_skin):
     def fn(ab):
         out = np.zeros_like(ab)
         for (ms, ss), (mr, sr), wgt in pairs:
-            out += wgt * (mr + (ab - ms) * np.clip(sr / ss, 0.25, 4))
+            out += wgt * (mr + (ab - ms) * np.clip(sr / ss, 0.5, 2))
         return out
 
     return fn, "regions" if regions else "global"
