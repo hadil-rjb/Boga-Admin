@@ -34,11 +34,12 @@ function fakeRes() {
   return res;
 }
 const user = { user: { sub: 'u1' } };
-let root: string, model: ReturnType<typeof fakeModel>, ctl: FootageController, enqueue: any, refs: any;
+let root: string, model: ReturnType<typeof fakeModel>, ctl: FootageController, enqueue: any, wake: any, refs: any;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'footage-')); process.env.FOOTAGE_DIR = root; process.env.JWT_SECRET = 'test-secret-0123456789abcdef';
   model = fakeModel(); enqueue = vi.fn(); refs = { used: async () => new Set<string>() };
-  ctl = new FootageController(model as any, new FootageStore(), refs, { enqueue } as any);
+  wake = vi.fn(async () => undefined);
+  ctl = new FootageController(model as any, new FootageStore(), refs, { enqueue, wake } as any);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const dto = (o: any = {}) => ({ name: 'a.mp4', size: 10, mime: 'video/mp4', role: 'original', brand: 'b1', ...o });
@@ -142,6 +143,7 @@ describe('delete', () => {
     await expect(ctl.remove(id)).rejects.toMatchObject({ status: 409 });
     refs.used = async () => new Set();
     await ctl.remove(id);
+    expect(wake).toHaveBeenCalledWith(id); // waiting originals are told the reference is gone
     expect(model.rows).toHaveLength(0);
     await expect(fs.stat(join(root, id))).rejects.toThrow();
   });

@@ -54,7 +54,7 @@ export class PyWorker {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<any> | null = null;
   private hello: any = null;
-  private waiting = new Map<string, { ok: (r: any) => void; fail: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private waiting = new Map<string, { ok: (r: any) => void; fail: (e: Error) => void; timer: NodeJS.Timeout; proc: ChildProcessWithoutNullStreams | null }>();
   private queue: Promise<unknown> = Promise.resolve();
   private idle: NodeJS.Timeout | null = null;
   constructor(private log: Logger, private name: string, private python: string, private script: string, private env: Record<string, string>,
@@ -83,7 +83,8 @@ export class PyWorker {
       p.on("error", (e) => { clearTimeout(timer); fail(new ServiceUnavailableException(`The ${this.name} voice engine could not start: ${e.message}`)); });
       p.on("exit", () => {
         if (this.proc === p) { this.proc = null; this.hello = null; }
-        this.waiting.forEach((w) => { clearTimeout(w.timer); w.fail(new Error("The voice engine stopped")); }); this.waiting.clear();
+        // only this process's requests: a restarted worker may already have new ones waiting
+        for (const [id, w] of this.waiting) if (w.proc === p) { clearTimeout(w.timer); w.fail(new Error("The voice engine stopped")); this.waiting.delete(id); }
       });
     }).finally(() => { this.starting = null; });
     return this.starting;
@@ -95,8 +96,8 @@ export class PyWorker {
       await this.start();
       const id = randomUUID(), out = join(tmpdir(), `tts-${id}.wav`);
       const res = await new Promise<{ ms: number }>((ok, fail) => {
-        const timer = setTimeout(() => { this.waiting.delete(id); fail(new Error("The voice took too long")); }, this.callMs);
-        this.waiting.set(id, { ok, fail, timer });
+        const timer = setTimeout(() => { this.waiting.delete(id); fail(new Error("The voice took too long")); this.stop(); }, this.callMs);
+        this.waiting.set(id, { ok, fail, timer, proc: this.proc });
         this.proc!.stdin.write(JSON.stringify({ ...req, id, out }) + "\n");
       });
       try { return { wav: await fs.readFile(out), ms: res.ms }; } finally { fs.unlink(out).catch(() => {}); this.rest(); }
@@ -113,8 +114,8 @@ export class PyWorker {
       const id = randomUUID();
       try {
         return await new Promise<any>((ok, fail) => {
-          const timer = setTimeout(() => { this.waiting.delete(id); fail(new Error("The worker took too long")); }, timeoutMs);
-          this.waiting.set(id, { ok, fail, timer });
+          const timer = setTimeout(() => { this.waiting.delete(id); fail(new Error("The worker took too long")); this.stop(); }, timeoutMs);
+          this.waiting.set(id, { ok, fail, timer, proc: this.proc });
           this.proc!.stdin.write(JSON.stringify({ ...req, id }) + "\n");
         });
       } finally { this.rest(); }
@@ -130,6 +131,7 @@ export class PyWorker {
     this.idle = setTimeout(() => { if (!this.waiting.size) this.stop(); }, this.idleMs);
     this.idle.unref?.();
   }
+  /** Also used after a timeout: a worker still busy with an abandoned request would make the next one wait behind it */
   stop() { this.proc?.kill(); this.proc = null; this.hello = null; }
 }
 

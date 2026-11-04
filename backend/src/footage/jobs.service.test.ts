@@ -331,4 +331,40 @@ describe('JobsService grade', () => {
     await svc.enqueue(ID1, 'probe'); await svc.idle(ID1);
     expect(ask).not.toHaveBeenCalled(); expect(model.docs[ID1].jobs.transcribe).toBeUndefined(); expect(model.docs[ID1].jobs.grade).toBeUndefined();
   });
+  it('wake-up window: the reference finishes after the grade read it but before queued is persisted', async () => {
+    orig({ ref: ID2 }); model.docs[ID1].status = 'processing';
+    model.docs[ID2] = { _id: ID2, role: 'reference', status: 'processing', jobs: {} };
+    let fired = false;
+    model.hooks.before = async (id: string, set: any) => {
+      if (id === ID1 && set['jobs.grade']?.state === 'queued' && model.docs[ID1].jobs.grade?.state === 'running' && !fired) {
+        fired = true;
+        model.docs[ID2].jobs.frames = DONE; // reference frames finish here ...
+        await (svc as any).wake(ID2); // ... and wake runs while the grade is still `running`
+      }
+    };
+    await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
+    expect(fired).toBe(true); expect(pyCalls()).toHaveLength(1);
+    expect(model.docs[ID1].jobs.grade.state).toBe('done'); expect(model.docs[ID1].status).toBe('ready');
+  });
+  it('wake-up window, second guard: even if wake does nothing, the re-check after persisting queued retries the grade', async () => {
+    orig({ ref: ID2 }); model.docs[ID1].status = 'processing';
+    model.docs[ID2] = { _id: ID2, role: 'reference', status: 'processing', jobs: {} };
+    let fired = false;
+    vi.spyOn(svc as any, 'wake').mockResolvedValue(undefined);
+    model.hooks.before = async (id: string, set: any) => {
+      if (id === ID1 && set['jobs.grade']?.state === 'queued' && model.docs[ID1].jobs.grade?.state === 'running' && !fired) { fired = true; model.docs[ID2].jobs.frames = DONE; }
+    };
+    await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
+    expect(pyCalls()).toHaveLength(1); expect(model.docs[ID1].status).toBe('ready');
+  });
+  it('a deleted reference fails the waiting grade with the reference message', async () => {
+    orig({ ref: ID2 }); model.docs[ID1].status = 'processing';
+    model.docs[ID2] = { _id: ID2, role: 'reference', status: 'processing', jobs: {} };
+    await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
+    expect(model.docs[ID1].jobs.grade.state).toBe('queued');
+    delete model.docs[ID2];
+    await svc.wake(ID2); await svc.idle(ID1);
+    expect(model.docs[ID1].jobs.grade).toMatchObject({ state: 'failed', error: 'The reference video could not be read' });
+    expect(model.docs[ID1].status).toBe('ready');
+  });
 });

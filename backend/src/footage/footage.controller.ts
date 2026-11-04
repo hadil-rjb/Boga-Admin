@@ -153,6 +153,7 @@ export class FootageController {
     if ((await this.refs.used()).has(id)) throw new ConflictException("A design or a saved version still uses this video");
     await this.store.remove(id);
     await this.model.deleteOne({ _id: id });
+    await this.jobs.wake(id).catch(() => undefined); // originals waiting on this reference fail their grade instead of waiting forever
     return { ok: true };
   }
 

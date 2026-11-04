@@ -168,11 +168,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return Object.values((doc?.jobs ?? {}) as Record<string, any>).some((j) => NOT_DONE.includes(j?.state));
   }
 
+  /** True when the original's reference has stopped being a reason to wait (frames done or failed, footage failed, or record gone) */
+  private async refSettled(id: string): Promise<boolean> {
+    const doc: any = await this.model.findById(id).select("pair").lean();
+    const ref = doc?.pair?.ref;
+    if (!ref || !/^[0-9a-f]{24}$/.test(String(ref))) return true;
+    const r: any = await this.model.findById(String(ref)).select("status jobs").lean();
+    return !r || r.status === "failed" || ["done", "failed"].includes(r.jobs?.frames?.state);
+  }
+
   /** The footage's own frames step ended (or the footage failed): originals paired with it that wait in `grade` look again */
-  private async wake(refId: string) {
+  async wake(refId: string) {
     try {
       const rows = await this.model.find({ "pair.ref": refId }).select("_id jobs").lean();
-      for (const r of rows as any[]) if (r.jobs?.grade?.state === "queued") this.request(String(r._id), "grade");
+      // running too: a grade between reading the reference and persisting `queued` must not be skipped (request into a live runner is harmless)
+      for (const r of rows as any[]) if (NOT_DONE.includes(r.jobs?.grade?.state)) this.request(String(r._id), "grade");
     } catch (e: any) { this.log.warn(`wake ${refId}: ${e?.message ?? e}`); }
   }
 
@@ -197,7 +207,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const next = autoNext(step);
         if (next && !pending.has(next)) { pending.add(next); await this.set(id, { [`jobs.${next}`]: { state: "queued", progress: 0 } }); }
       } catch (e: any) {
-        if (e instanceof Wait) { await this.set(id, { [`jobs.${step}`]: { state: "queued", progress: 0 } }); continue; }
+        if (e instanceof Wait) {
+          await this.set(id, { [`jobs.${step}`]: { state: "queued", progress: 0 } });
+          if (await this.refSettled(id)) pending.add(step); // the reference finished while we were persisting: no wake-up is coming
+          continue;
+        }
         const error = String(e?.message ?? e).slice(-600);
         this.log.warn(`${step} failed for ${id}: ${error}`);
         await this.set(id, { [`jobs.${step}`]: { state: "failed", progress: 0, error }, ...(FATAL.includes(step) ? { status: "failed", error } : {}) });
