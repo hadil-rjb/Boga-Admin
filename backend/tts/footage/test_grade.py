@@ -224,17 +224,40 @@ def test_skin_anchor_keeps_face_at_reference_brightness(tmp_path):
     ref_px = np.concatenate([i[grade.skin_mask(i)] for i in ref_imgs])
     got = np.median(color.rgb_to_lab(cube.apply_lut(lut, src_px))[:, 0])
     want = np.median(color.rgb_to_lab(ref_px)[:, 0])
-    assert abs(got - want) < 3
-    # the neutral axis of the baked LUT stays monotonic in L
+    # The anchor shift is capped at SKIN_ANCHOR_MAX_SHIFT (30 L) and this
+    # fixture needs ~47 L, so the target is not reached exactly: assert the face
+    # moved >= 25 L toward the reference vs the global CDF curve alone.
+    all_src = np.concatenate([color.rgb_to_lab(i).reshape(-1, 3)[:, 0] for i in src_imgs])
+    all_ref = np.concatenate([color.rgb_to_lab(i).reshape(-1, 3)[:, 0] for i in ref_imgs])
+    base = np.interp(np.median(color.rgb_to_lab(src_px)[:, 0]), np.linspace(0, 100, 257), grade.l_curve(all_src, all_ref))
+    assert abs(base - want) - abs(got - want) >= 25
+    # the neutral axis stays monotonic. Not strictly: this bimodal fixture leaves
+    # the global CDF curve itself flat over ~32 L (no source pixels between the
+    # skin and background clusters); plateau-freeness of the anchor alone is
+    # tested on an identity base in test_skin_anchor_curve_is_monotonic.
     neutral = color.rgb_to_lab(np.array([lut[i, i, i] for i in range(33)]))[:, 0]
     assert np.all(np.diff(neutral) >= -1e-6)
+
+
+def longest_flat_run(curve, eps=1e-9):
+    """Longest run, in L units, of consecutive equal outputs over the 0..100 grid."""
+    step = 100 / (len(curve) - 1)
+    best = run = 0
+    for flat in np.abs(np.diff(curve)) <= eps:
+        run = run + 1 if flat else 0
+        best = max(best, run)
+    return best * step
 
 
 def test_skin_anchor_curve_is_monotonic():
     import grade
 
-    rng = np.random.default_rng(3)
-    curve = grade.l_curve(rng.uniform(60, 95, 20000), rng.uniform(5, 40, 20000))
-    bent = grade.skin_anchor(curve, rng.normal(45, 3, 2000), rng.normal(72, 3, 2000))
-    assert np.all(np.diff(bent) >= 0) and bent.min() >= 0 and bent.max() <= 100
-    assert abs(np.interp(45, np.linspace(0, 100, 257), bent) - 72) < 1.5
+    x = np.linspace(0, 100, 257)
+    for m, target, sign in ((45, 92, 1), (70, 23, -1)):  # d = +47 and d = -47 on identity
+        bent = grade.skin_anchor(x.copy(), np.full(100, m), np.full(100, target))
+        assert np.all(np.diff(bent) >= 0) and bent.min() >= 0 and bent.max() <= 100
+        assert longest_flat_run(bent) <= 3
+        inner = (x >= 5) & (x <= 95)
+        assert np.all(np.diff(bent[inner]) > 0)
+        # capped shift: exactly SKIN_ANCHOR_MAX_SHIFT at m, in the right direction
+        assert abs(np.interp(m, x, bent) - (m + sign * grade.SKIN_ANCHOR_MAX_SHIFT)) < 0.01

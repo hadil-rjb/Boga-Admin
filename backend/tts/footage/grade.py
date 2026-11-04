@@ -20,7 +20,8 @@ LUT_SIZE = 33
 SKIN_WEIGHT = 0.6
 MIN_SKIN = 0.02
 STD_PRIOR = 4.0  # Lab units added to both stds before the ratio
-SKIN_ANCHOR_SIGMA = 18.0  # L units; width of the skin-anchor bump on the L curve
+SKIN_ANCHOR_SIGMA = 18.0  # L units; minimum width of the skin-anchor bump on the L curve
+SKIN_ANCHOR_MAX_SHIFT = 30.0  # L units; cap on the skin anchor shift
 SKIN_MIN_CHROMA = 12  # Lab C*; neutral/cream walls sit below this
 # Lab hue angle (deg). Real frames: face ~42-44, warm wall / wood map ~78-80 at
 # the same chroma, so chroma alone cannot separate them.
@@ -125,15 +126,20 @@ def l_curve(src_l, ref_l, bins=256):
 
 
 def skin_anchor(curve, src_skin_l, ref_skin_l, sigma=SKIN_ANCHOR_SIGMA):
-    """Bend the L curve so the source skin median lands on the reference's.
+    """Bend the L curve so the source skin median moves to the reference's.
 
-    d = median(ref skin L) - f(m), m = median(src skin L); add a Gaussian bump
-    d * exp(-(x - m)^2 / (2 sigma^2)), then clamp 0..100 and force non-decreasing.
+    d = median(ref skin L) - f(m), m = median(src skin L), capped at
+    +-SKIN_ANCHOR_MAX_SHIFT; add d * exp(-(x - m)^2 / (2 s^2)) with
+    s = max(sigma, 0.75 |d|), so the bump's steepest slope |d|/s * e^-0.5 stays
+    <= 0.81 and an identity-slope curve never turns back (no flat plateaus after
+    the non-decreasing pass). Then clamp 0..100 and force non-decreasing.
     """
     x = np.linspace(0, 100, len(curve))
     m = float(np.median(src_skin_l))
     d = float(np.median(ref_skin_l)) - float(np.interp(m, x, curve))
-    bent = curve + d * np.exp(-((x - m) ** 2) / (2 * sigma ** 2))
+    d = float(np.clip(d, -SKIN_ANCHOR_MAX_SHIFT, SKIN_ANCHOR_MAX_SHIFT))
+    s = max(sigma, 0.75 * abs(d))
+    bent = curve + d * np.exp(-((x - m) ** 2) / (2 * s ** 2))
     return np.maximum.accumulate(np.clip(bent, 0, 100))
 
 
