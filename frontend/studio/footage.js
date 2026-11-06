@@ -32,6 +32,22 @@ export async function readProbe(api, id, { signal, sleep = (ms) => new Promise((
   }
   return null;
 }
+/** Scheduling posts images only: a footage design (a video) would go out as its black background page */
+export const SCHEDULE_VIDEO = "Scheduling videos isn't available yet. Download the video and post it from your phone.";
+export const isFootageDesign = (d) => !!(d && d.footage);
+/** Every Schedule entry point calls this first: true (after the toast) when the design is a video and must not be scheduled */
+export function blockSchedule(d, toast) {
+  if (!isFootageDesign(d)) return false;
+  if (toast) toast(SCHEDULE_VIDEO);
+  return true;
+}
+export const READY_IN_STUDIO = 'Your video is ready in Studio.';
+export const UPLOAD_STOPPED = 'Upload stopped. Drop the same files again to pick up where you left off.';
+/**
+ * What closing the upload modal does. 'stop': uploads are still running, abort them (they resume when the same files are dropped).
+ * 'finish': both uploads are complete, so the design is still created (without opening it). 'none': nothing was started.
+ */
+export const closeAction = ({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
 /** The footage part of a new design */
 export function footageDoc({ src, ref = null, lookId = null, lang = null, size, style = null }) {
   const { w, h } = size || DEFAULT_SIZE;
@@ -49,7 +65,7 @@ export function installFootage(ctx) {
   function openNew() {
     if (canEdit && !canEdit()) return;
     const looks = (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
-    const st = { original: null, ref: null, lookId: null, busy: false, closed: false, ac: null };
+    const st = { original: null, ref: null, lookId: null, busy: false, uploaded: false, closed: false, ac: null, probeAc: null };
     const zone = (k, title, hint) => `<div class="ft-zone"><b class="ft-zt">${title}</b>
       <label class="ft-drop" data-ft-drop="${k}" tabindex="0"><input type="file" accept="video/mp4,video/quicktime,video/*,.mp4,.mov,.m4v" hidden data-ft-file="${k}">
       <span class="ft-di">${ic('upload', 22)}</span><span class="ft-dt">${hint}</span><small class="ft-fn" data-ft-name="${k}"></small></label>
@@ -61,7 +77,11 @@ export function installFootage(ctx) {
         ${zone('ref', 'Reference', 'Drop an edited video to copy its look and subtitles')}${lookList}
         <p class="ft-err" data-ft-err role="alert" hidden></p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-start disabled>Start</button></div>`,
-      { onClose: () => { st.closed = true; if (st.busy && st.ac) { st.ac.abort(); toast('Upload stopped. Drop the same files again to pick up where you left off.'); } }, onMount: (bg, close) => wire(bg, close, st) });
+      { onClose: () => {
+        const a = closeAction(st); st.closed = true;
+        if (a === 'stop' && st.ac) { st.ac.abort(); toast(UPLOAD_STOPPED); }
+        else if (a === 'finish' && st.probeAc) st.probeAc.abort(); // no wait for the reference's size: the design takes the default one
+      }, onMount: (bg, close) => wire(bg, close, st) });
   }
 
   function wire(bg, close, st) {
@@ -96,7 +116,7 @@ export function installFootage(ctx) {
     }));
     start.addEventListener('click', async () => {
       if (st.busy) return;
-      st.busy = true; say(''); refresh(); start.textContent = 'Uploading…';
+      st.busy = true; st.uploaded = false; say(''); refresh(); start.textContent = 'Uploading…';
       const ac = st.ac = new AbortController(), signal = ac.signal;
       try {
         const brandId = brand().id, lang = langCode(brand().lang);
@@ -106,15 +126,25 @@ export function installFootage(ctx) {
         const bad = res.filter((r) => r.status === 'rejected').map((r) => r.reason);
         if (bad.length) throw bad.find((e) => !isAbort(e)) || bad[0];
         const [orig, ref] = res.map((r) => r.value);
-        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : { lookId: st.lookId }), ...(lang ? { lang } : {}) }, signal });
+        // both files are on the server: from here closing the modal no longer stops anything, the design is still created
+        st.uploaded = true;
+        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : { lookId: st.lookId }), ...(lang ? { lang } : {}) } });
         let probe = null;
-        if (ref) { start.textContent = 'Reading the reference…'; say('Reading the reference…', true); probe = await readProbe(api, ref.id, { signal }); say(''); }
-        if (st.closed) return;
+        if (ref && !st.closed) {
+          start.textContent = 'Reading the reference…'; say('Reading the reference…', true);
+          st.probeAc = new AbortController();
+          probe = await readProbe(api, ref.id, { signal: st.probeAc.signal });
+          if (!st.closed) say('');
+        }
         const d = createFootageDesign({ original: st.original, src: orig.id, ref: ref ? ref.id : null, lookId: ref ? null : st.lookId, lang, probe });
-        st.busy = false; close(); FT.open(d);
+        st.busy = false;
+        if (st.closed) { toast(READY_IN_STUDIO); return; }
+        close(); FT.open(d);
       } catch (e) {
         st.busy = false; st.ac = null; start.textContent = 'Start'; refresh();
-        if (!st.closed && !isAbort(e)) say((e && e.message) || 'The upload failed. Try again, dropping the same files resumes it.');
+        if (isAbort(e)) return;
+        const m = (e && e.message) || 'The upload failed. Try again, dropping the same files resumes it.';
+        if (!st.closed) say(m); else if (st.uploaded) toast(m);
       }
     });
   }

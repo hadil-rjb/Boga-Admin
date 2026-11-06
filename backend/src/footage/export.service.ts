@@ -123,14 +123,17 @@ export function validateExport(body: any, { allowLimit = false } = {}): ExportRe
   return out;
 }
 
+/** Bump whenever the encode changes its output for the same request (filters, timing, codec settings): old exports are not reused */
+export const EXPORT_PIPELINE_VERSION = 2;
+
 /**
- * SHA-1 of what the MP4 depends on: src, look, captions, out size, plus the grade cube's digest (a re-matched grade is not
- * served stale). Line ids are left out: they do not change a pixel.
+ * SHA-1 of what the MP4 depends on: src, look, captions, out size, the grade cube's digest (a re-matched grade is not
+ * served stale) and the pipeline version. Line ids are left out: they do not change a pixel.
  */
-export function exportHash(r: ExportRequest, cubeDigest: string | null): string {
+export function exportHash(r: ExportRequest, cubeDigest: string | null, version: number = EXPORT_PIPELINE_VERSION): string {
   const out = { w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitMs: r.limitMs } : {}) };
   const captions = { style: r.captions.style, lines: r.captions.lines.map(({ start, end, words }) => ({ start, end, words })) };
-  return createHash("sha1").update(JSON.stringify({ src: r.src, look: r.look, captions, out, cube: cubeDigest })).digest("hex");
+  return createHash("sha1").update(JSON.stringify({ v: version, src: r.src, look: r.look, captions, out, cube: cubeDigest })).digest("hex");
 }
 
 /**

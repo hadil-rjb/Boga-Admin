@@ -126,11 +126,11 @@ describe('caption-style step', () => {
     expect(ai.captionStyle).not.toHaveBeenCalled();
     expect(calls.some((c) => c.cmd === 'ffmpeg')).toBe(false);
   });
-  it('no Anthropic key: defaults with a note, the step is done and the footage is ready', async () => {
+  it('no Anthropic key: defaults with the measured colours and a note, the step is done and the footage is ready', async () => {
     ai.captionStyle.mockRejectedValue(new NoAnthropicKey());
     await svc.enqueue(ID, 'caption-style'); await svc.idle(ID);
     const d = model.docs[ID];
-    expect(d.captionStyle).toEqual(DEFAULT_STYLE);
+    expect(d.captionStyle).toMatchObject({ ...DEFAULT_STYLE, highlight: { ...DEFAULT_STYLE.highlight, color: '#E8B54A' } });
     expect(d.captionNote).toBe(NOTE_NO_KEY);
     expect(NOTE_NO_KEY).toBe('Add an Anthropic key in Settings, AI to copy the subtitle style.');
     expect(d.jobs['caption-style'].state).toBe('done');

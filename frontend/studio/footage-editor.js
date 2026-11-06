@@ -21,6 +21,8 @@ export function stepInfo(rec, step) {
   const j = (rec && rec.jobs && rec.jobs[step]) || {};
   return { state: j.state, progress: +j.progress || 0, error: j.error || null };
 }
+/** True while some pipeline step of the record is queued or running */
+const anyBusy = (rec) => !!rec && rec.status !== 'failed' && STEPS.some((s) => BUSY.includes(stepInfo(rec, s).state));
 /** The first failed step in pipeline order, or null */
 export function firstFailed(rec) { return STEPS.find((s) => stepInfo(rec, s).state === 'failed') || null; }
 /**
@@ -35,7 +37,8 @@ export function analysis(rec, ref) {
     transcribe: stepInfo(rec, 'transcribe'), grade: stepInfo(rec, 'grade'), style,
     proxy: stepInfo(rec, 'proxy'), failed: !!rec && rec.status === 'failed', error: (rec && rec.error) || null,
     busy: (s) => BUSY.includes(s.state) || (s.state === undefined && !!rec && !recDone),
-    settled: recDone && refDone,
+    // a step queued or running means more results are coming, whatever the status says (a step requested while `ready` was saved)
+    settled: recDone && refDone && !anyBusy(rec) && !anyBusy(ref),
   };
 }
 /**
@@ -54,7 +57,25 @@ export function applyPatch(ft, p) {
   if (p.style) { ft.captions.style = p.style; if (p.styleFrom) ft.captions.styleFrom = p.styleFrom; }
   if (p.lines) ft.captions.lines = p.lines;
   if (p.lut) ft.look.lut = p.lut;
+  if ('lookId' in p) ft.lookId = p.lookId;
   return ft;
+}
+/** A brand look is applied while the footage has its own matched grade (grade done): the way back is offered */
+export const canUseMatched = (ft, grade, id) => !!(ft && ft.look && ft.look.lut) && ft.look.lut !== lookPath(id) && !!grade && grade.state === 'done';
+/** Back to the footage's own matched grade (for applyPatch), or null when it is already in use */
+export function matchedGradePatch(ft, id) {
+  if (!ft || !ft.look || ft.look.lut === lookPath(id)) return null;
+  return { lut: lookPath(id), lookId: null };
+}
+export const LOOK_DELETED = 'This brand look was deleted. Use the matched grade instead.';
+/**
+ * The edited text of line `id` committed: the new lines, or null when nothing changes (same words, or the line is gone).
+ * Called when the field loses focus, which a drag on the lane or the video forces first (so a drag never drops typed text).
+ */
+export function textCommit(lines, id, value) {
+  const ls = lines || [], i = ls.findIndex((l) => l.id === id); if (i < 0) return null;
+  if (String(value || '').trim().split(/\s+/).filter(Boolean).join(' ') === lineText(ls[i])) return null;
+  return ls.map((l, k) => (k === i ? retext(l, value) : l));
 }
 /** Seconds since epoch at which a signed `?t=<exp>.<mac>` URL expires, or null */
 export const urlExpiry = (url) => { const m = /[?&]t=(\d+)\./.exec(String(url || '')); return m ? +m[1] : null; };
@@ -245,7 +266,7 @@ export function installFootageEditor(ctx, FT) {
   /* ---------- 2. session ---------- */
   function start(d) {
     stop();
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
     ED.tab = 'ftSubs';
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -315,7 +336,7 @@ export function installFootageEditor(ctx, FT) {
     const m = /^looks\/([\w-]{1,64})\.cube$/.exec(lut || '');
     if (!m || S.cubes[lut] || S.cubeBad[lut] || S.cubeBusy === lut) return;
     S.cubeBusy = lut;
-    api(`/footage/looks/${m[1]}`, { text: true }).then((t) => { S.cubes[lut] = parseCube(t); }).catch(() => { S.cubeBad[lut] = true; S.note = 'This brand look’s colour grade could not be loaded.'; })
+    api(`/footage/looks/${m[1]}`, { text: true }).then((t) => { S.cubes[lut] = parseCube(t); }).catch((e) => { S.cubeBad[lut] = true; if (e && e.status === 404) S.cubeGone[lut] = true; S.note = e && e.status === 404 ? LOOK_DELETED : 'This brand look’s colour grade could not be loaded.'; })
       .finally(() => { if (S.cubeBusy === lut) S.cubeBusy = null; if (alive(S)) { sync(); redraw(); } });
   }
 
@@ -475,11 +496,13 @@ export function installFootageEditor(ctx, FT) {
   const light = () => { sync(); lane(); };
   function commitText(inp) {
     if (!F || !can()) return;
-    const i = lineIdx(inp.dataset.ftText); if (i < 0) return;
-    const cur = ED.d.footage.captions.lines[i];
-    if (inp.value.trim().split(/\s+/).filter(Boolean).join(' ') === lineText(cur)) { inp.value = lineText(cur); return; }
-    editLines((ls) => ls.map((l, k) => (k === i ? retext(l, inp.value) : l)), light);
+    const id = inp.dataset.ftText, i = lineIdx(id); if (i < 0) return;
+    const next = textCommit(ED.d.footage.captions.lines, id, inp.value);
+    if (!next) { inp.value = lineText(ED.d.footage.captions.lines[i]); return; }
+    editLines(() => next, light);
   }
+  /** A drag starts: the focused field commits first (its focusout handler), so the drag's own commit keeps the typed text */
+  function commitFocus() { const a = document.activeElement; if (a && a !== document.body && typeof a.blur === 'function') a.blur(); }
   function openMenu(btn, rows) {
     document.querySelectorAll('#ctx').forEach((x) => x.remove());
     const r = btn.getBoundingClientRect(), c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
@@ -552,14 +575,18 @@ export function installFootageEditor(ctx, FT) {
   /* dragging a block edge, or the block: preview through the player, one mutate() on release */
   function dragStart(e) {
     if (!F || !can() || e.button > 0 || F.drag) return;
-    const blk = e.target.closest('.ft-blk'), lnEl = $('#ftLane'); if (!lnEl) return;
+    let blk = e.target.closest('.ft-blk'); const lnEl = $('#ftLane'); if (!lnEl) return;
     if (!blk) { // an empty spot of the lane: seek there
       if (e.target.closest('#ftLane') && F.dur && F.player) { const r = lnEl.getBoundingClientRect(); F.player.seek(((e.clientX - r.left) / r.width) * F.dur); }
       return;
     }
-    const ls = ED.d.footage.captions.lines, i = lineIdx(blk.dataset.id); if (i < 0 || !F.dur) return;
+    if (lineIdx(blk.dataset.id) < 0 || !F.dur) return;
     e.preventDefault();
-    const S = F, h = e.target.closest('.ft-h'), edge = h ? h.dataset.edge : 'move', r = lnEl.getBoundingClientRect(), orig = ls[i];
+    const h = e.target.closest('.ft-h'), edge = h ? h.dataset.edge : 'move', bid = blk.dataset.id;
+    commitFocus(); // a text commit redraws the lane: pick up the block again
+    if (!blk.isConnected) blk = document.querySelector(`#ftBlks .ft-blk[data-id="${CSS.escape(bid)}"]`);
+    const ls = ED.d.footage.captions.lines, i = lineIdx(bid); if (!F || !blk || i < 0) return;
+    const S = F, r = lnEl.getBoundingClientRect(), orig = ls[i];
     const d = S.drag = { i, id: orig.id, edge, x0: e.clientX, pid: e.pointerId, orig, to: { start: orig.start, end: orig.end }, moved: false, blk };
     blk.classList.add('drag');
     try { blk.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
@@ -630,11 +657,14 @@ export function installFootageEditor(ctx, FT) {
   function gradeHTML(ft, A, src, dis) {
     if (A.grade.state === 'failed') return failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
     if (A.busy(A.grade) || !F.rec) return `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
-    const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut);
+    const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut), gone = !own && !!F.cubeGone[ft.look.lut];
     const msg = own && F.cube ? `The colours match ${src}. Use <b>Before / After</b> under the video to compare.`
+      : gone ? esc(LOOK_DELETED)
       : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(F.note || 'No colour grade yet.');
     const L = ft.look, g = (k) => gradeToSlider(k, L[k]);
-    return `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg}</p>
+    // a brand look is applied (or was, and is gone): the footage's own matched grade is one click away
+    const back = !dis && canUseMatched(ft, A.grade, F.id) ? `<button class="btn ${gone ? 'primary' : 'secondary'} sm ft-matched" data-act="ftUseMatched">${ic('refresh', 14)}Use the matched grade</button>` : '';
+    return `${gone ? `<div class="note warn" role="alert">${ic('alert', 15)}<span>${msg}</span></div>${back}` : `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg}</p>${back}`}
       ${rgHTML('data-ft-g', 'strength', 'Strength', 0, 100, 1, g('strength'), dis)}${rgHTML('data-ft-g', 'exposure', 'Exposure', -100, 100, 1, g('exposure'), dis)}
       ${rgHTML('data-ft-g', 'temp', 'Temperature', -100, 100, 1, g('temp'), dis)}${rgHTML('data-ft-g', 'sat', 'Saturation', -100, 100, 1, g('sat'), dis)}
       ${dis ? '' : `<button class="btn ghost sm ft-reset" data-act="ftGradeReset">${ic('refresh', 14)}Reset grade</button>`}`;
@@ -721,6 +751,7 @@ export function installFootageEditor(ctx, FT) {
     ftGradeReset: () => gradeReset(),
     ftSaveLook: () => saveLook(),
     ftApplyLook: (a) => applyLook(a.dataset.id),
+    ftUseMatched: () => useMatched(),
     ftDelLook: (a) => deleteLook(a.dataset.id),
     ftSeek: (a) => { if (F && F.player) { F.player.seek(+a.dataset.ms); } },
     ftRetry: async (a) => {
@@ -801,6 +832,8 @@ export function installFootageEditor(ctx, FT) {
   function captionDrag(e) {
     if (!F || !F.player || F.split != null || !can() || e.button > 0 || F.cdrag) return;
     const fr = $('#ftFrame'), ov = fr && fr.querySelector('.ftp-o'); if (!fr || !ov || !fr.contains(e.target) || !ov.width) return;
+    commitFocus(); // a subtitle being typed is committed before the line under the playhead is read
+    if (!F || !F.player) return;
     const ft = ED.d.footage, st = ft.captions.style || DEFAULT_STYLE, line = lineAt(ft.captions.lines || [], F.player.time()); if (!line) return;
     const r = fr.getBoundingClientRect(), W = ov.width, H = ov.height, L = layout(ov.getContext('2d'), line, st, W, H);
     const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height, pad = 0.025;
@@ -897,6 +930,20 @@ export function installFootageEditor(ctx, FT) {
     }
     mutate(() => { applyLookTo(ED.d.footage, look); }); save(); toast(`Applied “${look.name}”`);
   }
+  /** Back from a brand look to the footage's own matched grade: loads its cube, then one undoable step */
+  async function useMatched() {
+    if (!F || !can()) return; const S = F;
+    if (!S.cube) {
+      let text;
+      try { text = await api(`/footage/${S.id}/look`, { text: true }); } catch (e) { toast((e && e.message) || 'Could not load the matched grade'); return; }
+      if (!alive(S)) return;
+      try { S.cube = parseCube(text); } catch (e) { toast('The colour grade file could not be read.'); return; }
+    }
+    const p = matchedGradePatch(ED.d.footage, S.id); if (!p) return;
+    S.note = null;
+    mutate(() => { applyPatch(ED.d.footage, p); }, () => { sync(); S.sig = ''; redraw(); }); save();
+    toast('Using the matched grade');
+  }
   function deleteLook(id) {
     if (!F || !can()) return; const S = F, look = brandLooks().find((l) => l.id === id); if (!look) return;
     ask('Delete this brand look?', `“${look.name}” is removed for everyone on this brand. Videos that use it lose its colour grade when reopened.`, 'Delete', async () => {
@@ -926,13 +973,8 @@ export function installFootageEditor(ctx, FT) {
         const done = (url) => {
           st.url = url; bar(1); msg('Your video is ready.');
           const name = exportName(d, st.size), href = apiUrl(url) + '&dl=' + encodeURIComponent(name);
-          $b('[data-ft-ef]').innerHTML = `<button class="btn ghost" data-close>Close</button><a class="btn secondary" href="${esc(href)}" download="${esc(name)}">${ic('download', 16)}Download</a>${canEdit && !canEdit() ? '' : `<button class="btn primary" data-ft-sched>${ic('clock', 16)}Schedule</button>`}`;
-          const sc = $b('[data-ft-sched]');
-          sc && sc.addEventListener('click', () => {
-            const rec = { jobId: st.jobId, url, w: st.size.w, h: st.size.h, at: new Date().toISOString() };
-            if (ED.d === d) { mutate(() => { ED.d.footage.export = rec; }); } else d.footage.export = rec;
-            save(); close(); ctx.openSchedule(d);
-          });
+          // no Schedule here: the publisher posts images only, a video would go out as a black still (see footage.js blockSchedule)
+          $b('[data-ft-ef]').innerHTML = `<button class="btn ghost" data-close>Close</button><a class="btn primary" href="${esc(href)}" download="${esc(name)}">${ic('download', 16)}Download</a>`;
         };
         const fail = (e) => { lock(false); msg((e && e.message) || 'The export failed. Try again.'); const g = $b('[data-ft-go]'); if (g) g.innerHTML = `${ic('refresh', 16)}Try again`; };
         async function poll() {

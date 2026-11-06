@@ -143,9 +143,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (plan.reset.length || plan.requeue.length) this.log.log(`recovered ${plan.reset.length} upload(s), re-queued ${plan.requeue.length} job(s)`);
   }
 
-  /** Persists `queued` for the step, then runs it and the steps after it in the background */
+  /** Persists `queued` for the step (a ready footage goes back to processing), then runs it and the steps after it in the background */
   async enqueue(footageId: string, step: Step): Promise<void> {
     await this.model.updateOne({ _id: footageId }, { $set: { [`jobs.${step}`]: { state: "queued", progress: 0 } } });
+    await this.model.updateOne({ _id: footageId, status: "ready" }, { $set: { status: "processing" } });
     this.request(footageId, step);
   }
 
@@ -195,13 +196,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     for (;;) {
       const step = CHAIN.find((s) => pending.has(s));
       if (!step) {
-        if (!failed && !(await this.hasWaiting(id))) await this.set(id, { status: "ready" }); // every requested step is done, skipped or failed non-fatally
+        // every requested step is done, skipped or failed non-fatally, and nothing was requested meanwhile
+        if (!failed && !(await this.hasWaiting(id)) && !CHAIN.some((s) => pending.has(s))) await this.set(id, { status: "ready" });
         if (CHAIN.some((s) => pending.has(s))) continue; // requested while we were saving
         this.running.delete(id); this.pending.delete(id); // same tick as the check above: a concurrent request() either saw us running (and is in `pending`, handled above) or starts a new runner
         return;
       }
       pending.delete(step);
-      await this.set(id, { [`jobs.${step}`]: { state: "running", progress: 0 }, ...(step === "probe" ? { status: "processing" } : {}) });
+      // any step that starts puts the footage back to processing: a step requested while `ready` was being saved must not run under it
+      await this.set(id, { [`jobs.${step}`]: { state: "running", progress: 0 }, status: "processing" });
       if (FATAL.includes(step)) failed = false;
       try {
         const outcome = await this.runStep(id, step);
@@ -351,7 +354,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         result = mergeStyle(r.style, sampled, defaults);
       } catch (e: any) {
         this.log.warn(`caption style for ${id}: ${e?.message ?? e}`);
-        result = e instanceof NoAnthropicKey ? { ...mergeStyle(null, {}, defaults), note: NOTE_NO_KEY } : { ...mergeStyle(null, sampled, defaults), note: NOTE_AI_FAILED };
+        result = e instanceof NoAnthropicKey ? { ...mergeStyle(null, sampled, defaults), note: NOTE_NO_KEY } : { ...mergeStyle(null, sampled, defaults), note: NOTE_AI_FAILED };
       }
     } catch (e: any) {
       return void (await unreadable(`crops: ${e?.message ?? e}`));

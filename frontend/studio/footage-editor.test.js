@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { clampDrag, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
-  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport } from './footage-editor.js';
+  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit } from './footage-editor.js';
 import { DEFAULT_STYLE } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e, p: 1 });
@@ -39,6 +40,14 @@ describe('analysis', () => {
     expect(analysis(rec('ready'), rec('failed')).settled).toBe(true);
     expect(analysis(rec('failed'), null).settled).toBe(true);
     expect(analysis(null, null).settled).toBe(false);
+  });
+  it('is not settled while a step is queued or running, even when the status already says ready (race with the runner)', () => {
+    expect(analysis(rec('ready', { transcribe: { state: 'queued' } }), null).settled).toBe(false);
+    expect(analysis(rec('ready', { grade: { state: 'running' } }), rec('ready')).settled).toBe(false);
+    expect(analysis(rec('ready'), rec('ready', { 'caption-style': { state: 'queued' } })).settled).toBe(false);
+    expect(analysis(rec('ready', { transcribe: { state: 'done' }, grade: { state: 'failed' } }), null).settled).toBe(true);
+    // a fatal failure leaves later steps persisted as queued: the record is still settled
+    expect(analysis(rec('failed', { proxy: { state: 'failed' }, transcribe: { state: 'queued' } }), null).settled).toBe(true);
   });
   it('reports step states, busy and the fatal failure', () => {
     const A = analysis(rec('processing', { transcribe: { state: 'running', progress: 0.4 }, grade: { state: 'failed', error: 'boom' } }), null);
@@ -248,5 +257,38 @@ describe('export', () => {
     expect(canExport({ status: 'processing', jobs: {} }, null)).toBe(false);
     expect(canExport({ status: 'ready', jobs: {} }, { status: 'processing' })).toBe(false);
     expect(canExport(null, null)).toBe(false);
+  });
+});
+
+describe('back to the matched grade', () => {
+  const id = 'a'.repeat(24), done = { state: 'done' };
+  it('is offered when a brand look is applied and the grade is done', () => {
+    expect(canUseMatched(ft({ lookId: 'l1', look: { lut: 'looks/l1.cube', strength: 1 } }), done, id)).toBe(true);
+    expect(canUseMatched(ft({ look: { lut: lookPath(id) } }), done, id)).toBe(false);
+    expect(canUseMatched(ft({ look: { lut: 'looks/l1.cube' } }), { state: 'running' }, id)).toBe(false);
+    expect(canUseMatched(ft({ look: { lut: 'looks/l1.cube' } }), { state: 'failed' }, id)).toBe(false);
+    expect(canUseMatched(ft(), done, id)).toBe(false);
+  });
+  it('the patch points the look at the footage cube and clears the brand look, keeping the sliders', () => {
+    const f = ft({ lookId: 'l1', look: { lut: 'looks/l1.cube', strength: 0.5, exposure: 0.2, temp: 0, sat: 0 } });
+    const p = matchedGradePatch(f, id);
+    expect(p).toEqual({ lut: lookPath(id), lookId: null });
+    applyPatch(f, p);
+    expect(f.look).toEqual({ lut: lookPath(id), strength: 0.5, exposure: 0.2, temp: 0, sat: 0 }); expect(f.lookId).toBeNull();
+    expect(matchedGradePatch(f, id)).toBeNull();
+  });
+  it('the deleted-look note', () => expect(LOOK_DELETED).toBe('This brand look was deleted. Use the matched grade instead.'));
+});
+
+describe('textCommit (a field committed before a drag)', () => {
+  const lines = [{ id: 'x', start: 0, end: 1000, words: [W('hello', 0, 400), W('there', 500, 1000)] }, { id: 'y', start: 1200, end: 2000, words: [W('bye', 1200, 2000)] }];
+  it('returns the lines with the typed text, other lines untouched', () => {
+    const out = textCommit(lines, 'x', 'hello  world ');
+    expect(lineText(out[0])).toBe('hello world'); expect(out[0].start).toBe(0); expect(out[0].end).toBe(1000);
+    expect(out[1]).toBe(lines[1]);
+  });
+  it('returns null when nothing changes or the line is gone', () => {
+    expect(textCommit(lines, 'x', '  hello there ')).toBeNull();
+    expect(textCommit(lines, 'zz', 'a')).toBeNull();
   });
 });

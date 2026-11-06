@@ -20,7 +20,7 @@ function fakeModel(initial: Record<string, any> = {}) {
     docs, hooks,
     updateOne: vi.fn(async (q: any, u: any) => {
       await hooks.before?.(String(q._id), u.$set);
-      const d = docs[String(q._id)]; if (!d) return;
+      const d = docs[String(q._id)]; if (!d || (q.status && d.status !== q.status)) return;
       for (const [k, v] of Object.entries(u.$set)) setPath(d, k, v);
     }),
     updateMany: vi.fn(async (q: any, u: any) => { for (const id of q._id.$in) if (docs[id].status === q.status) Object.assign(docs[id], u.$set); }),
@@ -140,6 +140,32 @@ describe('JobsService queue races', () => {
     await svc.enqueue(ID1, 'probe'); await svc.idle(ID1);
     expect(calls.filter((c) => c.args.some((a) => a.endsWith('%03d.png')))).toHaveLength(2);
     expect(model.docs[ID1].jobs.frames.state).toBe('done'); expect(model.docs[ID1].status).toBe('ready');
+  });
+  it('a step requested while ready is being saved runs under processing, never under ready', async () => {
+    model.docs[ID1] = { _id: ID1, role: 'original', status: 'processing', meta: { dur: 10, w: 720, h: 1280, rotation: 0, fps: 30, hdr: null, audio: true }, jobs: {}, pair: { lookId: 'x' } };
+    let fired = false; const seen: string[] = [];
+    svc.whisper = { ask: async (r: any) => { seen.push(model.docs[ID1].status); return ask(r); } } as any;
+    model.hooks.before = async (id: string, set: any) => {
+      // the pair endpoint read `processing`, then the runner found nothing waiting and is saving ready: transcribe arrives now
+      if (set.status === 'ready' && !fired) { fired = true; await svc.enqueue(id, 'transcribe'); }
+    };
+    await svc.enqueue(ID1, 'frames'); await svc.idle(ID1);
+    expect(fired).toBe(true);
+    expect(seen).toEqual(['processing']);
+    expect(model.docs[ID1].jobs.transcribe.state).toBe('done'); expect(model.docs[ID1].status).toBe('ready');
+  });
+  it('enqueueing a step on a ready footage puts it back to processing until the step ends', async () => {
+    model.docs[ID1] = { _id: ID1, role: 'original', status: 'ready', meta: { dur: 10, w: 720, h: 1280, rotation: 0, fps: 30, hdr: null, audio: true }, jobs: {}, pair: { lookId: 'x' } };
+    const p = svc.enqueue(ID1, 'transcribe'); await p;
+    expect(model.docs[ID1].status).toBe('processing');
+    await svc.idle(ID1);
+    expect(model.docs[ID1].status).toBe('ready');
+  });
+  it('enqueue does not revive a failed footage', async () => {
+    model.docs[ID1].status = 'failed';
+    await svc.enqueue(ID1, 'frames');
+    expect(model.docs[ID1].status).toBe('failed');
+    await svc.idle(ID1);
   });
   it('a step requested after the runner has fully exited starts a new runner', async () => {
     await svc.enqueue(ID1, 'probe'); await svc.idle(ID1);

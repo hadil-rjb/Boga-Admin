@@ -74,8 +74,8 @@ export class FootageController {
   async create(@Req() r: any, @Body() d: CreateFootageDto) {
     if (!/^video\//.test(d.mime)) throw new BadRequestException("Expected a video file");
     if (d.size > MAX_SIZE) throw new BadRequestException("Videos are limited to 2 GB");
-    // same brand, name, size and user still uploading: resume it
-    const prev = await this.model.findOne({ brand: d.brand, name: d.name, size: d.size, createdBy: r.user.sub, status: "uploading" });
+    // same brand, role, name, size and user still uploading: resume it (the same file dropped in the other slot is a new upload)
+    const prev = await this.model.findOne({ brand: d.brand, role: d.role, name: d.name, size: d.size, createdBy: r.user.sub, status: "uploading" });
     if (prev) return { id: String(prev._id), chunkSize: CHUNK_SIZE, received: await this.store.received(String(prev._id)) };
     const doc = await this.model.create({ ...d, ext: extOf(d.name, d.mime), createdBy: r.user.sub, status: "uploading", jobs: {} });
     return { id: String(doc._id), chunkSize: CHUNK_SIZE, received: [] };

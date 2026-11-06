@@ -60,6 +60,13 @@ describe('create', () => {
     expect((await ctl.create(user, dto({ name: 'other.mp4' }))).id).not.toBe(a.id);
     expect((await ctl.create({ user: { sub: 'u2' } }, dto())).id).not.toBe(a.id);
   });
+  it('does not resume an upload of the same file in the other slot', async () => {
+    const a = await ctl.create(user, dto());
+    const b = await ctl.create(user, dto({ role: 'reference' }));
+    expect(b.id).not.toBe(a.id);
+    expect(model.rows.find((r) => r._id === b.id).role).toBe('reference');
+    expect((await ctl.create(user, dto({ role: 'reference' }))).id).toBe(b.id);
+  });
 });
 
 describe('chunk', () => {

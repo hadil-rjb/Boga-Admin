@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { concatText, CaptionRenderer, exportHash, ExportInvalid, ExportRequest, ExportService, INTERRUPTED, MAX_ACTIVE, overlayPlan, validateExport } from './export.service';
+import { concatText, CaptionRenderer, EXPORT_PIPELINE_VERSION, exportHash, ExportInvalid, ExportRequest, ExportService, INTERRUPTED, MAX_ACTIVE, overlayPlan, validateExport } from './export.service';
 import { FootageStore } from './footage.store';
 import { JobsService } from './jobs.service';
 import { loadShared } from './shared';
@@ -125,6 +125,12 @@ describe('exportHash', () => {
     expect(exportHash(a, 'c')).not.toBe(exportHash(a, 'd'));
     expect(exportHash(a, 'c')).not.toBe(exportHash({ ...a, fps: 60 }, 'c'));
     expect(exportHash(a, 'c')).not.toBe(exportHash({ ...a, captions: { ...a.captions, style: { y: 0.5 } } }, 'c'));
+  });
+  it('follows the pipeline version (starts at 2): a changed encoder never serves an old file', () => {
+    const a = req();
+    expect(EXPORT_PIPELINE_VERSION).toBe(2);
+    expect(exportHash(a, 'c')).toBe(exportHash(a, 'c', EXPORT_PIPELINE_VERSION));
+    expect(exportHash(a, 'c', EXPORT_PIPELINE_VERSION + 1)).not.toBe(exportHash(a, 'c'));
   });
 });
 

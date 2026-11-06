@@ -5,6 +5,13 @@
  */
 export type PublishState = "idle" | "pending" | "publishing" | "published" | "partial" | "failed";
 
+/**
+ * A footage design (Studio, Match a reference) is a video: its only page is the black background, so rendering or publishing
+ * it as images would post a black still. Until video publishing exists such a post fails with this message (studio copy).
+ */
+export const VIDEO_NOT_SCHEDULABLE = "Scheduling videos isn't available yet. Download the video and post it from your phone.";
+export const isVideoDesign = (design: Record<string, any> | null | undefined) => !!design?.footage;
+
 const DONE: PublishState[] = ["published", "partial", "publishing"];
 
 /**

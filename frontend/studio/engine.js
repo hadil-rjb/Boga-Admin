@@ -20,7 +20,7 @@ import * as PATH from './paths';
 import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
-import { installFootage } from './footage';
+import { installFootage, blockSchedule } from './footage';
 
 let mounted = null; // destroy() of the running instance
 
@@ -941,6 +941,7 @@ document.addEventListener('dragover', (e) => { const d = e.target.closest('.day'
 document.addEventListener('drop', (e) => {
   const d = e.target.closest('.day'); if (!d) return; e.preventDefault();
   const id = e.dataTransfer.getData('text/plain'); if (!id) return;
+  if (blockSchedule(getD(id), toast)) return;
   S.posts.push({ id: 'p' + uid(), d: id, date: d.dataset.date, time: '09:00', pf: Object.keys(S.platforms).filter((k) => S.platforms[k]).slice(0, 2), status: 'Scheduled' });
   toast('Scheduled for ' + fmt(new Date(d.dataset.date + 'T00:00'), { weekday: 'long', day: 'numeric', month: 'short' }) + ', 09:00'); route();
 });
@@ -2074,6 +2075,7 @@ ACT.figma = () => openFigma();
 /* ---------- Schedule + export modals (used by the editor) ---------- */
 const CAPS = ['New: CPI is out at 13:30 GMT. Here’s the high-impact calendar for today. Save this post and trade with a plan.', 'Today’s market movers, in one glance. Which release are you watching?'];
 function openSchedule(d) {
+  if (blockSchedule(d, toast)) return;
   const sel = new Set(Object.keys(S.platforms).filter((k) => S.platforms[k]).slice(0, 3)), dd = iso(addD(new Date(), 1));
   modal(`<div class="mh"><h2>Schedule post</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
   <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 110, 140)}<div class="grow"><span class="label">Platforms</span><div class="chips" id="scPf">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="chip ${sel.has(k) ? 'on' : ''}" data-k="${k}">${v.n}</button>`).join('')}</div></div></div>
@@ -3851,6 +3853,8 @@ Object.assign(IC, {
   const TAGS = { calendar: ['#Forex', '#EconomicCalendar', '#Trading', '#MarketNews'], article: ['#UXDesign', '#Onboarding', '#ProductDesign', '#UXResearch'], stat: ['#SEO', '#Growth', '#OrganicTraffic', '#Marketing'], launch: ['#Launch', '#DesignTools', '#SocialMedia', '#NewRelease'], features: ['#ProductUpdate', '#Features', '#SaaS'], testimonial: ['#CustomerStories', '#Testimonial', '#SocialProof'], event: ['#AMA', '#LiveEvent', '#Growth', '#Webinar'], quote: ['#Quote', '#Inspiration', '#Design'] };
   function withUtm(u, k, d) { try { const x = new URL(/^https?:\/\//.test(u) ? u : 'https://' + u); x.searchParams.set('utm_source', PLATFORMS[k].n.toLowerCase()); x.searchParams.set('utm_medium', 'social'); x.searchParams.set('utm_campaign', slug(d ? d.name : 'post')); return x.toString(); } catch (e) { return u; } }
   openSchedule = function (d0, o = {}) {
+    // footage designs are videos: the publisher only posts images (see footage.js blockSchedule)
+    if (blockSchedule(d0 || (o.post ? getD(o.post.d) : null), toast)) return;
     const ed = o.post || null, inEd = document.body.classList.contains('in-editor'), c0 = conn();
     const st = { d: d0 || (ed ? getD(ed.d) : null), pf: new Set(ed ? ed.pf : c0.slice(0, 3)), cap: ed ? ed.cap || '' : '', caps: ed && ed.caps ? clone(ed.caps) : {}, tab: 'all', fc: ed ? ed.fc || '' : '', fcOpen: !!(ed && ed.fc), link: ed ? ed.link || '' : '', utm: !!(ed && ed.utm), now: false, date: '', time: '', pv: null, pvi: 0, tags: false };
     const tomorrow = iso(addD(new Date(), 1));
@@ -3984,7 +3988,7 @@ Object.assign(IC, {
       R('cLink').value = st.link; R('cTone').value = 'Professional';
       bg.addEventListener('click', (e) => {
         const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c;
-        if (c === 'pick') { st.d = getD(b.dataset.id); st.pvi = 0; drawDes(); drawTags(); drawPv(); drawChk(); drawFoot(); }
+        if (c === 'pick') { if (blockSchedule(getD(b.dataset.id), toast)) return; st.d = getD(b.dataset.id); st.pvi = 0; drawDes(); drawTags(); drawPv(); drawChk(); drawFoot(); }
         else if (c === 'chg') { st.d = null; drawDes(); drawPv(); drawChk(); drawFoot(); }
         else if (c === 'net') { const k = b.dataset.k; if (!S.platforms[k]) return toast(PLATFORMS[k].n + ' is not connected. Add it in Settings, Connected accounts'); st.pf.has(k) ? st.pf.delete(k) : st.pf.add(k); if (st.tab === k && !st.pf.has(k)) st.tab = 'all'; afterNets(); }
         else if (c === 'tab') { st.tab = b.dataset.k; if (st.tab !== 'all') st.pv = st.tab; drawTabBar(); loadCap(); drawCnt(); drawTags(); drawPv(); }
