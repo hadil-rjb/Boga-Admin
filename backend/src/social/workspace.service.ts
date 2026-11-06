@@ -180,9 +180,11 @@ export class WorkspaceService {
       (await this.designs.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }, { brandId: 1, id: 1, order: 1, hash: 1, rev: 1 }).lean<Row[]>())
         .map((r) => [`${r.brandId}|${r.id}`, r]),
     );
-    const conflict = async (brandId: string, id: string) => {
+    /** Refused save; when the stored design already has this content (the same save delivered twice), it's not a conflict */
+    const conflict = async (brandId: string, id: string, hash?: string) => {
       const d = await this.designs.findOne({ brandId, id }).lean<Record<string, any>>();
       if (!d) return;
+      if (hash && d.hash === hash) return void (revs[`${brandId}|${id}`] = d.rev ?? 0);
       const { rev = 0, ...item } = withAt(d);
       conflicts.push({ brandId, item: item as Item, rev });
     };
@@ -191,15 +193,15 @@ export class WorkspaceService {
       const { rev: _ignored, ...item } = raw as Item & { rev?: number };
       const key = `${brandId}|${item.id}`, prev = stored.get(key), cur = prev?.rev ?? 0, hash = hashOf(item);
       if (prev && prev.hash === hash) return void (revs[key] = cur);
-      if (prev && rev !== undefined && rev !== cur) return conflict(brandId, item.id);
+      if (prev && rev !== undefined && rev !== cur) return conflict(brandId, item.id, hash);
       const replacement = { ...item, brandId, order: prev?.order ?? Number.MAX_SAFE_INTEGER, hash, rev: cur + 1 };
       // The filter repeats the revision just read, so a save that lands in between matches nothing: a conflict, not an overwrite
       const filter = prev ? { brandId, id: item.id, rev: prev.rev ?? { $exists: false } } : { brandId, id: item.id };
       try {
         const r = await this.designs.replaceOne(filter, replacement, { upsert: !prev });
-        if (prev && !r.matchedCount) return conflict(brandId, item.id);
+        if (prev && !r.matchedCount) return conflict(brandId, item.id, hash);
       } catch (e: any) {
-        if (e?.code === 11000) return conflict(brandId, item.id); // created by another client at the same moment
+        if (e?.code === 11000) return conflict(brandId, item.id, hash); // created by another client at the same moment
         throw e;
       }
       revs[key] = cur + 1;

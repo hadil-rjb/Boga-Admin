@@ -1,4 +1,5 @@
-import { ArrayMaxSize, IsArray, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from "class-validator";
+import { Type } from "class-transformer";
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateNested } from "class-validator";
 
 const MODEL = /^[\w.\-:\/]+$/;
 export class UpdateAiSettingsDto {
@@ -61,4 +62,36 @@ export class AgentStepDto {
   @IsString() @MaxLength(120_000) context: string;
   /** Provider-neutral messages: user / assistant (text, tool calls) / tool (results); checked in agent.ts */
   @IsArray() @ArrayMaxSize(80) messages: unknown[];
+}
+
+export class SceneBriefDto {
+  @IsIn(["intro", "body", "outro"]) kind: string;
+  /** Length of the scene, in seconds */
+  @IsNumber() @Min(0.5) @Max(120) seconds: number;
+  @IsOptional() @IsArray() @ArrayMaxSize(40) @IsString({ each: true }) @MaxLength(400, { each: true }) texts?: string[];
+}
+/** Voice-over script: one spoken line per scene, sized to the scene's length */
+export class VoiceScriptDto {
+  @IsString() @MinLength(1) @MaxLength(120) brand: string;
+  @IsOptional() @IsString() @MaxLength(2000) voice?: string;
+  @IsOptional() @IsString() @MaxLength(40) language?: string;
+  @IsOptional() @IsString() @MaxLength(40) tone?: string;
+  @IsOptional() @IsString() @MaxLength(200) topic?: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(30) @ValidateNested({ each: true }) @Type(() => SceneBriefDto) scenes: SceneBriefDto[];
+}
+export class VoiceoverDto {
+  @IsString() @MinLength(1) @MaxLength(1500) text: string;
+  /** A local voice: a Kokoro id (af_heart, ff_siwis…), "piper:<file>", or an Arabic F5 voice "f5:<model>:<sample>"
+      (f5:habibi-EGY:silma; "custom" with refMedia and refText for a brand's own recording) */
+  @IsOptional() @IsString() @MaxLength(80) @Matches(/^((piper|f5):)?[\w.:-]+$/) voice?: string;
+  /** A brand's own voice sample (an audio file hosted by the API) and what is said in it, for "f5:<model>:custom" */
+  @IsOptional() @IsString() @Matches(/^[0-9a-f]{24}$/) refMedia?: string;
+  @IsOptional() @IsString() @MaxLength(400) refText?: string;
+  /** Speaking speed (1 = normal) and, for Kokoro, the language code (en-us, fr-fr…; defaults to the voice's) */
+  @IsOptional() @IsNumber() @Min(0.6) @Max(1.5) speed?: number;
+  @IsOptional() @IsString() @MaxLength(10) lang?: string;
+}
+export class MusicDto {
+  @IsString() @MinLength(3) @MaxLength(300) prompt: string;
+  @IsOptional() @IsNumber() @Min(3) @Max(30) seconds?: number;
 }

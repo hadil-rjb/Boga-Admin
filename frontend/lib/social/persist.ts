@@ -261,7 +261,17 @@ function createPersist() {
   let exit: (() => void) | null = null;
   let revs: Revs = new Map(); // revisions of the designs this browser last synced
   let onConflict: ((list: Conflict[]) => void) | undefined;
-  const onHidden = () => document.hidden && exit?.();
+  /**
+   * Tab hidden: the page is still alive, so save normally and record the revisions the API answers.
+   * (A keepalive request here would race the debounced save and leave this tab on stale revisions,
+   * which made the next save of the same design come back as a false conflict.)
+   */
+  const onHidden = () => {
+    if (!document.hidden || !getState) return;
+    stage(JSON.stringify(getState()));
+    clearTimeout(timer);
+    void push();
+  };
 
   /** Each design carries the revision it is based on (none for a design the API hasn't confirmed yet) */
   const send = (delta: Delta, keepalive = false) => {
