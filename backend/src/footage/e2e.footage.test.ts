@@ -6,13 +6,17 @@
  *
  * Runs the real pipeline through the services (no HTTP): store → JobsService (probe, proxy, frames, transcribe with the real
  * whisper worker on the whole original, grade, caption-style) → captions grouped from words.json → ExportService.start with
- * a 10 s trim (limitMs, test only). Then, at t = 1, 3, 5, 7, 9 s:
+ * a 10 s trim (limitMs, test only), three times: (a) identity look, no captions; (b) the look, no captions; (c) look and
+ * captions. Each decomposes the parity floor; every variant must pass. Then, at t = 1, 3, 5, 7, 9 s:
  *   - preview: headless Chromium (SwiftShader WebGL2) loads footage-player.js / look.js / captions.js from a temp http server
- *     that also serves the proxy and look.cube, seeks, and returns the WebGL canvas + caption overlay composited, 360 px wide;
- *   - export: ffmpeg extracts the same frame from the MP4 (accurate seek, -ss after -i), 360 px wide, decoded with
+ *     that also serves the proxy and look.cube, seeks, and returns the WebGL canvas + caption overlay composited at the
+ *     export size (1080 × 1920: captions drawn at the same pixel size as the export's overlay);
+ *   - export: ffmpeg extracts the same frame from the MP4 at full size (accurate seek, -ss after -i), decoded with
  *     accurate_rnd+full_chroma_int: swscale's default YUV→RGB rounding reads 2–3 levels darker than Chromium's decoder
  *     (measured on the proxy: ΔE 1.35 with the defaults, 0.53 with these flags), which would count against parity;
- *   - mean CIEDE2000 between the two (tts/footage/delta_e.py) must be < 2.
+ *   - both full-size PNGs are shrunk to 360 px wide by the same ffmpeg call (RGB, area filter); mean CIEDE2000 between
+ *     them (tts/footage/delta_e.py) must be < 2.
+ * Decoder check: one frame of export (c) decoded by Chromium is within ΔE 0.5 of the accurate ffmpeg decode.
  * Also: stats.json result means (skin and global L and b) are closer to the reference than the source, and in at least one
  * exported frame ≥ 0.3 % of the caption band's pixels are within ΔE 10 of the style's highlight colour.
  *
@@ -137,18 +141,34 @@ window.preview = async ({ out, look, captions, cssW, times }) => {
     shots.push({ png: grab(), mediaTime: meta.mediaTime, w: cv.width, h: cv.height });
   }
   const gl = cv.getContext('webgl2'), dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
-  return { shots, renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown' };
+  const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+  P.destroy();
+  return { shots, renderer };
+};
+// One frame of an MP4 decoded by Chromium (the preview's decoder), drawn 1:1 on a 2D canvas
+window.decodeFrame = async (src, ms) => {
+  const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = src;
+  await new Promise((ok, no) => { v.addEventListener('loadeddata', ok, { once: true }); v.addEventListener('error', () => no(new Error('export did not load')), { once: true }); });
+  const seeked = new Promise((ok) => v.addEventListener('seeked', ok, { once: true }));
+  const vfc = new Promise((ok) => v.requestVideoFrameCallback((_n, meta) => ok(meta)));
+  v.currentTime = ms / 1000;
+  const [, meta] = await Promise.all([seeked, vfc]);
+  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  const png = c.toDataURL('image/png');
+  v.removeAttribute('src'); v.load();
+  return { png, mediaTime: meta.mediaTime };
 };
 window.ready = true;
 </script></body></html>`;
 
-/** Static server: the page, three studio modules, the proxy (with Range, so the video can seek) and look.cube */
-function serve(store: FootageStore): Promise<Server> {
-  const files: Record<string, [string, string]> = {
+/** Static server: the page, three studio modules, the proxy (with Range, so the video can seek), look.cube, plus `files` */
+function serve(store: FootageStore, files: Record<string, [string, string]> = {}): Promise<Server> {
+  Object.assign(files, {
     '/proxy.mp4': [store.file(ORIG, 'proxy.mp4'), 'video/mp4'],
     '/look.cube': [store.file(ORIG, 'look.cube'), 'text/plain'],
     ...Object.fromEntries(['footage-player.js', 'look.js', 'captions.js'].map((n) => [`/studio/${n}`, [join(STUDIO, n), 'text/javascript']])),
-  };
+  }); // the caller may add more later (the export, for the Chromium decode check)
   const srv = createServer((req, res) => {
     const url = (req.url ?? '/').split('?')[0];
     if (url === '/') { res.writeHead(200, { 'content-type': 'text/html' }); return void res.end(PAGE); }
@@ -254,48 +274,82 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
     const lines = CAP.group(words, style);
     console.log(`[e2e] ${words.length} words, ${lines.length} lines; first: ${lines.slice(0, 3).map((l: any) => `${l.start}-${l.end} ${l.words.map((w: any) => w.t).join(' ')}`).join(' | ')}`);
 
-    // ---- 4. browser + export
-    server = await serve(store);
+    // ---- 4. browser + exports. Three variants decompose the parity floor; the spec's bar applies to each:
+    //   a) identity look (HLG→709 only), no captions: the proxy path (720p, crf 23) vs the 10-bit source, plus decode
+    //   b) the look (grade, strength, tweaks), no captions: adds shader vs baked LUT
+    //   c) full: look and captions (the spec's comparison)
+    const extra: Record<string, [string, string]> = {};
+    server = await serve(store, extra);
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
     browser = await launchChromium(['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required']);
     const exporter = new ExportService(model as any, store, jobs);
     exporter.renderer = pageCaptions(browser, url);
-    const req = validateExport({ designId: 'e2e', footage: { src: ORIG, look: LOOK, captions: { style, lines } }, w: W, h: H, fps: FPS, limitMs: LIMIT_MS }, { allowLimit: true });
-    const t1 = Date.now();
-    const { jobId } = await exporter.start(req);
-    await exporter.idle();
-    const st = await exporter.status(jobId);
-    expect(st?.error).toBeUndefined();
-    expect(st?.state).toBe('done');
-    const mp4 = store.file(ORIG, `exports/${jobId}.mp4`);
-    console.log(`[e2e] export ${Math.round((Date.now() - t1) / 1000)} s → ${mp4}`);
-    const dur = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4])).stdout);
-    expect(dur).toBeGreaterThan(9.9); expect(dur).toBeLessThan(10.2);
-
-    // ---- 5. preview frames: frame k = t·fps of the export starts at t; the preview seeks half a frame later so the
-    // browser shows the proxy frame around t, not the one before it on a boundary tie
+    const IDENTITY = { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 };
+    const variants = [
+      { name: 'a-identity-nocaptions', look: IDENTITY, lines: [] as any[] },
+      { name: 'b-look-nocaptions', look: LOOK, lines: [] as any[] },
+      { name: 'c-full', look: LOOK, lines },
+    ];
     const page = await openPage(browser, url);
-    const pv: any = await page.evaluate((a: any) => (window as any).preview(a), { out: { w: W, h: H, fps: FPS }, look: LOOK, captions: { style, lines }, cssW: PREVIEW_W, times: TIMES.map((t) => t * 1000 + 500 / FPS) } as any);
-    console.log(`[e2e] WebGL renderer: ${pv.renderer}`);
     const frames = join(work, 'frames');
     await fs.mkdir(frames, { recursive: true });
-    const rows: { t: number; mediaTime: number; dE: number }[] = [];
-    for (let k = 0; k < TIMES.length; k++) {
-      const t = TIMES[k], shot = pv.shots[k];
-      expect([shot.w, shot.h]).toEqual([PREVIEW_W, PREVIEW_W * H / W]);
-      const a = join(frames, `preview-${t}s.png`), b = join(frames, `export-${t}s.png`);
-      writeFileSync(a, Buffer.from(shot.png.split(',')[1], 'base64'));
-      await run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', mp4, '-ss', String(t), '-frames:v', '1', '-vf', `scale=${PREVIEW_W}:-2:in_color_matrix=bt709:in_range=tv:flags=area+accurate_rnd+full_chroma_int`, b]);
-      const { mean } = await deltaE([a, b]);
-      rows.push({ t, mediaTime: shot.mediaTime, dE: mean });
-    }
-    console.log(`[e2e] ΔE2000 per frame ${JSON.stringify(rows)}`);
-    for (const row of rows) expect(row.dE, `frame at ${row.t} s`).toBeLessThan(2);
+    /** Both sides go through this one call: full-size RGB PNG → 360 px wide, area filter (no YUV step) */
+    const shrink = (src: string, dst: string) => run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', src, '-vf', `scale=${PREVIEW_W}:-2:flags=area`, '-pix_fmt', 'rgb24', dst]);
+    /** One export frame at full size, accurate seek, decoded with accurate rounding (see the header) */
+    const extract = (mp4: string, t: number, dst: string) => run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', mp4, '-ss', String(t), '-frames:v', '1', '-vf', 'scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd+full_chroma_int', '-pix_fmt', 'rgb24', dst]);
+    const table: Record<string, number[]> = {};
+    let fullMp4 = '';
+    for (const v of variants) {
+      const req = validateExport({ designId: 'e2e', footage: { src: ORIG, look: v.look, captions: { style, lines: v.lines } }, w: W, h: H, fps: FPS, limitMs: LIMIT_MS }, { allowLimit: true });
+      const t1 = Date.now();
+      const { jobId } = await exporter.start(req);
+      await exporter.idle();
+      const st = await exporter.status(jobId);
+      expect(st?.error).toBeUndefined();
+      expect(st?.state).toBe('done');
+      const mp4 = store.file(ORIG, `exports/${jobId}.mp4`);
+      console.log(`[e2e] export ${v.name} ${Math.round((Date.now() - t1) / 1000)} s → ${mp4}`);
+      const dur = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4])).stdout);
+      expect(dur).toBeGreaterThan(9.9); expect(dur).toBeLessThan(10.2);
+      if (v.name === 'c-full') fullMp4 = mp4;
 
-    // ---- 6. the highlight box is in the export's caption band
+      // ---- 5. preview frames at the export size (canvas 1080 × 1920, captions drawn at 1080 like the export's overlay).
+      // Frame k = t·fps of the export starts at t; the preview seeks half a frame later so the browser shows the proxy
+      // frame at t, not the one before it on a boundary tie.
+      const pv: any = await page.evaluate((x: any) => (window as any).preview(x), { out: { w: W, h: H, fps: FPS }, look: v.look, captions: { style, lines: v.lines }, cssW: W, times: TIMES.map((t) => t * 1000 + 500 / FPS) } as any);
+      if (v.name === 'a-identity-nocaptions') console.log(`[e2e] WebGL renderer: ${pv.renderer}`);
+      table[v.name] = [];
+      for (let k = 0; k < TIMES.length; k++) {
+        const t = TIMES[k], shot = pv.shots[k];
+        expect([shot.w, shot.h]).toEqual([W, H]);
+        expect(shot.mediaTime).toBeCloseTo(t, 1);
+        const pFull = join(frames, `${v.name}-preview-${t}s-full.png`), eFull = join(frames, `${v.name}-export-${t}s-full.png`);
+        const p = join(frames, `${v.name}-preview-${t}s.png`), e = join(frames, `${v.name}-export-${t}s.png`);
+        writeFileSync(pFull, Buffer.from(shot.png.split(',')[1], 'base64'));
+        await extract(mp4, t, eFull);
+        await shrink(pFull, p); await shrink(eFull, e);
+        table[v.name].push((await deltaE([p, e])).mean);
+      }
+      console.log(`[e2e] ΔE2000 ${v.name} at ${TIMES.join(', ')} s: ${JSON.stringify(table[v.name])}`);
+    }
+    for (const v of variants) table[v.name].forEach((dE, k) => expect(dE, `${v.name} frame at ${TIMES[k]} s`).toBeLessThan(2));
+
+    // ---- 6. decoder check: the full export decoded by Chromium (the preview's decoder) vs the accurate ffmpeg decode
+    extra['/export.mp4'] = [fullMp4, 'video/mp4'];
+    const DEC_T = 5;
+    const dec: any = await page.evaluate((src: string, ms: number) => (window as any).decodeFrame(src, ms), '/export.mp4', DEC_T * 1000 + 500 / FPS);
+    expect(dec.mediaTime).toBeCloseTo(DEC_T, 1);
+    const cFull = join(frames, `chromium-decode-${DEC_T}s-full.png`), c360 = join(frames, `chromium-decode-${DEC_T}s.png`);
+    writeFileSync(cFull, Buffer.from(dec.png.split(',')[1], 'base64'));
+    await shrink(cFull, c360);
+    const decDE = (await deltaE([c360, join(frames, `c-full-export-${DEC_T}s.png`)])).mean;
+    console.log(`[e2e] export decoded by Chromium vs accurate ffmpeg at ${DEC_T} s: ΔE ${decDE}`);
+    expect(decDE).toBeLessThan(0.5);
+
+    // ---- 7. the highlight box is in the export's caption band
     const y0 = Math.max(0, style.y - 1.5 * style.size), y1 = Math.min(1, style.y + 1.5 * style.size);
     const near: number[] = [];
-    for (const t of TIMES) near.push((await deltaE(['--near', join(frames, `export-${t}s.png`), style.highlight.color, String(y0), String(y1)])).near);
+    for (const t of TIMES) near.push((await deltaE(['--near', join(frames, `c-full-export-${t}s.png`), style.highlight.color, String(y0), String(y1)])).near);
     console.log(`[e2e] highlight ${style.highlight.color}, band ${y0.toFixed(3)}..${y1.toFixed(3)}, fraction within ΔE 10 per frame ${JSON.stringify(near)}`);
     expect(Math.max(...near)).toBeGreaterThanOrEqual(0.003);
   }, 15 * 60_000);
