@@ -24,7 +24,8 @@ app.enableCors({
   ],
   credentials: true,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-brand-id"],
+  // x-share-token: "anyone with the link" viewers authenticate with it (see auth/jwt-auth.guard.ts)
+  allowedHeaders: ["Content-Type", "Authorization", "x-brand-id", "x-share-token"],
 });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   await app.listen(process.env.PORT || 4000);
