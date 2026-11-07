@@ -10,7 +10,7 @@
    ============================================================ */
 import { apiUrl } from '../lib/api';
 import { group, retime, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
-import { lineText } from './caption-panels.js';
+import { lineText, captionsOn } from './caption-panels.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
@@ -59,7 +59,7 @@ export function analysisPatch(caps, ft, { id, words, refStyle, refNote, hasCube 
 }
 export function applyPatch(caps, ft, p) {
   if (p.style) { caps.style = p.style; if (p.styleFrom) caps.styleFrom = p.styleFrom; }
-  if (p.lines) caps.lines = p.lines;
+  if (p.lines) { caps.lines = p.lines; caps.source = 'speech'; caps.voSig = null; } // lines from the analysis are the speech's
   if (p.lut) ft.look.lut = p.lut;
   if ('lookId' in p) ft.lookId = p.lookId;
   return ft;
@@ -70,6 +70,12 @@ export const canUseMatched = (ft, grade, id) => !!(ft && ft.look && ft.look.lut)
 export function matchedGradePatch(ft, id) {
   if (!ft || !ft.look || ft.look.lut === lookPath(id)) return null;
   return { lut: lookPath(id), lookId: null };
+}
+/** "Use the matched grade" on the design (in place, inside mutate()): true when something changed */
+export function useMatchedGrade(d, id) {
+  const p = matchedGradePatch(d && d.footage, id); if (!p) return false;
+  applyPatch(capsOf(d), d.footage, p);
+  return true;
 }
 export const LOOK_DELETED = 'This brand look was deleted. Use the matched grade instead.';
 /** Seconds since epoch at which a signed `?t=<exp>.<mac>` URL expires, or null */
@@ -225,8 +231,8 @@ export function exportSizes(out) {
 }
 /** POST /footage/export body: the server reads nothing from the design store, so everything the MP4 needs travels here */
 export function exportPayload(d, size) {
-  const ft = d.footage, caps = capsOf(d), out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
-  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: caps.on ? styleOf(d) : null, lines: caps.on ? caps.lines || [] : [] }, out: ft.out }, w: size.w, h: size.h, fps };
+  const ft = d.footage, caps = capsOf(d), on = captionsOn(d), out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
+  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: on ? styleOf(d) : null, lines: on ? caps.lines || [] : [] }, out: ft.out }, w: size.w, h: size.h, fps };
 }
 /** The download's file name: the design name, the size, .mp4 */
 export const exportName = (d, size) => `${(String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video')}-${size.w}x${size.h}.mp4`;
@@ -408,7 +414,7 @@ export function installFootageEditor(ctx, FT) {
   const posterUrl = (d) => { const p = d && d.pages && d.pages[0] && d.pages[0].poster; return typeof p === 'string' && /^(data:image\/|https?:\/\/|\/)/.test(p) && !/["\\\n\r]/.test(p) ? p : null; };
   function tlTracks() {
     if (!F || !ED.d || !isFt(ED.d)) return [];
-    const caps = capsOf(ED.d), on = caps.on !== false, name = (F.rec && F.rec.name) || 'Video', poster = posterUrl(ED.d);
+    const caps = capsOf(ED.d), on = captionsOn(ED.d), name = (F.rec && F.rec.name) || 'Video', poster = posterUrl(ED.d);
     // the clip: the poster frame tiled along the track behind the file name (a dark overlay keeps the name readable)
     const clip = poster ? `<div class="vs-tl-clip has-poster" style="${esc(`background-image:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url("${poster}")`)}"><span dir="auto">${esc(name)}</span></div>`
       : `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>`;
@@ -784,7 +790,7 @@ export function installFootageEditor(ctx, FT) {
     }
     const p = matchedGradePatch(ED.d.footage, S.id); if (!p) return;
     S.note = null;
-    mutate(() => { applyPatch(ED.d.footage, p); }, () => { sync(); S.sig = ''; redraw(); }); save();
+    mutate(() => { useMatchedGrade(ED.d, S.id); }, () => { sync(); S.sig = ''; redraw(); }); save();
     toast('Using the matched grade');
   }
   function deleteLook(id) {

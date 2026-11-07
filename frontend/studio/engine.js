@@ -23,7 +23,7 @@ import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
 import { installVideoStudio } from './video-studio.js';
 import { installReelSource } from './reel-source.js';
-import { installCaptionPanels, capsView, reelCaptions, toggleCaptions } from './caption-panels.js';
+import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
@@ -10094,10 +10094,17 @@ function clipCss(l, frames) {
       el._ly.forEach((r) => paint(r.x, stateOf(el._T, r.l, local, sc.dur, D), r.op, r.f, r.c));
     });
     // the captions: drawn by captions.js on a canvas over the scenes (the export draws them the same way, in frame())
-    const v = PL.view; let ce = v.querySelector('canvas.mo-capc');
-    if (!ce) { ce = document.createElement('canvas'); ce.className = 'mo-capc'; ce.setAttribute('aria-hidden', 'true'); v.append(ce); }
-    if (ce.width !== W || ce.height !== H) { ce.width = W; ce.height = H; }
-    const cx = ce.getContext('2d'); if (cx) { cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, W, H); AU.drawCaption(cx, ED.d, tl, t, 1, W, H); }
+    // at the size it is shown (× devicePixelRatio, at most the design size); nothing is cleared or drawn while it stays blank
+    const v = PL.view, cap = captionFrame(ED.d, t, AU.capsPreview); let ce = v.querySelector('canvas.mo-capc');
+    if (!ce) { ce = document.createElement('canvas'); ce.className = 'mo-capc'; ce.setAttribute('aria-hidden', 'true'); ce._blank = true; v.append(ce); }
+    if (cap || !ce._blank) {
+      const r = v.getBoundingClientRect(), s = Math.min(1, ((r.width || W) * Math.min(2, window.devicePixelRatio || 1)) / W);
+      const cw = Math.max(1, Math.round(W * s)), ch = Math.max(1, Math.round(H * s));
+      if (ce.width !== cw || ce.height !== ch) { ce.width = cw; ce.height = ch; } // a resize clears it
+      const cx = ce.getContext('2d');
+      if (cx) { cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, cw, ch); if (cap) AU.drawCaption(cx, ED.d, tl, t, s, W, H, cap); }
+      ce._blank = !cap;
+    }
     if (PL.on) AU.tick(t);
     head(t);
   }
@@ -10701,11 +10708,10 @@ function clipCss(l, frames) {
     };
   };
   /** The captions of a reel on a frame of W×H design px at scale s (preview and recorded export): captions.js, the design's style */
-  AU.drawCaption = (ctx, d, tl, t, s, W, H) => {
-    const c = capsView(d); if (c.on === false || !c.on) return;
-    const lines = (d === ED.d && AU.capsPreview) || reelCaptions(d); if (!lines.length) return;
+  AU.drawCaption = (ctx, d, tl, t, s, W, H, cap = captionFrame(d, t, d === ED.d ? AU.capsPreview : null)) => {
+    if (!cap) return; // captions off, or no line at t
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
-    drawCaptionLines(ctx, lines, c.style || CAPTION_STYLE, t, W * s, H * s);
+    drawCaptionLines(ctx, cap.lines, cap.style || CAPTION_STYLE, t, W * s, H * s);
     ctx.restore();
   };
 
@@ -10805,7 +10811,7 @@ function clipCss(l, frames) {
         <span class="grow"></span><select class="au2-lang" data-au="language" aria-label="Language">${AUD.LANGUAGES.map((x) => `<option ${langOf(a) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         ${ibtn('au38Script', 'studio', texted ? 'Rewrite with Claude' : 'Write with Claude', busy ? 'disabled' : '')}</div>
       ${S.scriptOpen ? `<div class="au2-lines">${lines.map(lineHTML).join('')}</div>` : ''}</div>`;
-    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(capsView(ED.d).on === true, 'au38Cc', 'Show captions')}</div>
+    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(captionsOn(ED.d), 'au38Cc', 'Show captions')}</div>
         <div class="au2-opt">${ic('music38', 15)}<span>Lower music under the voice</span>${sw(a.duck !== false, 'au38Duck', 'Lower the music under the voice')}</div></div>`;
     return `<div class="au2-head"><h3>Audio</h3>${user.role === 'admin' ? ibtn('au38PanelMenu', 'more', 'More') : ''}</div>${gen}<div class="au2-tracks">${musicRow}${voiceRow}</div>${script}${opts}`;
   }

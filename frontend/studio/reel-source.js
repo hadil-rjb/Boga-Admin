@@ -12,7 +12,7 @@
    installReelSource touches no DOM until the shell draws.
    ============================================================ */
 import { retime } from './captions.js';
-import { capsView, linesOf, lineText, prepareReel } from './caption-panels.js';
+import { captionsOn, linesOf, lineText, prepareReel } from './caption-panels.js';
 
 /** Rail items whose panel belongs to the shell (the caption panels); the rest are the motion editor's */
 const SHELL_PANELS = new Set(['captions', 'styles', 'script']);
@@ -30,7 +30,7 @@ export function installReelSource(ctx) {
 
   function tracks() {
     if (!isReel()) return [];
-    const d = ED.d, on = capsView(d).on !== false, clips = () => M.clipsHTML();
+    const d = ED.d, on = captionsOn(d), clips = () => M.clipsHTML();
     const out = [
       { id: 'scenes', icon: ic('film37', 14), label: 'Scenes', height: 58, html: (pps) => M.scenesHTML(pps) },
       { id: 'captions', icon: ic('vsCc', 14), label: 'Captions', hidden: !on, blocks: linesOf(d).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },

@@ -11,7 +11,7 @@
    foot() -> html (extra buttons), light() (the preview follows an edit without redrawing the panel) }.
    The pure helpers at the top are unit-tested; installCaptionPanels is a DOM module.
    ============================================================ */
-import { group, retext, retime, split, merge, addLine, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
+import { group, retext, split, merge, addLine, lineAt, withDefaults, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
 import { capsOf, kindOf, migrateCaptions, CAPTIONS_DEFAULT } from './caption-store.js';
 import { voiceoverWords, spreadScript, needsRebuild, voSig } from './caption-sources.js';
 import { timeline } from './motion.js';
@@ -48,6 +48,16 @@ export function capsView(d) {
   if (kindOf(d) === 'reel') return { ...CAPTIONS_DEFAULT, lines: [], on: !!(d.audio && d.audio.captions), source: 'voiceover' };
   return { ...CAPTIONS_DEFAULT, lines: [] };
 }
+/**
+ * Captions are on (preview and export). A stored boolean wins; otherwise the kind's default: a video's captions are on,
+ * a reel's follow the legacy Audio switch (`d.audio.captions`, off when never set).
+ */
+export function captionsOn(d) {
+  const c = d && d.captions;
+  if (c && typeof c.on === 'boolean') return c.on;
+  if (kindOf(d) === 'reel') return !!(d.audio && d.audio.captions);
+  return true;
+}
 /** Some scene of the reel has a voice-over line */
 export const hasVoiceover = (d) => !!d && Array.isArray(d.pages) && d.pages.some((pg) => { const vo = voOf(pg); return !!(vo && String(vo.text || '').trim()); });
 
@@ -69,10 +79,17 @@ export function captionBlocks(d) {
 }
 
 /** The voice-over lines, grouped scene by scene (a line never runs across two scenes), with ids stable across rebuilds */
-let memo = { key: null, lines: null };
+let memo = { key: null, lines: null, styleRef: null, styleKey: '' };
+/** What the voice-over lines depend on, as one string: each scene's start, length, voice clip and line, the voice track, the style */
+function voiceoverKey(d, tl, a, style) {
+  if (style !== memo.styleRef) { memo.styleRef = style; memo.styleKey = JSON.stringify(style); } // a style is replaced, never edited in place
+  let k = memo.styleKey + '|' + (a.track ? `${a.track.at || 0},${a.track.dur || 0},${a.track.src ? 1 : 0}` : '-');
+  for (const sc of tl.scenes) { const vo = voOf(d.pages[sc.i]) || {}; k += `|${sc.start},${sc.dur},${vo.src || ''},${vo.dur || 0},${String(vo.text || '').trim()}`; }
+  return k;
+}
 function voiceoverLines(d) {
   const style = capsView(d).style || DEFAULT_STYLE, tl = timeline(d.pages), a = audioOf(d);
-  const key = JSON.stringify([voSig(d.pages), tl.scenes.map((s) => s.start), a.track && [a.track.at, a.track.dur, !!a.track.src], style]);
+  const key = voiceoverKey(d, tl, a, style);
   if (memo.key === key) return memo.lines;
   const blocks = captionBlocks(d), out = [];
   for (const sc of tl.scenes) {
@@ -85,7 +102,7 @@ function voiceoverLines(d) {
     if (words.length) out.push(...group(words, style));
   }
   const lines = out.map((l, k) => ({ ...l, id: 'vo' + k }));
-  memo = { key, lines };
+  memo = { ...memo, key, lines };
   return lines;
 }
 /** The lines a reel shows: built from the voice-over for `source` 'voiceover' (or unset), else the stored lines untouched */
@@ -93,6 +110,16 @@ export function reelCaptions(d) {
   const c = capsView(d);
   if (c.source === 'voiceover' || c.source == null) return voiceoverLines(d);
   return c.lines || [];
+}
+/**
+ * What a reel draws at `t`: { lines, style } when captions are on and a line shows at t (the style's offset applied), else null.
+ * `preview` replaces the lines while a caption block is dragged.
+ */
+export function captionFrame(d, t, preview) {
+  if (!captionsOn(d)) return null;
+  const lines = preview || reelCaptions(d); if (!lines.length) return null;
+  const style = capsView(d).style || DEFAULT_STYLE;
+  return lineAt(lines, t - (+withDefaults(style).offset || 0)) ? { lines, style } : null;
 }
 /** The lines of a design, whatever its kind */
 export const linesOf = (d) => (kindOf(d) === 'reel' ? reelCaptions(d) : capsView(d).lines || []);
@@ -107,8 +134,8 @@ export function prepareReel(d) {
 }
 /** Captions on or off (preview and export) */
 export function toggleCaptions(d) {
-  prepareReel(d);
-  const c = capsOf(d); c.on = c.on === false;
+  const was = captionsOn(d); prepareReel(d);
+  const c = capsOf(d); c.on = !was;
   return c.on;
 }
 /** fn(lines) -> new lines; the lines become the user's ('manual'), and a reel remembers the voice-over they were made from */
@@ -158,7 +185,7 @@ export function installCaptionPanels(ctx, VS) {
   }
   function render(d, kind) {
     if (qFor !== d) { q = ''; qFor = d; }
-    const c = capsView(d), on = c.on !== false, lines = linesOf(d), ro = !can(), h = hooks();
+    const c = capsView(d), on = captionsOn(d), lines = linesOf(d), ro = !can(), h = hooks();
     const head = `<div class="cp-head"><h3>Captions</h3><label class="cp-on"><span>${on ? 'On' : 'Off'}</span><button class="sw ${on ? 'on' : ''}" data-act="cpOn" aria-label="Captions on or off" aria-pressed="${on}" ${ro ? 'disabled' : ''}><span></span></button></label></div>`;
     if (kind === 'reel' && !lines.length && !hasVoiceover(d)) {
       return `${head}<div class="cp-empty"><p class="sm-t muted">Captions come from the voice-over script.</p><button class="btn secondary sm" data-act="cpAudio">${ic('music38', 15)}Open Audio</button></div>`;
@@ -212,7 +239,7 @@ export function installCaptionPanels(ctx, VS) {
   function addAtPlayhead() {
     if (!ED.d || !can()) return;
     const before = linesOf(ED.d), after = addLine(before, now());
-    if (after === before) { toast('There is no room for a line here. Move the playhead to a gap.'); return; }
+    if (after === before) { toast('Move the playhead to a gap to add a line.'); return; }
     const old = new Set(before.map((l) => l.id)), fresh = after.find((l) => !old.has(l.id));
     q = ''; edit(() => after);
     const inp = fresh && document.querySelector(`#edPanel [data-cp-text="${CSS.escape(fresh.id)}"]`);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
-import { peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
+import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
   canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
@@ -278,6 +278,18 @@ describe('back to the matched grade', () => {
     applyPatch(cp(), f, p);
     expect(f.look).toEqual({ lut: lookPath(id), strength: 0.5, exposure: 0.2, temp: 0, sat: 0 }); expect(f.lookId).toBeNull();
     expect(matchedGradePatch(f, id)).toBeNull();
+  });
+  it('useMatchedGrade applies the patch to the design (caps, footage) in place', () => {
+    const d = { footage: ft({ lookId: 'l1', look: { lut: 'looks/l1.cube', strength: 0.5, exposure: 0, temp: 0, sat: 0 } }), captions: cp() };
+    expect(useMatchedGrade(d, id)).toBe(true);
+    expect(d.footage.look.lut).toBe(lookPath(id)); expect(d.footage.lookId).toBeNull();
+    expect(useMatchedGrade(d, id)).toBe(false);
+  });
+  it('lines from the analysis are the speech\'s: source speech, no voice-over signature', () => {
+    const c = cp({ source: 'manual', voSig: 'x' }), f = ft();
+    applyPatch(c, f, { lines: [{ id: 'a', start: 0, end: 1, words: [] }] });
+    expect(c.source).toBe('speech'); expect(c.voSig).toBeNull();
+    const c2 = cp({ source: 'manual' }); applyPatch(c2, f, { lut: lookPath(id) }); expect(c2.source).toBe('manual');
   });
   it('the deleted-look note', () => expect(LOOK_DELETED).toBe('This brand look was deleted. Use the matched grade instead.'));
 });

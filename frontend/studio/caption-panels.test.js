@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover } from './caption-panels.js';
+import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
 
 const ln = (id, text, start = 0) => ({ id, start, end: start + 1000, words: text.split(' ').map((t, k) => ({ t, s: start + k * 100, e: start + k * 100 + 100 })) });
@@ -135,5 +135,44 @@ describe('prepareReel', () => {
   it('leaves videos and stills alone', () => {
     const v = { footage: { src: 'x' } };
     expect(prepareReel(v)).toBe(false); expect(v.captions).toBeUndefined();
+  });
+});
+
+describe('fix round 1', () => {
+  it('the built lines follow a scene\'s length and its voice clip, not only its start', () => {
+    const d = reel(); d.pages[1].scene.vo = { text: 'Only text' };
+    expect(reelCaptions(d).at(-1).end).toBe(5000);
+    d.pages[1].scene.dur = 4000; // the last scene: no start moves
+    expect(reelCaptions(d).at(-1).end).toBe(7000);
+    d.audio = { track: { src: 't.mp3', at: 0, dur: 3500 } }; // a whole-video voice: the script-only line ends with it (+ 400 ms)
+    expect(reelCaptions(d).at(-1).end).toBe(3900);
+    d.pages[1].scene.vo = { text: 'Only text', src: 'c.mp3' }; // a clip added (length unknown yet): the line is rebuilt
+    const before = reelCaptions(d);
+    d.pages[1].scene.vo = { text: 'Only text', src: 'c.mp3', dur: 1000 };
+    expect(reelCaptions(d)).not.toBe(before);
+    expect(reelCaptions(d).at(-1).start).toBe(3150);
+  });
+  it('captionsOn: a stored boolean wins, else the kind\'s default', () => {
+    expect(captionsOn({ footage: { src: 'x' } })).toBe(true);
+    expect(captionsOn({ footage: { src: 'x' }, captions: { lines: [] } })).toBe(true);
+    expect(captionsOn({ footage: { src: 'x' }, captions: { on: false } })).toBe(false);
+    expect(captionsOn(reel())).toBe(false);
+    expect(captionsOn(reel({ audio: { captions: true } }))).toBe(true);
+    expect(captionsOn(reel({ captions: { lines: [] } }))).toBe(false);
+    expect(captionsOn(reel({ captions: { on: true } }))).toBe(true);
+  });
+  it('toggleCaptions flips what captionsOn says, also when on was never stored', () => {
+    const v = { footage: { src: 'x' }, captions: { lines: [] } };
+    toggleCaptions(v); expect(v.captions.on).toBe(false);
+  });
+  it('captionFrame: null when off or between lines, the lines and style when one shows', () => {
+    const d = reel({ captions: { on: true, lines: [], source: 'voiceover' } });
+    expect(captionFrame(d, 50)).toBeNull(); // before the LEAD
+    expect(captionFrame(d, 200).lines.length).toBeGreaterThan(0);
+    d.captions.on = false; expect(captionFrame(d, 200)).toBeNull();
+    d.captions.on = true; d.captions.style = { offset: 1000 };
+    expect(captionFrame(d, 200)).toBeNull(); // the offset delays the line
+    const mine = [ln('p', 'drag', 0)];
+    expect(captionFrame(d, 1500, mine).lines).toBe(mine);
   });
 });
