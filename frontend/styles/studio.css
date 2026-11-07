@@ -3193,11 +3193,11 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ed-pages.ft10{flex-direction:column;align-items:stretch;gap:8px;padding:8px 16px 12px}
 /* timeline (studio/timeline.js): track headers on the left; the ruler and the waveform on a canvas that follows the scroll,
    one row per track on a zoomable track, the caption blocks draggable */
-.vs-tl{--vs-tl-wave:rgba(148,163,184,.32);--vs-tl-tick:rgba(148,163,184,.55);display:grid;grid-template-columns:116px minmax(0,1fr);flex-shrink:0;border:1px solid var(--border-soft,var(--border));border-radius:12px;background:var(--pill);overflow:hidden;user-select:none}
+.vs-tl{--vs-tl-wave:rgba(148,163,184,.32);--vs-tl-tick:rgba(148,163,184,.55);display:grid;grid-template-columns:140px minmax(0,1fr);flex-shrink:0;border:1px solid var(--border-soft,var(--border));border-radius:12px;background:var(--pill);overflow:hidden;user-select:none}
 .vs-tl-side{display:flex;flex-direction:column;border-right:1px solid var(--border-soft,var(--border))}
 .vs-tl-zoom{display:flex;align-items:center;gap:1px;padding:0 4px;border-bottom:1px solid var(--border-soft,var(--border))}
 .vs-tl-hds{padding-bottom:8px}
-.vs-tl-hd{display:flex;align-items:center;gap:6px;padding:0 4px 0 10px;color:var(--text-2);font-size:12px;font-weight:500;min-width:0}
+.vs-tl-hd{display:flex;align-items:center;gap:6px;padding:0 4px 0 8px;color:var(--text-2);font-size:12px;font-weight:500;min-width:0}
 .vs-tl-ic{display:inline-grid;place-items:center;flex-shrink:0;color:var(--text-3)}
 .vs-tl-lb{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .vs-tl-hd.off .vs-tl-lb,.vs-tl-hd.off .vs-tl-ic{opacity:.45}
@@ -3205,7 +3205,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .vs-tl-ib:hover:not(:disabled){background:var(--surface);color:var(--text-1)}
 .vs-tl-ib:disabled{opacity:.35;cursor:default}
 .vs-tl-ib:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.vs-tl-eye[aria-pressed=false]{color:var(--text-3)}
+.vs-tl-eye[aria-pressed=false],.vs-tl-mute[aria-pressed=true]{color:var(--text-3)}
 .vs-tl-lane{position:relative;min-width:0;overflow:hidden;touch-action:none}
 .vs-tl-lane canvas{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none}
 .vs-tl-scroll{position:absolute;inset:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.35) transparent}
@@ -3216,6 +3216,8 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .vs-tl-row+.vs-tl-row{box-shadow:inset 0 1px 0 rgba(148,163,184,.12)}
 .vs-tl-row.off>*{opacity:.4}
 .vs-tl-clip{position:absolute;inset:4px 0;display:flex;align-items:center;padding:0 9px;border-radius:7px;background:rgba(148,163,184,.16);box-shadow:inset 0 0 0 1px rgba(148,163,184,.3);color:var(--text-2);font-size:11.5px;overflow:hidden}
+.vs-tl-clip.has-poster{background-repeat:repeat-x;background-size:auto 100%;background-position:left center;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14)}
+.vs-tl-clip.has-poster span{text-shadow:0 1px 2px rgba(0,0,0,.6)}
 .vs-tl-clip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .vs-tl-blk{position:absolute;top:4px;bottom:4px;min-width:6px;display:flex;align-items:center;padding:0 9px;color:var(--text-1);font-size:12px;font-weight:500;overflow:hidden;cursor:grab;touch-action:none}
 .vs-tl-blk::before{content:"";position:absolute;inset:0 1px;border-radius:7px;background:rgba(253,14,53,.16);box-shadow:inset 0 0 0 1px rgba(253,14,53,.38);transition:background .12s,box-shadow .12s}

@@ -2120,9 +2120,9 @@ const dim = () => RATIOS[ED.d.ratio];
 const curP = () => ED.d.pages[ED.pi];
 const curL = () => ED.sel && curP().layers.find((l) => l.id === ED.sel);
 const elOf = (id) => $(`#poster .ly[data-id="${id}"]`);
-/** Undo history: pages and canvas size (Magic resize changes the ratio), and a footage design's footage (subtitles, look) */
-const snap = () => JSON.stringify(ED.d.footage ? { r: ED.d.ratio, p: ED.d.pages, f: ED.d.footage } : { r: ED.d.ratio, p: ED.d.pages });
-const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
+/** Undo history: pages and canvas size (Magic resize changes the ratio), a footage design's footage (look) and the captions (d.captions) */
+const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages, ...(ED.d.footage ? { f: ED.d.footage } : {}), ...(ED.d.captions ? { c: ED.d.captions } : {}) });
+const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (v.c) ED.d.captions = v.c; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
 const hex = (v) => {
   v = String(v || '').trim();
   if (/^#[0-9a-f]{6}$/i.test(v)) return v;

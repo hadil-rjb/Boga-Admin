@@ -438,11 +438,16 @@ export function installFootageEditor(ctx, FT) {
   }
 
   /* ---------- the timeline (timeline.js): Video, Captions and Voice tracks ---------- */
+  /** The design's poster frame as a CSS-safe URL (a data: image or an asset URL), or null */
+  const posterUrl = (d) => { const p = d && d.pages && d.pages[0] && d.pages[0].poster; return typeof p === 'string' && /^(data:image\/|https?:\/\/|\/)/.test(p) && !/["\\\n\r]/.test(p) ? p : null; };
   function tlTracks() {
     if (!F || !ED.d || !isFt(ED.d)) return [];
-    const caps = capsOf(ED.d), on = caps.on !== false, name = (F.rec && F.rec.name) || 'Video';
+    const caps = capsOf(ED.d), on = caps.on !== false, name = (F.rec && F.rec.name) || 'Video', poster = posterUrl(ED.d);
+    // the clip: the poster frame tiled along the track behind the file name (a dark overlay keeps the name readable)
+    const clip = poster ? `<div class="vs-tl-clip has-poster" style="${esc(`background-image:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url("${poster}")`)}"><span dir="auto">${esc(name)}</span></div>`
+      : `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>`;
     return [
-      { id: 'video', icon: ic('ftFilm', 14), label: 'Video', html: () => `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>` },
+      { id: 'video', icon: ic('ftFilm', 14), label: 'Video', html: () => clip },
       { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
     ];
@@ -461,6 +466,7 @@ export function installFootageEditor(ctx, FT) {
       canEdit: () => can(),
       onRetime: (id, start, end, live) => {
         if (!alive(S)) return;
+        if (live && start == null) { sync(); return; } // a drag ended without a change: the preview shows the design again
         if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
         editLines((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
       },

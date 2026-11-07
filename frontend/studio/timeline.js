@@ -41,6 +41,20 @@ export function clampDrag(lines, i, edge, ms, dur = Infinity) {
   return { start: s, end: s + len };
 }
 
+/**
+ * The control in a track's header: 'eye' hides the track from the preview and the export (it changes the design),
+ * 'mute' silences the preview only (session state, allowed in read-only), null for the picture itself.
+ */
+export function toggleKind(t) {
+  if (t && t.toggle !== undefined) return t.toggle;
+  const id = t && t.id;
+  return id === 'video' || id === 'scenes' ? null : id === 'voice' ? 'mute' : 'eye';
+}
+/** A pointer at `y` (client px) is on the horizontal scrollbar of a scroller whose top is `top` and inner height `clientHeight` */
+export const onScrollbar = (y, top, clientHeight) => y >= top + clientHeight;
+/** The zoom-in button is off when a step in changes nothing (the last step, or no video yet) */
+export const canZoomIn = (cur, viewPx, durMs) => durMs > 0 && nextZoom(cur, 1, viewPx, durMs) !== cur;
+
 /* ---------- DOM ---------- */
 const RULER = 22;
 /** Row height of each kind of track (the header beside it has the same height) */
@@ -54,17 +68,18 @@ const ICON = {
   zoomOut: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/>',
   fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  speaker: '<path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5Z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.8"/>',
+  speakerOff: '<path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5Z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
   eyeOff: '<path d="M9.9 9.9a3 3 0 1 0 4.2 4.2"/><path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13 13 0 0 1-1.7 2.7"/><path d="M6.6 6.6A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><line x1="2" x2="22" y1="2" y2="22"/>',
 };
-/** Tracks without an eye: the picture itself */
-const NO_EYE = new Set(['video', 'scenes']);
 
 /**
  * Mounts the timeline in `host`. Options (a function is read on every draw, a value is fixed):
  *   dur() ms, time() ms, seek(ms), tracks() [{ id, icon (HTML), label, html?(pps), blocks?: [{ id, start, end, text, on }], hidden? }],
- *   onRetime(id, start, end, live): live = true while a caption block is dragged (preview only), false once on release when it changed,
+ *   onRetime(id, start, end, live): live = true while a caption block is dragged (preview only), false once on release when it changed;
+ *     (id, null, null, true) when a previewed drag ends without a change or is cancelled (show the design again),
  *   onSelect(id): a caption block was clicked without moving (the timeline also seeks to its start),
- *   onToggle(trackId): the eye of a track, canEdit(): false = read-only (blocks cannot be dragged, the lane still seeks).
+ *   onToggle(trackId): the eye (or, for voice, the "Mute preview" speaker) of a track; `hidden` = hidden or muted, canEdit(): false = read-only (blocks cannot be dragged, the lane still seeks).
  * Returns { redraw(), setTime(ms, playing), setPeaks(peaks), destroy() }.
  */
 export function createTimeline(host, opts = {}) {
@@ -100,7 +115,7 @@ export function createTimeline(host, opts = {}) {
   function size() {
     track.style.width = trackWidth() + 'px';
     const fits = !st.zoom || trackWidth() <= view(), btn = (k) => q(`[data-tl-zoom=${k}]`);
-    btn('out').disabled = fits; btn('fit').disabled = fits; btn('in').disabled = !dur() || st.zoom === ZOOMS[ZOOMS.length - 1];
+    btn('out').disabled = fits; btn('fit').disabled = fits; btn('in').disabled = !canZoomIn(st.zoom, view(), dur());
   }
   /** Zooms around the playhead (or the view's center) */
   function setZoom(z) {
@@ -130,11 +145,14 @@ export function createTimeline(host, opts = {}) {
     return `<div class="vs-tl-row t-${esc(t.id)}${t.hidden ? ' off' : ''}" data-track="${esc(t.id)}" style="height:${h}px">${inner}</div>`;
   }
   function headerHTML(t) {
-    const h = ROW_H[t.id] || 30, eye = NO_EYE.has(t.id) ? '' : `<button class="vs-tl-ib vs-tl-eye" data-tl-eye="${esc(t.id)}" aria-pressed="${!t.hidden}" aria-label="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" title="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" ${can() ? '' : 'disabled'}>${svg(t.hidden ? ICON.eyeOff : ICON.eye, 15)}</button>`;
+    const h = ROW_H[t.id] || 30, k = toggleKind(t);
+    const eye = k === 'mute' ? `<button class="vs-tl-ib vs-tl-eye vs-tl-mute" data-tl-eye="${esc(t.id)}" aria-pressed="${!!t.hidden}" aria-label="${t.hidden ? 'Unmute preview' : 'Mute preview'}" title="${t.hidden ? 'Unmute preview' : 'Mute preview'}">${svg(t.hidden ? ICON.speakerOff : ICON.speaker, 15)}</button>`
+      : k === 'eye' ? `<button class="vs-tl-ib vs-tl-eye" data-tl-eye="${esc(t.id)}" aria-pressed="${!t.hidden}" aria-label="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" title="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" ${can() ? '' : 'disabled'}>${svg(t.hidden ? ICON.eyeOff : ICON.eye, 15)}</button>` : '';
     return `<div class="vs-tl-hd t-${esc(t.id)}${t.hidden ? ' off' : ''}" style="height:${h}px"><span class="vs-tl-ic">${t.icon || ''}</span><span class="vs-tl-lb">${esc(t.label)}</span>${eye}</div>`;
   }
   /** Redraws the headers and rows (after an edit, undo or redo), the ruler and the waveform */
   function redraw() {
+    if (st.stopDrag) st.stopDrag(true); // the rows are about to be replaced: a drag in progress is cancelled, its preview restored
     const ts = tracks(), d = dur();
     hds.innerHTML = ts.map(headerHTML).join('');
     size();
@@ -200,6 +218,7 @@ export function createTimeline(host, opts = {}) {
   }
   function down(e) {
     if (e.button > 0 || st.drag || !dur()) return;
+    if (onScrollbar(e.clientY, sc.getBoundingClientRect().top, sc.clientHeight)) return; // the scrollbar scrolls, it does not seek
     let blk = can() && e.target.closest('.vs-tl-blk');
     if (!blk) { scrub(e); return; } // an empty spot, the ruler, another track, or read-only
     e.preventDefault();
@@ -219,19 +238,24 @@ export function createTimeline(host, opts = {}) {
       blk.style.left = pc((S.to.start / d) * 100) + '%'; blk.style.width = pc(((S.to.end - S.to.start) / d) * 100) + '%';
       S.live = true; opts.onRetime && opts.onRetime(S.id, S.to.start, S.to.end, true);
     };
-    const done = (commit) => {
+    const done = (commit, quiet) => {
+      if (S.over) return; S.over = true;
       blk.removeEventListener('pointermove', at); blk.removeEventListener('pointerup', up); blk.removeEventListener('pointercancel', cancel); blk.removeEventListener('lostpointercapture', cancel);
+      removeEventListener('pointerup', up); removeEventListener('pointercancel', cancel);
       blk.classList.remove('drag'); st.drag = null; st.stopDrag = null;
       if (!root.isConnected) return;
       const changed = S.to.start !== orig.start || S.to.end !== orig.end;
       if (commit && changed) { opts.onRetime && opts.onRetime(S.id, S.to.start, S.to.end, false); return; }
-      if (S.live && opts.onRetime) opts.onRetime(S.id, orig.start, orig.end, true); // back to the line as it is
+      if (S.live && opts.onRetime) opts.onRetime(S.id, null, null, true); // the preview ends: back to the design as it is now
+      if (quiet) return; // redraw() is already redrawing
       redraw();
       if (commit && !S.moved) { opts.seek && opts.seek(orig.start); opts.onSelect && opts.onSelect(S.id); }
     };
     const up = () => done(true), cancel = () => done(false);
-    st.stopDrag = cancel;
+    st.stopDrag = (quiet) => done(false, quiet);
     blk.addEventListener('pointermove', at); blk.addEventListener('pointerup', up); blk.addEventListener('pointercancel', cancel); blk.addEventListener('lostpointercapture', cancel);
+    // the block can leave the document mid-drag (its capture events then go nowhere): the window still sees the release
+    addEventListener('pointerup', up); addEventListener('pointercancel', cancel);
   }
   function click(e) {
     const z = e.target.closest('[data-tl-zoom]');
@@ -250,7 +274,7 @@ export function createTimeline(host, opts = {}) {
     setTime,
     setPeaks(p) { st.peaks = p || null; draw(); },
     destroy() {
-      st.stopDrag && st.stopDrag(); st.stopScrub && st.stopScrub();
+      st.stopDrag && st.stopDrag(true); st.stopScrub && st.stopScrub();
       st.ro && st.ro.disconnect(); st.off.forEach((f) => f()); st.off = [];
       host.innerHTML = '';
     },

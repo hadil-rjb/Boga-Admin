@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tickStep, nextZoom, clampDrag, MIN_LINE_MS } from './timeline.js';
+import { tickStep, nextZoom, clampDrag, MIN_LINE_MS, toggleKind, onScrollbar, canZoomIn } from './timeline.js';
 
 describe('ruler', () => {
   it('tickStep keeps major ticks at least 64 px apart', () => {
@@ -46,5 +46,26 @@ describe('caption drag', () => {
     expect(clampDrag(ls, 0, 'move', -300)).toEqual({ start: 0, end: 1000 });
     expect(clampDrag(ls, 2, 'move', 9000, 4500)).toEqual({ start: 3500, end: 4500 });
     expect(clampDrag(ls, 2, 'end', 9000, 4500)).toEqual({ start: 3000, end: 4500 });
+  });
+});
+
+describe('track headers and pointer guards', () => {
+  it('toggleKind: no control on the picture, a mute speaker on the voice, an eye elsewhere', () => {
+    expect(toggleKind({ id: 'video' })).toBe(null);
+    expect(toggleKind({ id: 'scenes' })).toBe(null);
+    expect(toggleKind({ id: 'voice' })).toBe('mute');
+    expect(toggleKind({ id: 'captions' })).toBe('eye');
+    expect(toggleKind({ id: 'music' })).toBe('eye');
+    expect(toggleKind({ id: 'music', toggle: 'mute' })).toBe('mute');
+  });
+  it('onScrollbar: below the scroller inner height', () => {
+    expect(onScrollbar(150, 50, 100)).toBe(true);
+    expect(onScrollbar(149, 50, 100)).toBe(false);
+  });
+  it('canZoomIn is false at the last step and without a video', () => {
+    expect(canZoomIn(null, 800, 60000)).toBe(true);
+    expect(canZoomIn(160, 800, 60000)).toBe(false);
+    expect(canZoomIn(null, 800, 0)).toBe(false);
+    expect(canZoomIn(null, 800, 1000)).toBe(false); // fit is already 800 px/s, wider than every step
   });
 });
