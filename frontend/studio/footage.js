@@ -83,7 +83,9 @@ export function footageDoc({ src, ref = null, lookId = null, size }) {
 }
 /** The captions of a new footage design: a design made from a brand look starts with that look's subtitle style */
 export function footageCaptions({ lang = null, style = null } = {}) {
-  return { ...CAPTIONS_DEFAULT, lines: [], style: style ? JSON.parse(JSON.stringify(style)) : null, lang };
+  const c = { ...CAPTIONS_DEFAULT, lines: [], style: style ? JSON.parse(JSON.stringify(style)) : null, lang };
+  if (style) c.styleFrom = 'look';
+  return c;
 }
 
 export function installFootage(ctx) {

@@ -46,16 +46,16 @@ export function analysis(rec, ref) {
  * The server's results that the design still lacks: subtitles grouped from the words (only when there are no lines yet),
  * the reference's subtitle style (only when none is set) and the grade marker (only when no look is set). null when nothing changes.
  */
-export function analysisPatch(caps, ft, { id, words, refStyle, hasCube }) {
+export function analysisPatch(caps, ft, { id, words, refStyle, refNote, hasCube }) {
   const out = {};
   // a style the user already owns (a preset, or any style) is never replaced
-  if (caps.preset == null && caps.style == null && refStyle) out.style = refStyle;
+  if (caps.preset == null && caps.style == null && refStyle) { out.style = refStyle; out.styleFrom = refNote ? 'default' : 'reference'; }
   if (!(caps.lines || []).length && Array.isArray(words) && words.length) out.lines = group(words, out.style || caps.style || DEFAULT_STYLE);
   if (hasCube && !ft.look.lut) out.lut = lookPath(id);
   return Object.keys(out).length ? out : null;
 }
 export function applyPatch(caps, ft, p) {
-  if (p.style) caps.style = p.style;
+  if (p.style) { caps.style = p.style; if (p.styleFrom) caps.styleFrom = p.styleFrom; }
   if (p.lines) caps.lines = p.lines;
   if (p.lut) ft.look.lut = p.lut;
   if ('lookId' in p) ft.lookId = p.lookId;
@@ -194,9 +194,10 @@ export function styleEdit(style, key, v) {
   }
   return s;
 }
-/** Where the subtitle style came from, guessed from what is stored: a preset is the user's pick, a style came from the reference or the look */
+/** Where the subtitle style came from: the stored origin, else guessed (a preset is the user's pick, a style came from the reference or the look) */
 export function styleOrigin(captions, hasRef) {
   const c = captions || {};
+  if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
   if (c.preset != null) return 'custom';
   return c.style ? (hasRef ? 'reference' : 'look') : 'default';
 }
@@ -223,7 +224,7 @@ export function lookRecord({ id, name, lut, captionStyle, refThumb, now = new Da
 export function applyLookTo(caps, ft, look, lines) {
   const was = maxWordsOf(caps.style);
   ft.look.lut = look.lut; ft.lookId = look.id;
-  if (look.captionStyle) caps.style = JSON.parse(JSON.stringify(look.captionStyle));
+  if (look.captionStyle) { caps.style = JSON.parse(JSON.stringify(look.captionStyle)); caps.styleFrom = 'look'; }
   if (lines) caps.lines = lines;
   return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
 }
@@ -327,7 +328,7 @@ export function installFootageEditor(ctx, FT) {
     const cur = ED.d.footage, curCaps = capsOf(ED.d); // an undo during the requests replaces the objects
     if (cubeText) { try { S.cube = parseCube(cubeText); } catch (e) { S.cube = null; S.note = 'The colour grade file could not be read.'; } }
     const refStyle = S.refRec && S.refRec.captionStyle ? S.refRec.captionStyle : null;
-    const patch = analysisPatch(curCaps, cur, { id: S.id, words, refStyle, hasCube: !!S.cube }) || {};
+    const patch = analysisPatch(curCaps, cur, { id: S.id, words, refStyle, refNote: S.refRec && S.refRec.captionNote, hasCube: !!S.cube }) || {};
     if (redo) { // Re-transcribe: the new words replace the edited lines
       S.retx = false;
       patch.lines = group(Array.isArray(words) ? words : [], patch.style || curCaps.style || DEFAULT_STYLE);
@@ -633,7 +634,7 @@ export function installFootageEditor(ctx, FT) {
         const words = await api(`/footage/${S.id}/words`);
         if (!alive(S)) return;
         if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.lines = group(words, c.style); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.lines = group(words, c.style); }); save();
       } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
     }, () => { inp.value = was; });
   }
@@ -778,6 +779,7 @@ J / L  5 s back / forward
   }
 
   function styleHTML(ft, A, dis) {
+    const caps = capsOf(ED.d);
     const st = caps.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(caps, !!F.ref);
     if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
     let top = '';
@@ -930,10 +932,10 @@ J / L  5 s back / forward
     F.player.setCaptions({ ...c, style: styleEdit(c.style, el.dataset.ftS, ctlValue(el)) });
   }
   function styleCommit(el) {
-    if (!F || !can()) return; const k = el.dataset.ftS, c0 = capsOf(ED.d);
+    if (!F || !can()) return; const k = el.dataset.ftS, c0 = capsOf(ED.d), wasCustom = c0.styleFrom === 'custom';
     const next = styleEdit(c0.style, k, ctlValue(el));
     if (c0.style && JSON.stringify(next) === JSON.stringify(c0.style)) { sync(); return; }
-    mutate(() => { const c = capsOf(ED.d); c.style = next; }, () => { sync(); if (STRUCT.has(k)) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
+    mutate(() => { const c = capsOf(ED.d); c.style = next; c.styleFrom = 'custom'; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
     save();
   }
   document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
@@ -963,7 +965,7 @@ J / L  5 s back / forward
       fr.classList.remove('drag'); S.cdrag = null;
       if (!alive(S)) return;
       if (commit && d.y !== d.y0) {
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; }, () => { sync(); ed.props(); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; }, () => { sync(); ed.props(); }); save();
       } else { sync(); ed.props(); }
     };
     const up = () => done(true), cancel = () => done(false);

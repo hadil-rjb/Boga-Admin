@@ -197,6 +197,12 @@ describe('where the subtitle style came from', () => {
     expect(analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: false }).style).toBe(refStyle);
     const c = cp(); applyPatch(c, ft(), analysisPatch(c, ft(), { id, words, refStyle, hasCube: false })); expect(c.style).toBe(refStyle);
   });
+  it('styleFrom: reference, or default when the reference fell back (captionNote); styleOrigin reads it', () => {
+    expect(analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: false }).styleFrom).toBe('reference');
+    expect(analysisPatch(cp(), ft(), { id, words, refStyle, refNote: 'x', hasCube: false }).styleFrom).toBe('default');
+    const c = cp(); applyPatch(c, ft(), analysisPatch(c, ft(), { id, words, refStyle, hasCube: false })); expect(c.styleFrom).toBe('reference');
+    expect(styleOrigin({ style: DEFAULT_STYLE, styleFrom: 'custom' }, true)).toBe('custom');
+  });
   it('a style or a preset the user owns is never replaced', () => {
     const c = cp({ style: { ...DEFAULT_STYLE, maxWords: 4 } });
     const p = analysisPatch(c, ft(), { id, words, refStyle, hasCube: false });

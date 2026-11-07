@@ -20,7 +20,7 @@ describe('caption-store', () => {
     const d = { footage: { captions: { style: { size: 9 }, lines, lang: 'fr', styleFrom: 'look' } } };
     expect(migrateCaptions(d)).toBe(true);
     expect(d.footage.captions).toBeUndefined();
-    expect(d.captions).toEqual({ on: true, lines, style: { size: 9 }, preset: null, source: 'speech', lang: 'fr', voSig: null });
+    expect(d.captions).toEqual({ on: true, lines, style: { size: 9 }, preset: null, source: 'speech', lang: 'fr', voSig: null, styleFrom: 'look' });
     expect(migrateCaptions(d)).toBe(false);
   });
   it('maps reel audio.captions', () => {

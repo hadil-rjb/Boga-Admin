@@ -155,7 +155,7 @@ export function createPlayer(host, opts) {
     }
     o2.clearRect(0, 0, ov.width, ov.height);
     const lines = st.captions.lines || [];
-    if (lines.length) drawCaptions(o2, lines, st.captions.style || DEFAULT_STYLE, st.ms, ov.width, ov.height);
+    if (lines.length && st.captions.on !== false) drawCaptions(o2, lines, st.captions.style || DEFAULT_STYLE, st.ms, ov.width, ov.height);
     opts.onTime && opts.onTime(st.ms, !video.paused);
   }
 

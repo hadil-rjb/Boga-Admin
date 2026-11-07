@@ -24,6 +24,7 @@ export function migrateCaptions(d) {
     if (pristine(d.captions)) {
       const lines = fc.lines || [];
       d.captions = { ...CAPTIONS_DEFAULT, ...(d.captions || {}), lines, style: fc.style || null, preset: null, source: lines.length ? 'speech' : null, lang: fc.lang || null };
+      if (fc.styleFrom) d.captions.styleFrom = fc.styleFrom;
     }
     delete d.footage.captions;
     changed = true;
