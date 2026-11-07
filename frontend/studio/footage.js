@@ -7,6 +7,11 @@
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 import { installFootageEditor, lookPath } from './footage-editor.js';
 export { REPLACE_ASK, NO_GRADE_YET } from './footage-editor.js';
+/** A replaced video: its captions are made again from the new speech, so the lines, the voice-over signature and the language go */
+export function resetCaptionsForReplace(d) {
+  const c = d && d.captions; if (!c) return;
+  c.lines = []; c.voSig = null; c.lang = null;
+}
 import { CAPTIONS_DEFAULT } from './caption-store.js';
 import { apiUrl } from '../lib/api';
 
@@ -306,7 +311,7 @@ export function installFootage(ctx) {
         if (old && f.look.lut === lookPath(old)) f.look.lut = null; // the old video's matched grade: the new one's comes with the analysis
         // a new video takes its own size (a landscape clip stays landscape); a replaced one keeps the design's
         if (first && meta && meta.w) { const size = outSize(meta); f.out = { ...f.out, w: size.w, h: size.h }; dd.ratio = ratioFor(size); if (dd.pages && dd.pages[0]) dd.pages[0].layers = [BG(size.w, size.h, '#000000')]; }
-        if (replace && dd.captions) { dd.captions.lines = []; dd.captions.voSig = null; }
+        if (replace) resetCaptionsForReplace(dd);
         if (!dd.named) { dd.name = `${baseName(file.name)} · captioned`; dd.named = true; }
         if (dd.pages && dd.pages[0]) { dd.pages[0].poster = shot ? shot.src : null; f.dur = shot ? shot.dur : (meta && meta.dur ? Math.round(meta.dur * 1000) : null); }
       });

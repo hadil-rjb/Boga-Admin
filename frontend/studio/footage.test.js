@@ -79,3 +79,13 @@ describe('an upload acts on its design only while it owns it', () => {
     expect(ownsUpload(map, 'd1', null)).toBe(false);
   });
 });
+
+import { resetCaptionsForReplace } from './footage.js';
+describe('replace video', () => {
+  it('clears the lines, the voice-over signature and the language, and keeps the style', () => {
+    const d = { footage: { src: 'a' }, captions: { on: true, lines: [{ id: 'x' }], style: { size: 0.05 }, source: 'speech', lang: 'ar', voSig: 'v' } };
+    resetCaptionsForReplace(d);
+    expect(d.captions).toMatchObject({ lines: [], voSig: null, lang: null, style: { size: 0.05 }, on: true });
+    expect(() => resetCaptionsForReplace({ footage: {} })).not.toThrow();
+  });
+});
