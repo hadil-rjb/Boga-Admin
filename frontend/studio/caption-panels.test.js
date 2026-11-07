@@ -390,6 +390,15 @@ describe('Script panel', () => {
     expect(r.note).toBe(SPREAD_NOTE); expect(words(r.lines)).toHaveLength(6);
     expect(r.lines[r.lines.length - 1].end).toBeLessThanOrEqual(6000);
   });
+  it('groups with the raw style: minDur stays off unless the Timing tab set it', () => {
+    const short = (t) => t.split(' ').map((w, k) => ({ t: w, s: k * 1000, e: k * 1000 + 150 }));
+    const d = vid(); d.captions.style = { ...DS, maxWords: 1 };
+    const r = scriptAction(d, 'one two three', short('one two three'), 4000);
+    expect(r.lines.map((l) => l.end - l.start)).toEqual([150, 150, 150]); // no 600 ms floor
+    d.captions.style = { ...DS, maxWords: 1, minDur: 600 };
+    const m = scriptAction(d, 'one two three', short('one two three'), 4000);
+    expect(m.lines.slice(0, 2).map((l) => l.end - l.start)).toEqual([600, 600]); // with minDur set, lines before a neighbour reach it
+  });
   it('no note when there was no speech', () => {
     expect(scriptAction(vid(), 'one two three', [], 3000).note).toBeNull();
   });

@@ -16,7 +16,7 @@
    ============================================================ */
 import { group, retext, split, merge, addLine, lineAt, withDefaults, draw, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
 import { CATEGORIES, PRESETS, presetById, applyPreset, sampleLine } from './caption-presets.js';
-import { capsOf, kindOf, styleOf, migrateCaptions, classicStyle, CAPTIONS_DEFAULT } from './caption-store.js';
+import { capsOf, kindOf, migrateCaptions, classicStyle, CAPTIONS_DEFAULT } from './caption-store.js';
 import { voiceoverWords, spreadScript, needsRebuild, voSig, linesFromScript, parseSubtitles, toSrt } from './caption-sources.js';
 import { timeline } from './motion.js';
 import { audioOf, voOf, LEAD } from './audio.js';
@@ -187,7 +187,8 @@ export const fileBase = (d) => String((d && d.name) || 'video').trim().replace(/
  */
 export function scriptAction(d, text, speech, dur = 0, speechState = 'ok') {
   const sp = Array.isArray(speech) ? speech : [];
-  const r = linesFromScript(text, { speechWords: sp, start: 0, end: dur, style: styleOf(d) });
+  // the raw style: withDefaults would turn minDur on (600 ms) while the Timing tab shows it off
+  const r = linesFromScript(text, { speechWords: sp, start: 0, end: dur, style: capsView(d).style || DEFAULT_STYLE });
   // 'pending': the speech words are not available yet (fetch failed, or empty while transcribing / failed); 'none': there is no speech to match
   const note = !r.spread ? null : sp.length ? SPREAD_NOTE : speechState === 'pending' ? PENDING_NOTE : null;
   return { lines: r.lines, note };
