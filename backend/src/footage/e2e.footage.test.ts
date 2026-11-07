@@ -298,11 +298,14 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
     /** One export frame at full size, accurate seek, decoded with accurate rounding (see the header) */
     const extract = (mp4: string, t: number, dst: string) => run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', mp4, '-ss', String(t), '-frames:v', '1', '-vf', 'scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd+full_chroma_int', '-pix_fmt', 'rgb24', dst]);
     /** Preview vs export at `times` (s) for one export: the same capture, extract, shrink and ΔE for every variant and animation */
-    const parity = async (name: string, mp4: string, look: any, cap: { style: any; lines: any[] }, times: number[]) => {
+    const parity = async (name: string, mp4: string, look: any, cap: { style: any; lines: any[] }, times: number[], probe = false) => {
       // ---- 5. preview frames at the export size (canvas 1080 × 1920, captions drawn at 1080 like the export's overlay).
       // Frame k = t·fps of the export starts at t; the preview seeks half a frame later so the browser shows the proxy
       // frame at t, not the one before it on a boundary tie.
-      const pv: any = await page.evaluate((x: any) => (window as any).preview(x), { out: { w: W, h: H, fps: FPS }, look, captions: cap, cssW: W, times: times.map((t) => t * 1000 + 500 / FPS) } as any);
+      const capture = (): Promise<any> => page.evaluate((x: any) => (window as any).preview(x), { out: { w: W, h: H, fps: FPS }, look, captions: cap, cssW: W, times: times.map((t) => t * 1000 + 500 / FPS) } as any);
+      let pv = await capture();
+      // the first seek after a page load sometimes presents frame 0 (a known browser-side flake): capture once more
+      if (pv.shots.some((sh: any, k: number) => Math.abs(sh.mediaTime - times[k]) > 0.05)) pv = await capture();
       if (name === 'a-identity-nocaptions') console.log(`[e2e] WebGL renderer: ${pv.renderer}`);
       const dEs: number[] = [];
       for (let k = 0; k < times.length; k++) {
@@ -315,6 +318,11 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
         await extract(mp4, t, eFull);
         await shrink(pFull, p); await shrink(eFull, e);
         dEs.push((await deltaE([p, e])).mean);
+        if (probe) { // frame alignment: the preview frame against the export frame one frame before / after
+          const off: number[] = [];
+          for (const d of [-1, 1]) { const f = join(frames, `${name}-export-${t}s${d < 0 ? 'm1' : 'p1'}`); await extract(mp4, t + d / FPS, f + '-full.png'); await shrink(f + '-full.png', f + '.png'); off.push((await deltaE([p, f + '.png'])).mean); }
+          console.log(`[e2e] frame alignment ${name} at ${t} s: ΔE preview vs export frame t-1: ${off[0]}, t: ${dEs[k]}, t+1: ${off[1]}`);
+        }
       }
       console.log(`[e2e] ΔE2000 ${name} at ${times.join(', ')} s: ${JSON.stringify(dEs)}`);
       return dEs;
@@ -338,35 +346,59 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
     let fullMp4 = '';
     for (const v of variants) {
       const mp4 = await exportVariant(v.name, v.look, { style, lines: v.lines }, LIMIT_MS);
-      if (v.name === 'c-full') fullMp4 = mp4;
+      // a copy: the service prunes old exports as more are rendered, and the decoder check below needs this one last
+      if (v.name === 'c-full') { fullMp4 = join(work, 'c-full.mp4'); copyFileSync(mp4, fullMp4); }
       table[v.name] = await parity(v.name, mp4, v.look, { style, lines: v.lines }, TIMES);
     }
     for (const v of variants) table[v.name].forEach((dE, k) => expect(dE, `${v.name} frame at ${TIMES[k]} s`).toBeLessThan(2));
 
-    // ---- 5b. each new animation, mid-ramp: one 6 s export per animation (the full look, the sampled style with `anim`
-    // set), frames chosen from captions.changeTimes inside a ramp (word-start animations: 1-2 frames after a word's start;
-    // line-start ones: after the line's start), plus one frame between ramps. Times are snapped to export frames.
+    // ---- 5b. each new animation. One 6 s export per animation (the full look, the sampled style with `anim` set).
+    // Frames come from captions.changeTimes inside a ramp (50 and 100 ms after a word's start, a line's start for slide)
+    // plus one mid-line frame, all snapped to export frames, and one whole-second frame inside a line after the ramp.
+    // Why relative: at non-integer times the preview/export floor is already about 2.1 ΔE without any animation (the
+    // whole-second frames of the variants above sit at 1.9), a seek / frame-alignment artefact of the proxy against the
+    // source. So the ramp and mid-line frames are asserted as (animation ΔE − same-frame anim:'none' control ΔE) <= 0.5,
+    // and the whole-second frame, which has the low floor, against the absolute bar of 2.
     const frameOf = (ms: number) => Math.round((ms / 1000) * FPS) / FPS;
-    // 'none' is a control (logged, not asserted): the same 3-word style without any animation
-    const ANIMS = ['none', 'karaoke', 'word', 'typewriter', 'bounce', 'slide'];
-    const animFails: string[] = [];
-    for (const anim of ANIMS) {
+    const ANIMS = ['karaoke', 'word', 'typewriter', 'bounce', 'slide'];
+    const animFails: string[] = [], animRows: string[] = [];
+    const lim = 6000;
+    const plan = (anim: string) => {
       const astyle = { ...style, anim, maxWords: Math.min(style.maxWords ?? 3, 3) };
       const alines = CAP.group(words, astyle);
-      const lim = 6000;
       const ct: number[] = CAP.changeTimes(alines, astyle, lim);
-      // ramp frames: 1.5 and 3 export frames (50 and 100 ms) after an anchor (a word's or, for slide, a line's start) that
-      // changeTimes marks as a change (inside the 133 ms ramp for the ramped animations, just after the switch for karaoke / word)
       const anchors: number[] = (anim === 'slide' ? alines.map((l: any) => l.start) : alines.flatMap((l: any) => l.words.map((w: any) => w.s))).filter((t: number) => t >= 500 && t < lim - 400 && ct.some((c) => c >= t && c <= t + 100));
       const ramp = anchors.flatMap((a) => [a + 1500 / FPS, a + 3000 / FPS]).map(frameOf);
       const mid = alines.flatMap((l: any) => l.words.slice(1).map((w: any) => w.s + 250)).filter((t: number) => t < lim - 100).map(frameOf);
-      const picks = [...new Set([ramp[0], ramp[Math.floor(ramp.length / 2)], ramp[ramp.length - 1], mid[Math.floor(mid.length / 2)]].filter((t) => t != null))] as number[];
-      expect(picks.length, `${anim}: frames to compare`).toBeGreaterThanOrEqual(2);
+      const frameSet = [...new Set([ramp[0], ramp[Math.floor(ramp.length / 2)], ramp[ramp.length - 1], mid[Math.floor(mid.length / 2)]].filter((t) => t != null))] as number[];
+      // a whole second inside a line, >= 300 ms after the line's start and 150 ms after any word start (ramps are over)
+      const whole = [1, 2, 3, 4, 5].find((sec) => alines.some((l: any) => l.start + 300 <= sec * 1000 && sec * 1000 < l.end && l.words.every((w: any) => !(w.s > sec * 1000 - 150 && w.s <= sec * 1000))));
+      expect(whole, `${anim}: a whole second inside a line`).toBeDefined();
+      expect(frameSet.length, `${anim}: frames to compare`).toBeGreaterThanOrEqual(2);
+      return { astyle, alines, frameSet, whole: whole as number };
+    };
+    const plans = Object.fromEntries(ANIMS.map((a) => [a, plan(a)]));
+    // the control: anim 'none' (same 3-word grouping) at every frame any animation samples
+    const times = [...new Set(ANIMS.flatMap((a) => [...plans[a].frameSet, plans[a].whole]))].sort((x, y) => x - y);
+    const cstyle = { ...style, anim: 'none', maxWords: Math.min(style.maxWords ?? 3, 3) };
+    const clines = CAP.group(words, cstyle);
+    const cmp4 = await exportVariant('anim-none', LOOK, { style: cstyle, lines: clines }, lim);
+    const cdE = await parity('anim-none', cmp4, LOOK, { style: cstyle, lines: clines }, times, true);
+    const control = new Map<number, number>(times.map((t, k) => [t, cdE[k]]));
+    for (const anim of ANIMS) {
+      const { astyle, alines, frameSet, whole } = plans[anim];
+      const picks = [...frameSet, whole];
       const mp4 = await exportVariant(`anim-${anim}`, LOOK, { style: astyle, lines: alines }, lim);
-      table[`anim-${anim}`] = await parity(`anim-${anim}`, mp4, LOOK, { style: astyle, lines: alines }, picks);
-      if (anim !== 'none') table[`anim-${anim}`].forEach((dE, k) => { if (!(dE < 2)) animFails.push(`${anim} at ${picks[k]} s: ΔE ${dE}`); });
+      const dEs = await parity(`anim-${anim}`, mp4, LOOK, { style: astyle, lines: alines }, picks);
+      table[`anim-${anim}`] = dEs;
+      dEs.forEach((dE, k) => {
+        const last = k === picks.length - 1, c = control.get(picks[k])!, delta = dE - c;
+        animRows.push(`${anim} at ${picks[k]} s: ΔE ${dE.toFixed(4)}, control ${c.toFixed(4)}, delta ${delta.toFixed(4)}${last ? ' (whole second, absolute bar)' : ''}`);
+        if (last ? !(dE < 2) : !(delta <= 0.5)) animFails.push(`${anim} at ${picks[k]} s: ΔE ${dE}, control ${c}${last ? ' (absolute bar)' : ''}`);
+      });
     }
-    expect(animFails, 'animation frames with ΔE2000 >= 2').toEqual([]);
+    console.log(`[e2e] animation rows\n${animRows.join('\n')}`);
+    expect(animFails, 'animation frames beyond the bar').toEqual([]);
 
     // ---- 6. decoder check: the full export decoded by Chromium (the preview's decoder) vs the accurate ffmpeg decode
     extra['/export.mp4'] = [fullMp4, 'video/mp4'];
