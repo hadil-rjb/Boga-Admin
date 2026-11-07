@@ -220,9 +220,11 @@ describe('pair', () => {
     expect(row.pair).toEqual({ lookId: 'brand-1' }); expect(row.status).toBe('processing');
   });
   it('an empty pairing is allowed: the original is imported without a reference', async () => {
-    const o = await mk('original', { status: 'ready' });
+    const o = await mk('original', 'ready');
     await ctl.pair(o, {});
-    expect(model.rows.find((x: any) => x._id === o).pair).toEqual({});
+    const row = model.rows.find((x: any) => x._id === o);
+    expect(row.pair).toEqual({});
+    expect(row.status).toBe('processing');
     expect(enqueue).toHaveBeenCalledWith(o, 'grade');
   });
   it('rejects bad pairings', async () => {
