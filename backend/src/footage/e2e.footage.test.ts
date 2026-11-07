@@ -297,10 +297,31 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
     const shrink = (src: string, dst: string) => run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', src, '-vf', `scale=${PREVIEW_W}:-2:flags=area`, '-pix_fmt', 'rgb24', dst]);
     /** One export frame at full size, accurate seek, decoded with accurate rounding (see the header) */
     const extract = (mp4: string, t: number, dst: string) => run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', mp4, '-ss', String(t), '-frames:v', '1', '-vf', 'scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd+full_chroma_int', '-pix_fmt', 'rgb24', dst]);
-    const table: Record<string, number[]> = {};
-    let fullMp4 = '';
-    for (const v of variants) {
-      const req = validateExport({ designId: 'e2e', footage: { src: ORIG, look: v.look, captions: { style, lines: v.lines } }, w: W, h: H, fps: FPS, limitMs: LIMIT_MS }, { allowLimit: true });
+    /** Preview vs export at `times` (s) for one export: the same capture, extract, shrink and ΔE for every variant and animation */
+    const parity = async (name: string, mp4: string, look: any, cap: { style: any; lines: any[] }, times: number[]) => {
+      // ---- 5. preview frames at the export size (canvas 1080 × 1920, captions drawn at 1080 like the export's overlay).
+      // Frame k = t·fps of the export starts at t; the preview seeks half a frame later so the browser shows the proxy
+      // frame at t, not the one before it on a boundary tie.
+      const pv: any = await page.evaluate((x: any) => (window as any).preview(x), { out: { w: W, h: H, fps: FPS }, look, captions: cap, cssW: W, times: times.map((t) => t * 1000 + 500 / FPS) } as any);
+      if (name === 'a-identity-nocaptions') console.log(`[e2e] WebGL renderer: ${pv.renderer}`);
+      const dEs: number[] = [];
+      for (let k = 0; k < times.length; k++) {
+        const t = times[k], shot = pv.shots[k];
+        expect([shot.w, shot.h]).toEqual([W, H]);
+        expect(shot.mediaTime).toBeCloseTo(t, 1);
+        const pFull = join(frames, `${name}-preview-${t}s-full.png`), eFull = join(frames, `${name}-export-${t}s-full.png`);
+        const p = join(frames, `${name}-preview-${t}s.png`), e = join(frames, `${name}-export-${t}s.png`);
+        writeFileSync(pFull, Buffer.from(shot.png.split(',')[1], 'base64'));
+        await extract(mp4, t, eFull);
+        await shrink(pFull, p); await shrink(eFull, e);
+        dEs.push((await deltaE([p, e])).mean);
+      }
+      console.log(`[e2e] ΔE2000 ${name} at ${times.join(', ')} s: ${JSON.stringify(dEs)}`);
+      return dEs;
+    };
+    /** Export one variant (first `limitMs` of the clip) and return the MP4 path */
+    const exportVariant = async (name: string, look: any, cap: { style: any; lines: any[] }, limitMs: number) => {
+      const req = validateExport({ designId: 'e2e', footage: { src: ORIG, look, captions: cap }, w: W, h: H, fps: FPS, limitMs }, { allowLimit: true });
       const t1 = Date.now();
       const { jobId } = await exporter.start(req);
       await exporter.idle();
@@ -308,31 +329,44 @@ describe.skipIf(!HAVE)('footage end to end: preview matches export (sample foota
       expect(st?.error).toBeUndefined();
       expect(st?.state).toBe('done');
       const mp4 = store.file(ORIG, `exports/${jobId}.mp4`);
-      console.log(`[e2e] export ${v.name} ${Math.round((Date.now() - t1) / 1000)} s → ${mp4}`);
+      console.log(`[e2e] export ${name} ${Math.round((Date.now() - t1) / 1000)} s → ${mp4}`);
       const dur = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4])).stdout);
-      expect(dur).toBeGreaterThan(9.9); expect(dur).toBeLessThan(10.2);
+      expect(dur).toBeGreaterThan(limitMs / 1000 - 0.1); expect(dur).toBeLessThan(limitMs / 1000 + 0.2);
+      return mp4;
+    };
+    const table: Record<string, number[]> = {};
+    let fullMp4 = '';
+    for (const v of variants) {
+      const mp4 = await exportVariant(v.name, v.look, { style, lines: v.lines }, LIMIT_MS);
       if (v.name === 'c-full') fullMp4 = mp4;
-
-      // ---- 5. preview frames at the export size (canvas 1080 × 1920, captions drawn at 1080 like the export's overlay).
-      // Frame k = t·fps of the export starts at t; the preview seeks half a frame later so the browser shows the proxy
-      // frame at t, not the one before it on a boundary tie.
-      const pv: any = await page.evaluate((x: any) => (window as any).preview(x), { out: { w: W, h: H, fps: FPS }, look: v.look, captions: { style, lines: v.lines }, cssW: W, times: TIMES.map((t) => t * 1000 + 500 / FPS) } as any);
-      if (v.name === 'a-identity-nocaptions') console.log(`[e2e] WebGL renderer: ${pv.renderer}`);
-      table[v.name] = [];
-      for (let k = 0; k < TIMES.length; k++) {
-        const t = TIMES[k], shot = pv.shots[k];
-        expect([shot.w, shot.h]).toEqual([W, H]);
-        expect(shot.mediaTime).toBeCloseTo(t, 1);
-        const pFull = join(frames, `${v.name}-preview-${t}s-full.png`), eFull = join(frames, `${v.name}-export-${t}s-full.png`);
-        const p = join(frames, `${v.name}-preview-${t}s.png`), e = join(frames, `${v.name}-export-${t}s.png`);
-        writeFileSync(pFull, Buffer.from(shot.png.split(',')[1], 'base64'));
-        await extract(mp4, t, eFull);
-        await shrink(pFull, p); await shrink(eFull, e);
-        table[v.name].push((await deltaE([p, e])).mean);
-      }
-      console.log(`[e2e] ΔE2000 ${v.name} at ${TIMES.join(', ')} s: ${JSON.stringify(table[v.name])}`);
+      table[v.name] = await parity(v.name, mp4, v.look, { style, lines: v.lines }, TIMES);
     }
     for (const v of variants) table[v.name].forEach((dE, k) => expect(dE, `${v.name} frame at ${TIMES[k]} s`).toBeLessThan(2));
+
+    // ---- 5b. each new animation, mid-ramp: one 6 s export per animation (the full look, the sampled style with `anim`
+    // set), frames chosen from captions.changeTimes inside a ramp (word-start animations: 1-2 frames after a word's start;
+    // line-start ones: after the line's start), plus one frame between ramps. Times are snapped to export frames.
+    const frameOf = (ms: number) => Math.round((ms / 1000) * FPS) / FPS;
+    // 'none' is a control (logged, not asserted): the same 3-word style without any animation
+    const ANIMS = ['none', 'karaoke', 'word', 'typewriter', 'bounce', 'slide'];
+    const animFails: string[] = [];
+    for (const anim of ANIMS) {
+      const astyle = { ...style, anim, maxWords: Math.min(style.maxWords ?? 3, 3) };
+      const alines = CAP.group(words, astyle);
+      const lim = 6000;
+      const ct: number[] = CAP.changeTimes(alines, astyle, lim);
+      // ramp frames: 1.5 and 3 export frames (50 and 100 ms) after an anchor (a word's or, for slide, a line's start) that
+      // changeTimes marks as a change (inside the 133 ms ramp for the ramped animations, just after the switch for karaoke / word)
+      const anchors: number[] = (anim === 'slide' ? alines.map((l: any) => l.start) : alines.flatMap((l: any) => l.words.map((w: any) => w.s))).filter((t: number) => t >= 500 && t < lim - 400 && ct.some((c) => c >= t && c <= t + 100));
+      const ramp = anchors.flatMap((a) => [a + 1500 / FPS, a + 3000 / FPS]).map(frameOf);
+      const mid = alines.flatMap((l: any) => l.words.slice(1).map((w: any) => w.s + 250)).filter((t: number) => t < lim - 100).map(frameOf);
+      const picks = [...new Set([ramp[0], ramp[Math.floor(ramp.length / 2)], ramp[ramp.length - 1], mid[Math.floor(mid.length / 2)]].filter((t) => t != null))] as number[];
+      expect(picks.length, `${anim}: frames to compare`).toBeGreaterThanOrEqual(2);
+      const mp4 = await exportVariant(`anim-${anim}`, LOOK, { style: astyle, lines: alines }, lim);
+      table[`anim-${anim}`] = await parity(`anim-${anim}`, mp4, LOOK, { style: astyle, lines: alines }, picks);
+      if (anim !== 'none') table[`anim-${anim}`].forEach((dE, k) => { if (!(dE < 2)) animFails.push(`${anim} at ${picks[k]} s: ΔE ${dE}`); });
+    }
+    expect(animFails, 'animation frames with ΔE2000 >= 2').toEqual([]);
 
     // ---- 6. decoder check: the full export decoded by Chromium (the preview's decoder) vs the accurate ffmpeg decode
     extra['/export.mp4'] = [fullMp4, 'video/mp4'];
