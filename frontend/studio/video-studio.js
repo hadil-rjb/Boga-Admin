@@ -11,7 +11,8 @@
    A source: { mount(stage), unmount(), player, tracks() -> Track[], panel(key) -> html | null, inspector(sel) -> html | null,
    transportExtra() -> html } and, optionally, panelDrawn(key), canEdit(), onRetime(...), onSelect(id), onToggle(id)
    (the timeline's callbacks), nativePanel(key) (true: the editor's own panel draws that rail item) and nativeInspector
-   (true: the editor's own properties draw when the shell has no inspector for the selection). `player`: { toggle(), play(), pause(), seek(ms), time(), duration(), playing() } and
+   (true: the editor's own properties draw when the shell has no inspector for the selection), captions (helpers for the shared
+   Captions panel, see caption-panels.js). `player`: { toggle(), play(), pause(), seek(ms), time(), duration(), playing() } and
    optionally ready() (false until the media can play) and frameMs().
    The source tells the shell about playback with VS.tick(ms, playing), new tracks with VS.refresh(), the waveform with
    VS.setPeaks(peaks), and a closed session with VS.reset().
@@ -170,7 +171,7 @@ K  pause
       const kind = kindOf(ED.d); ED.tab = railTab(kind, ED.tab);
       const k = ED.tab;
       if (k === 'agent') return orig.apply(this, arguments); // the agent panel as today
-      let h = PANELS[k] ? PANELS[k](ED.d, kind) : null;
+      let h = PANELS[k] ? PANELS[k].render(ED.d, kind) : null;
       // no shared panel: the rail items the editor already draws for the source (a reel's Templates, Motion, Audio…)
       if (h == null && S.nativePanel && S.nativePanel(k)) return orig.apply(this, arguments);
       const p = $('#edPanel'); if (!p) return;
@@ -178,6 +179,7 @@ K  pause
       if (h == null && S.panel) h = S.panel(k);
       if (h == null) h = `<div class="vs-soon"><h3>${esc(label)}</h3><p class="sm-t muted">${esc(SOON[k] || '')}</p></div>`;
       p.classList.remove('agent'); p.innerHTML = h;
+      if (PANELS[k] && PANELS[k].drawn) PANELS[k].drawn(k);
       if (S.panelDrawn) S.panelDrawn(k);
     },
     edProps: (orig) => function () {
@@ -223,25 +225,31 @@ K  pause
       return r;
     },
   });
-  /* Space play / pause, J / L 5 s back / forward, K pause, ← / → one frame. Capture phase: ahead of the editor's own keys (Space pans, L draws a line) */
+  /* Space play / pause, J / L 5 s back / forward, K pause, ← / → one frame. Capture phase: ahead of the editor's own keys (Space pans, L draws a line).
+     Space plays or pauses wherever the focus is, a focused button too (#vsLoop, + Scene, Before / After), except in a text field */
+  let spaceEaten = false;
+  addEventListener('keyup', (e) => { if (e.key === ' ' && spaceEaten) { spaceEaten = false; e.preventDefault(); e.stopImmediatePropagation(); } }, true);
   addEventListener('keydown', (e) => {
     const p = P();
     if (!p || !document.body.classList.contains('in-editor') || ED.editing || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target, tag = ((t && t.tagName) || '').toLowerCase();
-    if (['input', 'textarea', 'select'].includes(tag) || (t && t.isContentEditable) || document.querySelector('.modal-bg, #cmdk')) return;
+    if (['input', 'textarea', 'select'].includes(tag) || (t && t.isContentEditable) || (t && t.closest && t.closest('[role=menu]')) || document.querySelector('.modal-bg, #cmdk')) return;
     const fr = () => (p.frameMs ? p.frameMs() : 1000 / 30), k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const act = { ' ': () => p.toggle(), k: () => p.pause(), j: () => p.seek(Math.max(0, p.time() - 5000)), l: () => p.seek(p.time() + 5000),
       ArrowLeft: () => { p.pause(); p.seek(Math.max(0, p.time() - fr())); }, ArrowRight: () => { p.pause(); p.seek(p.time() + fr()); } }[k];
-    if (!act || (k === ' ' && tag === 'button' && !['vsPlay', 'vsBack', 'vsFwd'].includes(t.dataset.act))) return;
+    if (!act) return;
     if ((k === 'ArrowLeft' || k === 'ArrowRight') && (ED.sel || (ED.ms && ED.ms.length))) return; // a reel's selected layer: the arrows nudge it
-    e.preventDefault(); e.stopImmediatePropagation(); act();
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (k === ' ') spaceEaten = true; // a focused button would also click on keyup
+    if (k === ' ' && e.repeat) return;
+    act();
   }, true);
 
   const VS = {
     railFor,
     register(kind, source) { SRC[kind] = source; },
-    /** A shared panel for rail item `key` (both kinds): render(d, kind) -> html, or null to fall back to the source's panel */
-    panel(key, render) { PANELS[key] = render; },
+    /** A shared panel for rail item `key` (both kinds): render(d, kind) -> html, or null to fall back to the source's panel; drawn() after it is in the page */
+    panel(key, render, drawn) { PANELS[key] = { render, drawn }; },
     /** A shared inspector for a route ('caption'): render(sel, d) -> html, or null to fall back to the source's inspector */
     inspector(route, render) { INSP[route] = render; },
     select,

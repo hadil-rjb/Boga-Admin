@@ -83,7 +83,7 @@ export function footageDoc({ src, ref = null, lookId = null, size }) {
   const { w, h } = size || DEFAULT_SIZE;
   return { src, ref, lookId, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, out: { w, h, fps: 30 }, export: null };
 }
-/** The captions of a new footage design: a design made from a brand look starts with that look's subtitle style */
+/** The captions of a new footage design: a design made from a brand look starts with that look's caption style */
 export function footageCaptions({ lang = null, style = null } = {}) {
   const c = { ...CAPTIONS_DEFAULT, lines: [], style: style ? JSON.parse(JSON.stringify(style)) : null, lang };
   if (style) c.styleFrom = 'look';
@@ -130,7 +130,7 @@ export function installFootage(ctx) {
       <div class="ft-lk">${looks.map((l) => `<button type="button" class="ft-look" data-ft-look="${esc(l.id)}" aria-pressed="false">${esc(l.name || l.id)}</button>`).join('')}</div></div>` : '';
     modal(`<div class="mh"><h2>${plain ? 'Caption a video' : 'Match a reference'}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb ft-mb">${zone('original', 'Your video', 'Drop the raw clip (MP4 or MOV, up to 2 GB)')}
-        ${plain ? '' : zone('ref', 'Reference (optional)', 'Drop an edited video to copy its look and subtitles')}${lookList}
+        ${plain ? '' : zone('ref', 'Reference (optional)', 'Drop an edited video to copy its look and captions')}${lookList}
         <p class="ft-err" data-ft-err role="alert" hidden></p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-start disabled>Start</button></div>`,
       { onClose: () => {

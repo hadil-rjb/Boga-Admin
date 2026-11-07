@@ -195,7 +195,7 @@ describe('where the subtitle style came from', () => {
   it('styleOrigin: a preset is custom, else guessed from the style and the reference', () => {
     expect(styleOrigin({ style: null }, true)).toBe('default'); expect(styleOrigin({ style: DEFAULT_STYLE }, true)).toBe('reference'); expect(styleOrigin({ style: DEFAULT_STYLE }, false)).toBe('look');
     expect(styleOrigin({ style: null, preset: 'neon' }, true)).toBe('custom'); expect(styleOrigin(undefined, false)).toBe('default');
-    expect(ORIGIN_COPY.custom).toBe('Subtitles use your own style.');
+    expect(ORIGIN_COPY.custom).toBe('Captions use your own style.');
   });
 });
 

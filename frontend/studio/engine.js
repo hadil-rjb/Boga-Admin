@@ -23,6 +23,8 @@ import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
 import { installVideoStudio } from './video-studio.js';
 import { installReelSource } from './reel-source.js';
+import { installCaptionPanels, capsView, reelCaptions, toggleCaptions } from './caption-panels.js';
+import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
 
@@ -10047,7 +10049,7 @@ function clipCss(l, frames) {
 
   /* ---------- playback on the canvas ---------- */
   /** Audio hooks, filled in by the audio section (v38): what plays, the caption, the timeline lanes, the export mix */
-  const AU = RT.moAudio = { tick() {}, stop() {}, caption: () => null, labels: () => '', lanes: () => '', exportSetup: async () => null, drawCaption() {} };
+  const AU = RT.moAudio = { tick() {}, stop() {}, labels: () => '', lanes: () => '', exportSetup: async () => null, drawCaption() {}, muted: { voice: false, music: false }, capsPreview: null };
   const PL = { on: false, t: 0, at: 0, raf: 0, view: null, cache: new Map(), loop: false, stopAt: 0, autoExit: false };
   function view() {
     if (PL.view && PL.view.isConnected) return PL.view;
@@ -10091,8 +10093,11 @@ function clipCss(l, frames) {
       const el = sceneEl(sc.i); el.style.display = ''; el.style.zIndex = z; paint(el, st);
       el._ly.forEach((r) => paint(r.x, stateOf(el._T, r.l, local, sc.dur, D), r.op, r.f, r.c));
     });
-    const cap = AU.caption(t), v = PL.view; let ce = v.querySelector('.mo-cap');
-    if (cap) { if (!ce) { ce = document.createElement('div'); ce.className = 'mo-cap'; v.append(ce); } if (ce.textContent !== cap) ce.textContent = cap; ce.hidden = false; } else if (ce) ce.hidden = true;
+    // the captions: drawn by captions.js on a canvas over the scenes (the export draws them the same way, in frame())
+    const v = PL.view; let ce = v.querySelector('canvas.mo-capc');
+    if (!ce) { ce = document.createElement('canvas'); ce.className = 'mo-capc'; ce.setAttribute('aria-hidden', 'true'); v.append(ce); }
+    if (ce.width !== W || ce.height !== H) { ce.width = W; ce.height = H; }
+    const cx = ce.getContext('2d'); if (cx) { cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, W, H); AU.drawCaption(cx, ED.d, tl, t, 1, W, H); }
     if (PL.on) AU.tick(t);
     head(t);
   }
@@ -10622,6 +10627,12 @@ function clipCss(l, frames) {
     layers: () => (ED.d && isMo(ED.d) ? layerLanes(pct, () => 0)
       .map(({ l, html }) => ({ id: l.id, name: l.name, type: l.type, html: (pps) => html((ms) => (ms / 1000) * pps) })) : []),
     fit: () => { if (ED.fit) requestAnimationFrame(fitZoom); },
+    /** The preview again at the playhead (after a caption edit), when it shows */
+    redraw: () => { if (PL.view && PL.view.isConnected && ED.d && isMo(ED.d)) draw(PL.t); },
+    /** Lines shown instead of the design's while a caption block is dragged on the timeline (null: the design's again) */
+    previewCaptions: (lines) => { AU.capsPreview = lines || null; RT.moReel.redraw(); },
+    /** "Mute preview" of the voice or the music: session only, the export keeps the sound */
+    setMuted: (id, on) => { AU.muted = { ...AU.muted, [id]: !!on }; if (PL.on) AU.tick(PL.t); },
     onTime: null,
   };
 })();
@@ -10640,7 +10651,7 @@ function clipCss(l, frames) {
     stop38: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   });
   const isMo = (d) => !!(d && d.motion), TL = () => MO.timeline(ED.d.pages), A = () => AUD.audioOf(ED.d);
-  const setA = (patch) => { ED.d.audio = { ...A(), ...patch }; touch(); save(); };
+  const setA = (patch) => { ED.d.audio = { ...A(), ...patch }; if (ED.d.captions) delete ED.d.audio.captions; touch(); save(); }; // the captions switch lives in d.captions
   const label = (i) => { const k = MO.sceneOf(ED.d.pages[i]).k; return k !== 'body' ? MO.KINDS[k] : 'Scene ' + ED.d.pages.slice(0, i + 1).filter((p) => MO.sceneOf(p).k === 'body').length; };
   const setVo = (pg, patch) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), ...patch } }; };
   const S = { opts: null, busy: '', rec: null, play: null, prompt: '' }; // panel state: AI options, running job, recording, clip preview
@@ -10663,12 +10674,11 @@ function clipCss(l, frames) {
   const AU = RT.moAudio;
   AU.tick = (t) => {
     const d = ED.d; if (!d) return; const a = A(), tl = TL(), cl = AUD.clips(d.pages, tl, a), on = new Set();
-    if (a.music && a.music.src) { const m = el(a.music.src); m.loop = true; on.add(m); m.volume = AUD.musicGain(t, tl.total, a, cl); if (m.duration) sync(m, (t / 1000) % m.duration); else if (m.paused) m.play().catch(() => {}); }
-    cl.filter((c) => t >= c.start && t < c.end).forEach((c) => { const v = el(c.src); on.add(v); v.volume = Math.min(1, c.vol); sync(v, (t - c.start) / 1000); });
+    if (a.music && a.music.src) { const m = el(a.music.src); m.loop = true; on.add(m); m.volume = AU.muted.music ? 0 : AUD.musicGain(t, tl.total, a, cl); if (m.duration) sync(m, (t / 1000) % m.duration); else if (m.paused) m.play().catch(() => {}); }
+    cl.filter((c) => t >= c.start && t < c.end).forEach((c) => { const v = el(c.src); on.add(v); v.volume = AU.muted.voice ? 0 : Math.min(1, c.vol); sync(v, (t - c.start) / 1000); });
     els.forEach((x) => { if (!on.has(x) && !x.paused && x !== S.play) x.pause(); });
   };
   AU.stop = () => els.forEach((x) => { if (x !== S.play) x.pause(); });
-  AU.caption = (t) => (ED.d ? AUD.captionAt(ED.d.pages, TL(), t, A()) : null);
 
   /* ---------- export: decoded buffers scheduled on a Web Audio graph, recorded with the frames ---------- */
   AU.exportSetup = async (d, tl) => {
@@ -10690,14 +10700,12 @@ function clipCss(l, frames) {
       stop() { ctx.close().catch(() => {}); },
     };
   };
+  /** The captions of a reel on a frame of W×H design px at scale s (preview and recorded export): captions.js, the design's style */
   AU.drawCaption = (ctx, d, tl, t, s, W, H) => {
-    const text = AUD.captionAt(d.pages, tl, t, AUD.audioOf(d)); if (!text) return;
-    const fs = Math.round(W * 0.046) * s, pad = fs * 0.55, maxW = W * s * 0.84, font = (brand().fonts && brand().fonts.body) || 'Inter';
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.font = `700 ${fs}px '${font}', sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const lines = AUD.wrap(text, maxW - pad * 2, (x) => ctx.measureText(x).width), lh = fs * 1.25, bw = Math.min(maxW, Math.max(...lines.map((x) => ctx.measureText(x).width)) + pad * 2), bh = lines.length * lh + pad * 1.2;
-    const cx = W * s / 2, y = H * s * (H > W ? 0.72 : 0.82) - bh / 2;
-    ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(cx - bw / 2, y, bw, bh, fs * 0.4) : ctx.rect(cx - bw / 2, y, bw, bh); ctx.fill();
-    ctx.fillStyle = '#fff'; lines.forEach((x, i) => ctx.fillText(x, cx, y + pad * 0.6 + lh * (i + 0.5)));
+    const c = capsView(d); if (c.on === false || !c.on) return;
+    const lines = (d === ED.d && AU.capsPreview) || reelCaptions(d); if (!lines.length) return;
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+    drawCaptionLines(ctx, lines, c.style || CAPTION_STYLE, t, W * s, H * s);
     ctx.restore();
   };
 
@@ -10797,7 +10805,7 @@ function clipCss(l, frames) {
         <span class="grow"></span><select class="au2-lang" data-au="language" aria-label="Language">${AUD.LANGUAGES.map((x) => `<option ${langOf(a) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         ${ibtn('au38Script', 'studio', texted ? 'Rewrite with Claude' : 'Write with Claude', busy ? 'disabled' : '')}</div>
       ${S.scriptOpen ? `<div class="au2-lines">${lines.map(lineHTML).join('')}</div>` : ''}</div>`;
-    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(!!a.captions, 'au38Cc', 'Show captions')}</div>
+    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(capsView(ED.d).on === true, 'au38Cc', 'Show captions')}</div>
         <div class="au2-opt">${ic('music38', 15)}<span>Lower music under the voice</span>${sw(a.duck !== false, 'au38Duck', 'Lower the music under the voice')}</div></div>`;
     return `<div class="au2-head"><h3>Audio</h3>${user.role === 'admin' ? ibtn('au38PanelMenu', 'more', 'More') : ''}</div>${gen}<div class="au2-tracks">${musicRow}${voiceRow}</div>${script}${opts}`;
   }
@@ -10918,7 +10926,7 @@ function clipCss(l, frames) {
     au38FadeIn: () => { const m = A().music; m && setA({ music: { ...m, fadeIn: m.fadeIn === false } }); redraw(); },
     au38FadeOut: () => { const m = A().music; m && setA({ music: { ...m, fadeOut: m.fadeOut === false } }); redraw(); },
     au38Duck: () => { setA({ duck: A().duck === false }); redraw(); },
-    au38Cc: () => { setA({ captions: !A().captions }); redraw(); },
+    au38Cc: () => { if (!canEdit()) return; mutate(() => toggleCaptions(ED.d), () => {}); save(); redraw(); RT.moReel.redraw(); }, // d.captions.on, one undo step
     au38Prev: (a) => { const src = a.dataset.src; RT.motion.pause(); if (S.play && S.play.src === src && !S.play.paused) stopPreview(); else { stopPreview(); const x = new Audio(src); x.crossOrigin = 'anonymous'; x.onended = () => { S.play = null; redraw(); }; x.play().catch(() => toast('This audio can’t be played')); S.play = x; } redraw(); },
     au38Script: () => job('script', async () => {
       const a = A(), r = await api('/ai/voice-script', { method: 'POST', body: { brand: brand().name, voice: brand().voice || '', language: a.language || brand().lang || 'English', tone: a.tone || 'Auto', topic: a.topic || '', scenes: scenesBrief() } });
@@ -11098,8 +11106,10 @@ const wrapEd = (w) => {
 const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() };
 /* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
 const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
+/* the shared caption panels (Captions, for videos and reels) */
+installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, ed: edApi }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
-installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit });
+installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
   wrapEd, ed: edApi, VS });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */

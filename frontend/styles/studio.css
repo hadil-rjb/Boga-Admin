@@ -2953,7 +2953,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .au-add{position:absolute;top:3px;height:18px;display:flex;align-items:center;gap:4px;padding:0 8px;border:1px dashed var(--border);border-radius:5px;font-size:10.5px;font-weight:600;color:var(--text-3)}
 .au-add:hover{border-color:var(--accent);color:var(--accent)}
 .mo-view{container-type:inline-size}
-.mo-cap{position:absolute;left:50%;top:72%;z-index:9;transform:translate(-50%,-50%);max-width:84%;padding:1.1cqw 2.4cqw;border-radius:1.8cqw;background:rgba(0,0,0,.62);color:#fff;font:700 4.6cqw/1.25 var(--jak);text-align:center;pointer-events:none}
+.mo-view canvas.mo-capc{position:absolute;inset:0;width:100%;height:100%;z-index:9;pointer-events:none}
 .au-t{background-image:repeating-linear-gradient(90deg,rgba(20,184,166,.22) 0 2px,transparent 2px 5px)}
 .au-under{top:auto;bottom:1px;height:7px;padding:0;font-size:0;opacity:.7}
 .au-acts label.btn{cursor:pointer}.au-acts .is-off{opacity:.5;pointer-events:none}
@@ -3194,6 +3194,16 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 /* Video Studio shell (studio/video-studio.js): a rail item whose panel is not built yet says what it will hold */
 .vs-soon{display:flex;flex-direction:column;gap:6px}
 .vs-soon p{margin:0;max-width:34ch}
+/* the shared Captions panel (caption-panels.js); its rows reuse .ft-row */
+.cp-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.cp-head h3{margin:0}
+.cp-on{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-3)}
+.cp.off .ft-rows{opacity:.6}
+.cp-search{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:0 8px;border:1px solid var(--border);border-radius:8px;color:var(--text-3)}
+.cp-search:focus-within{border-color:var(--accent)}
+.cp-search input{flex:1;min-width:0;border:0;background:transparent;padding:7px 0;box-shadow:none;outline:none}
+.cp-none{margin:6px 0 0}
+.cp-empty{display:flex;flex-direction:column;align-items:flex-start;gap:10px}.cp-empty p{margin:0;max-width:34ch}
+.cp-rebuild{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}.cp-rebuild span{flex:1;min-width:160px}
 /* timeline (studio/timeline.js): track headers on the left; the ruler and the waveform on a canvas that follows the scroll,
    one row per track on a zoomable track, the caption blocks draggable */
 .vs-tl{--vs-tl-wave:rgba(148,163,184,.32);--vs-tl-tick:rgba(148,163,184,.55);display:grid;grid-template-columns:140px minmax(0,1fr);flex-shrink:0;border:1px solid var(--border-soft,var(--border));border-radius:12px;background:var(--pill);overflow:hidden;user-select:none}

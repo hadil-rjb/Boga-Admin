@@ -116,7 +116,7 @@ describe('reel source', () => {
   });
   it('draws the scenes and the audio clips from the motion editor', () => {
     const { src } = fakeReel(reel());
-    const html = Object.fromEntries(src.tracks().map((t) => [t.id, t.html(40)]));
+    const html = Object.fromEntries(src.tracks().filter((t) => t.html).map((t) => [t.id, t.html(40)]));
     expect(html).toMatchObject({ scenes: '<i>scenes</i>', voice: '<i>voice</i>', music: '<i>music</i>' });
   });
   it('the player is the motion editor\'s', () => {
@@ -135,6 +135,19 @@ describe('reel source', () => {
     const { src } = fakeReel(reel());
     for (const k of ['captions', 'styles', 'script']) expect(src.nativePanel(k)).toBe(false);
     for (const k of ['templates', 'motion', 'audio', 'elements', 'text', 'uploads', 'figma', 'brand', 'data', 'comps', 'agent']) expect(src.nativePanel(k)).toBe(true);
+  });
+  it('the captions track holds draggable blocks (the voice-over lines), voice and music mute the preview', () => {
+    const d = reel(); d.pages[0].scene.vo = { text: 'Hello there', src: 'a.mp3', dur: 1000 };
+    const ts = fakeReel(d).src.tracks();
+    expect(ts[1].blocks.map((b) => b.text)).toEqual(['Hello there']);
+    expect(ts[1].blocks[0].start).toBe(150);
+    expect(ts[2].toggle).toBe('mute'); expect(ts[3].toggle).toBe('mute');
+  });
+  it('voice and music mutes are session state: the track shows muted, the design is untouched', () => {
+    const d = reel(), { src } = fakeReel(d);
+    src.onToggle('music');
+    expect(src.tracks()[3].hidden).toBe(true); expect(src.tracks()[2].hidden).toBe(false);
+    expect(d.audio).toBeUndefined();
   });
   it('the captions track follows the audio captions switch', () => {
     expect(fakeReel(reel()).src.tracks()[1].hidden).toBe(true);

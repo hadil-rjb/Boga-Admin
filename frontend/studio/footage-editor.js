@@ -2,13 +2,15 @@
    Footage editor: a design with `d.footage` takes over the editor (as v37 does for `d.motion`).
    It is the Video Studio's `video` source (video-studio.js draws the rail, the transport, the timeline and routes the inspector).
    Stage: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split (the transport's extra).
-   Tracks: Video, Captions and Voice. Panels: Subtitles (the Captions rail item, until shared panels replace it). Inspector: Look.
+   Tracks: Video, Captions and Voice. Panels: the shared Captions panel (caption-panels.js), helped through `captions`
+   (the panel's body while there are no lines, Re-transcribe). Inspector: Look.
    While the server transcribes and grades, the panels show skeletons; a failed step shows its error and Retry.
    installFootageEditor(ctx, FT) is called by installFootage. The pure helpers at the top are unit-tested.
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
+import { group, retime, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
+import { lineText } from './caption-panels.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
@@ -44,8 +46,8 @@ export function analysis(rec, ref) {
   };
 }
 /**
- * The server's results that the design still lacks: subtitles grouped from the words (only when there are no lines yet),
- * the reference's subtitle style (only when none is set) and the grade marker (only when no look is set). null when nothing changes.
+ * The server's results that the design still lacks: captions grouped from the words (only when there are no lines yet),
+ * the reference's caption style (only when none is set) and the grade marker (only when no look is set). null when nothing changes.
  */
 export function analysisPatch(caps, ft, { id, words, refStyle, refNote, hasCube }) {
   const out = {};
@@ -70,15 +72,6 @@ export function matchedGradePatch(ft, id) {
   return { lut: lookPath(id), lookId: null };
 }
 export const LOOK_DELETED = 'This brand look was deleted. Use the matched grade instead.';
-/**
- * The edited text of line `id` committed: the new lines, or null when nothing changes (same words, or the line is gone).
- * Called when the field loses focus, which a drag on the lane or the video forces first (so a drag never drops typed text).
- */
-export function textCommit(lines, id, value) {
-  const ls = lines || [], i = ls.findIndex((l) => l.id === id); if (i < 0) return null;
-  if (String(value || '').trim().split(/\s+/).filter(Boolean).join(' ') === lineText(ls[i])) return null;
-  return ls.map((l, k) => (k === i ? retext(l, value) : l));
-}
 /** Seconds since epoch at which a signed `?t=<exp>.<mac>` URL expires, or null */
 export const urlExpiry = (url) => { const m = /[?&]t=(\d+)\./.exec(String(url || '')); return m ? +m[1] : null; };
 /**
@@ -115,13 +108,12 @@ export function fitPeaks(peaks, w) {
   }
   return out;
 }
-/** "0:12.4 – 0:14.1" */
-export const rangeLabel = (l) => `${fmtMs(l.start)} – ${fmtMs(l.end)}`;
-/** The text of a line as the field shows it */
-export const lineText = (l) => (l.words || []).map((w) => w.t).join(' ');
 
 
-/* ---- Look panel: grade sliders, subtitle style edits, brand looks ---- */
+/* the caption rows' helpers live in caption-panels.js (the shared Captions panel) */
+export { textCommit, rangeLabel, lineText } from './caption-panels.js';
+
+/* ---- Look panel: grade sliders, caption style edits, brand looks ---- */
 const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
 /** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
 export const GRADE_KEYS = { strength: [0, 100], exposure: [-100, 100], temp: [-100, 100], sat: [-100, 100] };
@@ -155,7 +147,7 @@ export function colorHex(v, fallback = '#ffffff') {
 /** Words per line of a style (1..8; the default when unset) */
 export const maxWordsOf = (style) => clampN2(Math.round(+(style && style.maxWords) || DEFAULT_STYLE.maxWords), 1, 8);
 /**
- * One edit of the subtitle style, as a new style (a missing style starts from the default). Units are the controls':
+ * One edit of the caption style, as a new style (a missing style starts from the default). Units are the controls':
  * size and y in percent of the video height (size 2..10, y 5..95), strokeWidth in thousandths of the height (1..20),
  * strokeOn / shadowOn booleans, colors as #rrggbb. Unknown keys and unusable values change nothing.
  */
@@ -181,7 +173,7 @@ export function styleEdit(style, key, v) {
   }
   return s;
 }
-/** Where the subtitle style came from: the stored origin, else guessed (a preset is the user's pick, a style came from the reference or the look) */
+/** Where the caption style came from: the stored origin, else guessed (a preset is the user's pick, a style came from the reference or the look) */
 export function styleOrigin(captions, hasRef) {
   const c = captions || {};
   if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
@@ -190,10 +182,10 @@ export function styleOrigin(captions, hasRef) {
 }
 /** The panel's sentence about the style's origin */
 export const ORIGIN_COPY = {
-  reference: 'Subtitles use the style read from the reference.',
-  look: 'Subtitles use the brand look’s style.',
-  default: 'Subtitles use the default style.',
-  custom: 'Subtitles use your own style.',
+  reference: 'Captions use the style read from the reference.',
+  look: 'Captions use the brand look’s style.',
+  default: 'Captions use the default style.',
+  custom: 'Captions use your own style.',
 };
 /** Seconds into a video of `dur` seconds at which the reference thumbnail is taken: frame 30 of the 60 sampled frames */
 export const thumbTime = (dur) => Math.max(0, (29.5 / 60) * (+dur || 0));
@@ -205,7 +197,7 @@ export function lookRecord({ id, name, lut, captionStyle, refThumb, now = new Da
   return { id, name: nm, lut, captionStyle: JSON.parse(JSON.stringify(captionStyle || DEFAULT_STYLE)), refThumb: refThumb || null, createdAt: new Date(now).toISOString() };
 }
 /**
- * Applies a brand look to a footage doc (in place): its cube, its subtitle style (origin 'look') and, when `lines` are given
+ * Applies a brand look to a footage doc (in place): its cube, its caption style (origin 'look') and, when `lines` are given
  * (regrouped by the caller because the look's words per line differ), the new lines. Returns whether the lines need regrouping.
  */
 export function applyLookTo(caps, ft, look, lines) {
@@ -342,7 +334,7 @@ export function installFootageEditor(ctx, FT) {
     S.player = createPlayer(box, {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: capsOf(S.d),
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
-      onTime: (ms, playing) => { VS.tick(ms, playing); hilite(ms, playing); },
+      onTime: (ms, playing) => VS.tick(ms, playing),
       onReady: (dur) => { S.dur = dur; VS.tick(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
       onError: (err) => refreshProxy(S, err),
     });
@@ -399,7 +391,7 @@ export function installFootageEditor(ctx, FT) {
     else if (A.failed) m = failBox(A.error || 'This video could not be processed.', F.id, firstFailed(F.rec) || 'probe');
     else if (!F.player) m = `<div class="ft-wait">${skel(2)}<p>Preparing your video…${pct(A.proxy)}</p></div>`;
     msg.innerHTML = m; msg.hidden = !m;
-    const work = [[A.transcribe, 'Transcribing'], [A.grade, 'Matching the grade'], [A.style, 'Reading the subtitle style']].filter(([s]) => BUSY.includes(s.state)).map(([s, l]) => l + pct(s));
+    const work = [[A.transcribe, 'Transcribing'], [A.grade, 'Matching the grade'], [A.style, 'Reading the caption style']].filter(([s]) => BUSY.includes(s.state)).map(([s, l]) => l + pct(s));
     prog.innerHTML = work.length ? `<span class="ft-dot"></span>${esc(work.join(' · '))}…` : ''; prog.hidden = !work.length || A.failed;
     $('#ftSplit').hidden = F.split == null;
     if (F.split != null) $('#ftSplit').style.left = F.split * 100 + '%';
@@ -409,16 +401,6 @@ export function installFootageEditor(ctx, FT) {
     const el = $('#ftStage'), fr = $('#ftFrame'); if (!el || !fr || !ED.d || !isFt(ED.d)) return;
     const { w, h } = ED.d.footage.out, r = el.getBoundingClientRect(), b = fitBox(r.width - 48, r.height - 48, w, h);
     fr.style.width = b.w + 'px'; fr.style.height = b.h + 'px';
-  }
-
-  /** The subtitle row being spoken (the timeline highlights its own block) */
-  let lastRow = null;
-  function hilite(ms, playing) {
-    const lines = ED.d && ED.d.footage ? capsOf(ED.d).lines : [];
-    const i = lines.findIndex((l) => ms >= l.start && ms < l.end), id = i >= 0 ? lines[i].id : null;
-    if (id === lastRow) return; lastRow = id;
-    document.querySelectorAll('#edPanel .ft-row.on').forEach((x) => x.classList.remove('on'));
-    if (id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) { r.classList.add('on'); if (playing && !r.contains(document.activeElement)) r.scrollIntoView({ block: 'nearest' }); } }
   }
 
   /* ---------- the timeline (timeline.js): Video, Captions and Voice tracks ---------- */
@@ -441,16 +423,16 @@ export function installFootageEditor(ctx, FT) {
     const S = F; if (!S || !alive(S)) return;
     if (live && start == null) { sync(); return; } // a drag ended without a change: the preview shows the design again
     if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
-    editLines((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
+    VS.captions.edit((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
   }
-  function onSelect(id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) r.scrollIntoView({ block: 'nearest' }); }
+  function onSelect(id) { VS.captions.reveal(id); }
   function onToggle(id) {
     const S = F; if (!S || !alive(S)) return;
-    if (id === 'captions') { if (!can()) return; mutate(() => { const c = capsOf(ED.d); c.on = c.on === false; }, () => { sync(); lane(); }); save(); }
+    if (id === 'captions') VS.captions.toggle(); // one mutate(): preview and export
     else if (id === 'voice') { S.muted = !S.muted; if (S.player) S.player.video.muted = S.muted; lane(); } // preview only, the export keeps the sound
   }
   /** Redraws the timeline (after an edit, undo or redo) */
-  function lane() { VS.refresh(); lastRow = null; if (F && F.player) hilite(F.player.time()); }
+  const lane = () => VS.refresh();
   /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the Voice track has no waveform */
   async function loadPeaks(S) {
     if (S.peaks || S.peaksBusy || !S.rec || !S.rec.proxyUrl) return; S.peaksBusy = true;
@@ -470,62 +452,10 @@ export function installFootageEditor(ctx, FT) {
     } catch (e) { /* no audio track, no decoder or the request stopped: the Voice track stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
   }
 
-  /* ---------- editing: every change is one mutate() ---------- */
+  /* ---------- editing: every change is one mutate() (caption lines: the shared Captions panel) ---------- */
   const can = () => !canEdit || canEdit();
-  const lineIdx = (id) => capsOf(ED.d).lines.findIndex((l) => l.id === id);
-  /** Applies fn(lines) -> new lines in one undoable step */
-  function editLines(fn, redraw) {
-    if (!F || !can()) return;
-    mutate(() => { const c = capsOf(ED.d); c.lines = fn(c.lines || []); }, redraw); save();
-  }
-  /** After a text edit the rows keep focus: only the preview and the lane follow */
-  const light = () => { sync(); lane(); };
-  function commitText(inp) {
-    if (!F || !can()) return;
-    const id = inp.dataset.ftText, i = lineIdx(id); if (i < 0) return;
-    const next = textCommit(capsOf(ED.d).lines, id, inp.value);
-    if (!next) { inp.value = lineText(capsOf(ED.d).lines[i]); return; }
-    editLines(() => next, light);
-  }
   /** A drag starts: the focused field commits first (its focusout handler), so the drag's own commit keeps the typed text */
   function commitFocus() { const a = document.activeElement; if (a && a !== document.body && typeof a.blur === 'function') a.blur(); }
-  function openMenu(btn, rows) {
-    document.querySelectorAll('#ctx').forEach((x) => x.remove());
-    const r = btn.getBoundingClientRect(), c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
-    c.innerHTML = rows.map((x, k) => `<button role="menuitem" data-k="${k}" class="${x[2] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${x[0]}</span></button>`).join('');
-    document.body.append(c);
-    const hh = c.offsetHeight, ww = c.offsetWidth;
-    c.style.left = Math.max(8, Math.min(r.right - ww, innerWidth - ww - 8)) + 'px';
-    c.style.top = (r.bottom + 6 + hh < innerHeight ? r.bottom + 6 : Math.max(8, r.top - hh - 6)) + 'px';
-    const gone = (ev) => { if (!c.contains(ev.target)) { c.remove(); removeEventListener('pointerdown', gone, true); } };
-    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); removeEventListener('pointerdown', gone, true); rows[+b.dataset.k][1](); } };
-    c.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Escape') { c.remove(); removeEventListener('pointerdown', gone, true); btn.focus(); } };
-    setTimeout(() => addEventListener('pointerdown', gone, true));
-    const f = c.querySelector('button:not(:disabled)'); f && f.focus();
-  }
-  function rowMenu(btn) {
-    if (!F || !can()) return;
-    const id = btn.dataset.id, i = lineIdx(id), ls = capsOf(ED.d).lines; if (i < 0) return;
-    openMenu(btn, [
-      ['Split at playhead', () => splitAt(id)],
-      ['Merge with next', () => { const k = lineIdx(id); if (k >= 0 && k < capsOf(ED.d).lines.length - 1) editLines((a) => [...a.slice(0, k), merge(a[k], a[k + 1]), ...a.slice(k + 2)]); }, '', i >= ls.length - 1],
-      ['Delete', () => editLines((a) => a.filter((l) => l.id !== id)), 'dl'],
-    ]);
-  }
-  function splitAt(id) {
-    const t = F.player ? F.player.time() : 0, i = lineIdx(id), l = capsOf(ED.d).lines[i];
-    if (!l || !(t > l.start && t < l.end) || !l.words.some((w) => w.s >= t) || !l.words.some((w) => w.s < t)) { toast('Move the playhead inside the subtitle, between two words, to split it.'); return; }
-    editLines((a) => [...a.slice(0, i), ...split(a[i], t), ...a.slice(i + 1)]);
-  }
-  function addAtPlayhead() {
-    if (!F || !can()) return;
-    const before = capsOf(ED.d).lines || [], after = addLine(before, F.player ? Math.round(F.player.time()) : 0);
-    if (after === before) { toast('There is no room for a line here. Move the playhead to a gap.'); return; }
-    const old = new Set(before.map((l) => l.id)), fresh = after.find((l) => !old.has(l.id));
-    editLines(() => after);
-    const inp = fresh && document.querySelector(`#edPanel [data-ft-text="${CSS.escape(fresh.id)}"]`);
-    if (inp) { inp.focus(); inp.scrollIntoView({ block: 'nearest' }); }
-  }
   /** A small confirmation: onOk runs on the button, onNo on any other way out */
   function ask(title, text, okLabel, onOk, onNo) {
     let ok = false;
@@ -549,7 +479,7 @@ export function installFootageEditor(ctx, FT) {
   }
   function retranscribe() {
     if (!F || !can()) return; const S = F;
-    ask('Re-transcribe?', 'This replaces your edited subtitles', 'Re-transcribe', async () => {
+    ask('Re-transcribe?', 'This replaces your edited captions', 'Re-transcribe', async () => {
       try {
         await api(`/footage/${S.id}/retry`, { method: 'POST', body: { step: 'transcribe' } });
         if (!alive(S)) return;
@@ -564,29 +494,17 @@ export function installFootageEditor(ctx, FT) {
     return `<button class="ft-chip${on ? ' on' : ''} ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line on the video)">${ic('ftCmp10', 16)}<span>Before / After</span></button>`;
   }
 
-  function subsHTML() {
-    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, caps = capsOf(ED.d), lines = caps.lines || [];
-    let body;
-    if (lines.length) body = `<div class="ft-rows">${lines.map((l) => rowHTML(l)).join('')}</div>`;
-    else if (A.transcribe.state === 'failed') body = failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe');
-    else if (A.busy(A.transcribe) || !F.rec) body = `<p class="xs-t muted">Listening to your video…${pct(A.transcribe)}</p>${skel(6)}`;
-    else if (A.transcribe.state === 'skipped') body = '<p class="sm-t muted">This video has no sound, so there is nothing to subtitle.</p>';
-    else body = '<p class="sm-t muted">No speech was found in this video.</p>';
-    return `<h3>Subtitles</h3>${body}${footHTML(ft, A)}`;
+  /** The Captions panel's body while there are no lines: transcribing, failed, no sound or no speech */
+  function noLinesHTML() {
+    if (!F) return null;
+    const A = analysis(F.rec, F.refRec);
+    if (A.transcribe.state === 'failed') return failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe');
+    if (A.busy(A.transcribe) || !F.rec) return `<p class="xs-t muted">Listening to your video…${pct(A.transcribe)}</p>${skel(6)}`;
+    if (A.transcribe.state === 'skipped') return '<p class="sm-t muted">This video has no sound, so there is nothing to caption.</p>';
+    return '<p class="sm-t muted">No speech was found in this video.</p>';
   }
-  /** One subtitle: the time (seeks), the text (editable) and its menu. Every design value goes through esc() or a number. */
-  function rowHTML(l) {
-    const ro = canEdit && !canEdit() ? 'readonly' : '';
-    return `<div class="ft-row" data-id="${esc(l.id)}"><button class="ft-t" data-act="ftSeek" data-ms="${+l.start || 0}" title="Go to this subtitle">${esc(rangeLabel(l))}</button>
-      <input class="ft-in" dir="auto" data-ft-text="${esc(l.id)}" value="${esc(lineText(l))}" placeholder="Type the subtitle" aria-label="Subtitle text" spellcheck="false" ${ro}>
-      ${ro ? '' : `<button class="btn ghost icon sm ft-more" data-act="ftMore" data-id="${esc(l.id)}" aria-haspopup="menu" aria-label="Subtitle actions" title="More">${ic('more', 16)}</button>`}</div>`;
-  }
-  function footHTML(ft, A) {
-    if (canEdit && !canEdit()) return '';
-    const busyT = A.busy(A.transcribe);
-    return `<div class="ft-foot"><button class="btn secondary sm" data-act="ftAdd">${ic('plus', 15)}Add a line at the playhead</button>
-      <button class="btn ghost sm" data-act="ftRetx" ${busyT || !F.rec ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button></div>`;
-  }
+  /** Re-transcribe, next to Add line */
+  const retxHTML = () => { const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe); return `<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`; };
 
   /* ---------- Look panel ---------- */
   const optHTML = (list, cur) => list.map(([v, l]) => `<option value="${esc(String(v))}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('');
@@ -615,9 +533,9 @@ export function installFootageEditor(ctx, FT) {
   function styleHTML(ft, A, dis) {
     const caps = capsOf(ED.d);
     const st = caps.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(caps, !!F.ref);
-    if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
+    if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the caption style…</p>${skel(2)}`;
     let top = '';
-    if (F.ref && !caps.style && A.style.state === 'failed') top = failBox(A.style.error || 'The subtitle style could not be read.', F.ref, 'caption-style');
+    if (F.ref && !caps.style && A.style.state === 'failed') top = failBox(A.style.error || 'The caption style could not be read.', F.ref, 'caption-style');
     else top = `<p class="sm-t">${ORIGIN_COPY[origin]}</p>`;
     const note = F.refRec && F.refRec.captionNote; if (note && (origin === 'default' || origin === 'reference')) top += `<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
     const wc = WEIGHTS.some(([w]) => w === st.weight) ? WEIGHTS : [...WEIGHTS, [st.weight, String(st.weight)]];
@@ -631,7 +549,7 @@ export function installFootageEditor(ctx, FT) {
       ${rgHTML('data-ft-s', 'y', 'Position', 5, 95, 1, clampN2(y, 5, 95), dis)}
       <label class="ft-rg ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${maxWordsOf(caps.style)}" data-ft-wpl aria-label="Words per line" ${dis || !has ? 'disabled' : ''}></label>
       ${selHTML('anim', 'Animation', ANIMS, st.anim || 'none', dis)}
-      ${dis ? '' : '<p class="xs-t muted">You can also drag the subtitle on the video to move it.</p>'}`;
+      ${dis ? '' : '<p class="xs-t muted">You can also drag the caption on the video to move it.</p>'}`;
   }
 
   function looksHTML(ft, dis) {
@@ -642,7 +560,7 @@ export function installFootageEditor(ctx, FT) {
       <span class="ft-ln" title="${esc(l.name || l.id)}">${esc(l.name || l.id)}</span>
       ${dis ? '' : `<button class="btn secondary sm" data-act="ftApplyLook" data-id="${esc(l.id)}" ${l.lut === ft.look.lut ? 'disabled' : ''}>${l.lut === ft.look.lut ? 'In use' : 'Apply'}</button>
       <button class="btn ghost icon sm" data-act="ftDelLook" data-id="${esc(l.id)}" aria-label="Delete ${esc(l.name || l.id)}" title="Delete">${ic('trash', 15)}</button>`}</li>`).join('')}</ul>`
-      : '<p class="xs-t muted">No brand looks yet. Save this grade and subtitle style to reuse them on other videos.</p>';
+      : '<p class="xs-t muted">No brand looks yet. Save this grade and caption style to reuse them on other videos.</p>';
     return `${save}${rows}`;
   }
 
@@ -650,7 +568,7 @@ export function installFootageEditor(ctx, FT) {
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = can() ? '' : 'disabled';
     return `<div class="body ft-look-p"><h3>Look</h3>
       <section class="ft-sec"><span class="label">Colour grade</span>${gradeHTML(ft, A, src, dis)}</section>
-      <section class="ft-sec"><span class="label">Subtitle style</span>${styleHTML(ft, A, dis)}</section>
+      <section class="ft-sec"><span class="label">Caption style</span>${styleHTML(ft, A, dis)}</section>
       <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
   }
 
@@ -677,8 +595,8 @@ export function installFootageEditor(ctx, FT) {
     },
     player,
     tracks: tlTracks,
-    panel: (key) => (F && key === 'captions' ? subsHTML() : null),
-    panelDrawn: (key) => { if (key !== 'captions') return; lastRow = null; if (F && F.player) hilite(F.player.time()); },
+    panel: () => null,
+    captions: { body: noLinesHTML, foot: retxHTML, light: () => sync() },
     inspector: () => (F ? lookHTML() : null),
     transportExtra: baHTML,
     canEdit: () => can(),
@@ -691,15 +609,12 @@ export function installFootageEditor(ctx, FT) {
   const setSplit = (x) => { if (!F) return; F.split = x; F.player && F.player.setSplit(x); drawStage(); const b = $('[data-act=ftSplit]'); if (b) { b.setAttribute('aria-pressed', String(x != null)); b.classList.toggle('on', x != null); } };
   Object.assign(ACT, {
     ftSplit: () => setSplit(F && F.split == null ? 0.5 : null),
-    ftMore: (a) => rowMenu(a),
-    ftAdd: () => addAtPlayhead(),
     ftRetx: () => retranscribe(),
     ftGradeReset: () => gradeReset(),
     ftSaveLook: () => saveLook(),
     ftApplyLook: (a) => applyLook(a.dataset.id),
     ftUseMatched: () => useMatched(),
     ftDelLook: (a) => deleteLook(a.dataset.id),
-    ftSeek: (a) => { if (F && F.player) { F.player.seek(+a.dataset.ms); } },
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
       try {
@@ -712,12 +627,7 @@ export function installFootageEditor(ctx, FT) {
       } catch (e) { a.disabled = false; toast((e && e.message) || 'Could not retry'); }
     },
   });
-  document.addEventListener('focusout', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-text]')) commitText(e.target); });
   document.addEventListener('change', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-wpl]')) regroup(e.target); });
-  document.addEventListener('keydown', (e) => {
-    const t = e.target; if (!F || !t || !t.matches || !t.matches('[data-ft-text]')) return;
-    if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = capsOf(ED.d).lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
-  }, true);
   /* the split line: drag anywhere on the frame while Before / After is on */
   document.addEventListener('pointerdown', (e) => {
     if (!F || F.split == null || e.button !== 0) return; const fr = $('#ftFrame'); if (!fr || !fr.contains(e.target)) return;
@@ -761,11 +671,11 @@ export function installFootageEditor(ctx, FT) {
   document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
   document.addEventListener('change', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradeCommit(t); else if (t.matches('[data-ft-s]')) styleCommit(t); });
 
-  /* dragging the subtitle on the video sets its height (y): preview through the player, one mutate() on release */
+  /* dragging the caption on the video sets its height (y): preview through the player, one mutate() on release */
   function captionDrag(e) {
     if (!F || !F.player || F.split != null || !can() || e.button > 0 || F.cdrag) return;
     const fr = $('#ftFrame'), ov = fr && fr.querySelector('.ftp-o'); if (!fr || !ov || !fr.contains(e.target) || !ov.width) return;
-    commitFocus(); // a subtitle being typed is committed before the line under the playhead is read
+    commitFocus(); // a caption being typed is committed before the line under the playhead is read
     if (!F || !F.player) return;
     const caps = capsOf(ED.d), st = caps.style || DEFAULT_STYLE, line = lineAt(caps.lines || [], F.player.time()); if (!line) return;
     const r = fr.getBoundingClientRect(), W = ov.width, H = ov.height, L = layout(ov.getContext('2d'), line, st, W, H);
@@ -819,7 +729,7 @@ export function installFootageEditor(ctx, FT) {
     const applied = brandLooks().find((l) => l.id === ft.lookId), def = (refName(S) || (applied && applied.name) || 'Brand look').slice(0, 60);
     ctx.modal(`<div class="mh"><h2>Save as brand look</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb"><label class="label" for="ftLkName">Name</label><input class="inp" id="ftLkName" maxlength="60" value="${esc(def)}" autocomplete="off">
-        <p class="xs-t muted" style="margin-top:8px">Saves the matched colours and the subtitle style. Strength, exposure, temperature and saturation are not saved.</p></div>
+        <p class="xs-t muted" style="margin-top:8px">Saves the matched colours and the caption style. Strength, exposure, temperature and saturation are not saved.</p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-ok>Save</button></div>`,
       { onMount: (bg, close) => {
         const inp = bg.querySelector('#ftLkName'), go = () => { const name = inp.value.trim() || def; close(); doSaveLook(S, name); };
@@ -852,7 +762,7 @@ export function installFootageEditor(ctx, FT) {
     S.cubes[look.lut] = cube; delete S.cubeBad[look.lut];
     const cur = ED.d.footage;
     if (look.captionStyle && maxWordsOf(look.captionStyle) !== maxWordsOf(capsOf(ED.d).style) && (capsOf(ED.d).lines || []).length) {
-      ask('Apply this look?', `Its subtitles use ${maxWordsOf(look.captionStyle)} words per line. This replaces your line breaks.`, 'Apply', async () => {
+      ask('Apply this look?', `Its captions use ${maxWordsOf(look.captionStyle)} words per line. This replaces your line breaks.`, 'Apply', async () => {
         let words = [];
         try { words = await api(`/footage/${S.id}/words`); } catch (e) { toast((e && e.message) || 'Could not load the words'); return; }
         if (!alive(S)) return;
@@ -893,7 +803,7 @@ export function installFootageEditor(ctx, FT) {
     const d = ED.d, sizes = exportSizes(d.footage.out), dur = F.dur || (F.rec && F.rec.meta ? F.rec.meta.dur * 1000 : 0);
     const st = { timer: 0, gone: false, busy: false, url: null, size: sizes[0] };
     ctx.modal(`<div class="mh"><h2>Export video</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
-      <div class="mb ft-ex"><p class="xs-t muted">MP4 · ${esc(fmtMs(dur))} · with the colour grade and subtitles</p>
+      <div class="mb ft-ex"><p class="xs-t muted">MP4 · ${esc(fmtMs(dur))} · with the colour grade and captions</p>
         <div class="ft-szs" role="radiogroup" aria-label="Size">${sizes.map((s, i) => `<label class="ft-sz"><input type="radio" name="ftSz" value="${i}" ${i ? '' : 'checked'}><span>${esc(s.label)}</span></label>`).join('')}</div>
         <div class="prog-w" data-ft-ep hidden><div class="prog"><i style="width:0%"></i></div><span class="prog-pct">0%</span></div>
         <p class="xs-t muted" data-ft-em role="status" aria-live="polite"></p></div>
@@ -917,7 +827,7 @@ export function installFootageEditor(ctx, FT) {
             if (st.gone) return;
             if (r.state === 'done' && r.url) return done(r.url);
             if (r.state === 'failed') return fail({ message: r.error || 'The export failed. Try again.' });
-            bar(r.progress || 0); msg(r.state === 'queued' ? 'Waiting for another export to finish…' : (r.progress || 0) < 0.3 ? 'Drawing the subtitles…' : 'Encoding the video…');
+            bar(r.progress || 0); msg(r.state === 'queued' ? 'Waiting for another export to finish…' : (r.progress || 0) < 0.3 ? 'Drawing the captions…' : 'Encoding the video…');
           } catch (e) { if (st.gone) return; if (e && e.status === 404) return fail({ message: 'This export was lost. Try again.' }); msg('Could not reach the server. Retrying…'); }
           st.timer = setTimeout(poll, 1000);
         }

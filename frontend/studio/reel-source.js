@@ -3,55 +3,39 @@
    The motion editor (engine.js, v37 / v38) keeps the scenes, the canvas, its panels, the Scene / layer properties and
    the export; it hands the shell `M` (RT.moReel): its player, the scene blocks and audio clips as timeline html, the
    layers of the open scene. This file registers the `reel` source:
-   - tracks: Scenes, Captions (the voice-over lines, on / off with the Audio panel's captions switch), Voice, Music,
+   - tracks: Scenes, Captions (d.captions lines: built from the voice-over until edited, see caption-panels.js; drag and
+     resize them like a video's, the eye is captions on / off), Voice and Music (each with a session-only "Mute preview"),
      then a Layers row that folds the open scene's layer lanes (folded by default, remembered in boga.mo37Folded);
    - panels: Captions, Styles and Script are the shell's; every other rail item keeps the editor's own panel;
    - the inspector stays the editor's (Scene / Animation properties);
    - transport extras: "back to editing" while the canvas shows a preview, loop, and + Scene (the library, aimed at the end).
-   captionBlocks is pure and unit-tested; installReelSource touches no DOM until the shell draws.
+   installReelSource touches no DOM until the shell draws.
    ============================================================ */
-import { timeline } from './motion.js';
-import { audioOf, voOf, LEAD } from './audio.js';
+import { retime } from './captions.js';
+import { capsView, linesOf, lineText, prepareReel } from './caption-panels.js';
 
 /** Rail items whose panel belongs to the shell (the caption panels); the rest are the motion editor's */
 const SHELL_PANELS = new Set(['captions', 'styles', 'script']);
 const FOLD_KEY = 'boga.mo37Folded';
-
-/**
- * The captions of a reel as timeline blocks, one per scene with a voice-over line: while its clip plays (plus a 400 ms
- * tail, inside its scene), or the whole scene when the line has no clip yet (as AUD.captionAt shows them).
- */
-export function captionBlocks(d) {
-  if (!d || !Array.isArray(d.pages)) return [];
-  const tl = timeline(d.pages), a = audioOf(d), tr = a.track && a.track.src && a.track.dur ? a.track : null;
-  return tl.scenes.map((s) => {
-    const vo = voOf(d.pages[s.i]), text = vo && String(vo.text || '').trim(); if (!text) return null;
-    const sEnd = s.start + s.dur;
-    let start = s.start, end = sEnd;
-    if (vo.src && vo.dur) { start = s.start + LEAD; end = Math.min(start + vo.dur + 400, sEnd); }
-    else if (tr) { start = Math.max(start, tr.at || 0); end = Math.min(end, (tr.at || 0) + tr.dur + 400); }
-    return end > start ? { i: s.i, start, end, text } : null;
-  }).filter(Boolean);
-}
+/** The reel's caption blocks per scene (moved to caption-panels.js, where the voice-over lines are built) */
+export { captionBlocks } from './caption-panels.js';
 
 export function installReelSource(ctx) {
-  const { ED, ACT, VS, M, ic, esc, canEdit } = ctx;
+  const { ED, ACT, VS, M, ic, canEdit, save } = ctx;
   let folded = true; try { folded = localStorage.getItem(FOLD_KEY) !== '0'; } catch (e) { /* no storage: folded */ }
   const isReel = () => !!(ED.d && ED.d.motion && !ED.d.footage);
-  const pc = (v) => Math.max(0, Math.min(100, +v || 0)).toFixed(3) + '%';
+  /** "Mute preview" on the Voice and Music rows: session state, the export keeps the sound */
+  let muted = { voice: false, music: false };
+  const setMuted = (id, on) => { muted = { ...muted, [id]: !!on }; if (M.setMuted) M.setMuted(id, !!on); };
 
-  function captionsHTML() {
-    const d = ED.d, total = timeline(d.pages).total; if (!total) return '';
-    return captionBlocks(d).map((b) => `<div class="vs-tl-cap" data-i="${b.i}" style="left:${pc((b.start / total) * 100)};width:${pc(((b.end - b.start) / total) * 100)}" title="${esc(b.text)}"><span dir="auto">${esc(b.text)}</span></div>`).join('');
-  }
   function tracks() {
     if (!isReel()) return [];
-    const a = audioOf(ED.d), clips = () => M.clipsHTML();
+    const d = ED.d, on = capsView(d).on !== false, clips = () => M.clipsHTML();
     const out = [
       { id: 'scenes', icon: ic('film37', 14), label: 'Scenes', height: 58, html: (pps) => M.scenesHTML(pps) },
-      { id: 'captions', icon: ic('vsCc', 14), label: 'Captions', hidden: !a.captions, html: captionsHTML },
-      { id: 'voice', icon: ic('mic38', 14), label: 'Voice', toggle: null, html: () => clips().voice },
-      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: null, html: () => clips().music },
+      { id: 'captions', icon: ic('vsCc', 14), label: 'Captions', hidden: !on, blocks: linesOf(d).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
+      { id: 'voice', icon: ic('mic38', 14), label: 'Voice', toggle: 'mute', hidden: muted.voice, html: () => clips().voice },
+      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: muted.music, html: () => clips().music },
     ];
     const ly = M.layers() || [];
     if (ly.length) {
@@ -65,8 +49,18 @@ export function installReelSource(ctx) {
       folded = !folded; try { localStorage.setItem(FOLD_KEY, folded ? '1' : '0'); } catch (e) { /* not remembered */ }
       VS.refresh(); M.fit(); return;
     }
-    if (id === 'captions' && canEdit() && ACT.au38Cc) ACT.au38Cc(); // the Audio panel's captions switch: preview and export
+    if (id === 'captions') { if (canEdit() && VS.captions) VS.captions.toggle(); return; } // captions on / off: preview and export
+    if (id === 'voice' || id === 'music') { setMuted(id, !muted[id]); VS.refresh(); } // preview only
   }
+  /** A caption block dragged on the timeline: the preview follows while dragging, one mutate() on release */
+  function onRetime(id, start, end, live) {
+    if (!isReel()) return;
+    if (live && start == null) { if (M.previewCaptions) M.previewCaptions(null); return; }
+    if (live) { if (M.previewCaptions) M.previewCaptions(linesOf(ED.d).map((x) => (x.id === id ? retime(x, start, end) : x))); return; }
+    if (M.previewCaptions) M.previewCaptions(null);
+    if (VS.captions) VS.captions.edit((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
+  }
+  function onSelect(id) { if (VS.captions) VS.captions.reveal(id); }
   const loopHTML = () => { const on = !!M.loop(); return `<button class="ft-ib${on ? ' on' : ''}" id="vsLoop" data-act="mo37Loop" aria-pressed="${on}" aria-label="Loop playback" title="Loop playback">${ic('loop37', 17)}</button>`; };
   const transportExtra = () => `<button class="btn link sm mo-pv" id="mo37Pv" data-act="mo37Edit" hidden>Previewing · back to editing</button>${loopHTML()}
     <button class="ft-chip" data-act="vsAddScene" title="Add a scene at the end" ${canEdit() ? '' : 'disabled'}>${ic('plus', 15)}<span>Scene</span></button>`;
@@ -82,8 +76,12 @@ export function installReelSource(ctx) {
 
   let shown = null; // the design the timeline was drawn for: another reel starts a fresh timeline (zoom, scroll)
   const source = {
-    mount() { if (shown !== ED.d) { if (shown) VS.reset(); shown = ED.d; } },
-    unmount() { M.player.pause(); shown = null; },
+    mount() {
+      if (shown !== ED.d) { if (shown) VS.reset(); shown = ED.d; setMuted('voice', false); setMuted('music', false); }
+      if (prepareReel(ED.d) && save) save(); // the captions move to d.captions once (not an undo step)
+      if (VS.captions) VS.captions.loadFonts();
+    },
+    unmount() { M.player.pause(); shown = null; setMuted('voice', false); setMuted('music', false); },
     player: M.player,
     tracks,
     panel: () => null,
@@ -91,7 +89,9 @@ export function installReelSource(ctx) {
     nativeInspector: true,
     transportExtra,
     canEdit: () => canEdit(),
-    onToggle,
+    onToggle, onRetime, onSelect,
+    /** the shared Captions panel: the canvas preview follows an edit */
+    captions: { light: () => { if (M.redraw) M.redraw(); } },
   };
   M.onTime = (ms, playing) => { if (isReel()) VS.tick(ms, playing); };
   VS.register('reel', source);
