@@ -81,6 +81,16 @@ describe('caption-sources', () => {
     expect(needsRebuild({ source: 'manual' }, pages)).toBe(false);
     expect(voSig([...pages, { scene: {} }])).toBe(voSig(pages));
   });
+  it('voSig changes when a scene is retimed, so dragging a scene length needs a rebuild', () => {
+    const pages = [{ scene: { dur: 3000 } }, pg('hello', 1000)];
+    const sig = voSig(pages);
+    const longer = [{ scene: { dur: 4500 } }, pg('hello', 1000)]; // scene before the voice-over moves it later
+    expect(voSig(longer)).not.toBe(sig);
+    const own = [{ scene: { dur: 3000 } }, { scene: { ...pg('hello', 1000).scene, dur: 6000 } }]; // the voice-over scene itself gets longer
+    expect(voSig(own)).not.toBe(voSig([{ scene: { dur: 3000 } }, { scene: { ...pg('hello', 1000).scene, dur: 5000 } }]));
+    expect(needsRebuild({ source: 'manual', voSig: sig }, longer)).toBe(true);
+    expect(needsRebuild({ source: 'manual', voSig: sig }, [{ scene: { dur: 3000 } }, pg('hello', 1000)])).toBe(false);
+  });
   it('parses VTT cue settings, hourless times and multi-line text', () => {
     const l = parseSubtitles('WEBVTT\n\n00:01.000 --> 00:02.000 align:start position:0%\nline one\nline two\n');
     expect(l[0]).toMatchObject({ start: 1000, end: 2000 });

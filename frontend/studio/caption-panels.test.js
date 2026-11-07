@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, PENDING_NOTE, applySrt, decodeSubtitleBytes, fileBase } from './caption-panels.js';
+import { filterRows, fold, rebuildOffer, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, PENDING_NOTE, applySrt, decodeSubtitleBytes, fileBase } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
 import { capsOf as capsOf15 } from './caption-store.js';
 
@@ -118,6 +118,32 @@ describe('editCaptions', () => {
     expect(d.captions.source).toBe('voiceover');
     expect(words(reelCaptions(d))).toEqual(['Hello', 'there', 'friends', 'Bye', 'now']);
     expect(needsRebuild(d.captions, d.pages)).toBe(false);
+  });
+});
+
+describe('rebuildOffer', () => {
+  it('a quiet link whenever edited reel captions no longer follow the voice-over', () => {
+    const d = reel({ captions: { on: true, lines: [], source: 'voiceover' } });
+    expect(rebuildOffer(d)).toBe(null);
+    editCaptions(d, (ls) => ls.slice(1));
+    expect(rebuildOffer(d)).toBe('link');
+    d.captions.source = 'script';
+    expect(rebuildOffer(d)).toBe('link');
+  });
+  it('prominent once the voice-over text or the scene timing changed', () => {
+    const d = reel({ captions: { on: true, lines: [], source: 'voiceover' } });
+    editCaptions(d, (ls) => ls.slice(1));
+    d.pages[0].scene.dur = 4500; // dragging a scene's length
+    expect(needsRebuild(d.captions, d.pages)).toBe(true);
+    expect(rebuildOffer(d)).toBe('prominent');
+    rebuildFromVoiceover(d);
+    expect(rebuildOffer(d)).toBe(null);
+  });
+  it('nothing for a video or a reel without a voice-over', () => {
+    expect(rebuildOffer({ footage: { src: 'x' }, captions: { on: true, lines: [ln('a', 'hi')], source: 'manual' } })).toBe(null);
+    const d = reel({ captions: { on: true, lines: [ln('a', 'hi')], source: 'manual', voSig: '' } });
+    d.pages.forEach((pg) => { delete pg.scene.vo; });
+    expect(rebuildOffer(d)).toBe(null);
   });
 });
 

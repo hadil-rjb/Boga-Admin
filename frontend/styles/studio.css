@@ -3204,6 +3204,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .cp-none{margin:6px 0 0}
 .cp-empty{display:flex;flex-direction:column;align-items:flex-start;gap:10px}.cp-empty p{margin:0;max-width:34ch}
 .cp-rebuild{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}.cp-rebuild span{flex:1;min-width:160px}
+.cp-rebuild-link{margin:0 0 8px}.cp-rebuild-link .btn.link{height:auto;padding:0 2px}
 /* the Styles panel (caption-panels.js) */
 .st-cur{white-space:nowrap}
 .st-chips{margin-bottom:10px}.st-chips .chip{cursor:pointer}.st-ct{color:var(--text-3);font-size:11px;margin-left:2px}

@@ -4,7 +4,8 @@
    - Video: the lines come from the speech (footage-editor.js) and are stored in `d.captions.lines`.
    - Reel: while `source` is 'voiceover' (or unset) the lines are built from the scenes' voice-over (reelCaptions), so they
      follow every change of the script or the voices; the first hand edit stores them with `source: 'manual'` and the
-     voice-over signature (voSig), and "Rebuild from voice-over" appears once the voice-over changes again (needsRebuild).
+     voice-over signature (voSig, which also covers each scene's start and length). "Rebuild from voice-over" is a quiet link
+     whenever the lines no longer follow the voice-over, and a prominent button once the voice-over or its timing changes (rebuildOffer).
    The panel: Captions on / off, search (Arabic and Latin, diacritics ignored), one row per line (time, inline edit, menu:
    split at playhead, merge with next, delete), Add line at the playhead, and the source's own action (Re-transcribe).
    A source helps through `source.captions`: { body() -> html | null (the panel's body while there are no lines),
@@ -153,6 +154,16 @@ export function editCaptions(d, fn) {
   c.lines = fn(base);
   c.source = 'manual';
   if (reel) c.voSig = voSig(d.pages);
+}
+/**
+ * How the panel offers "Rebuild from voice-over" on a reel: 'prominent' when the voice-over or the scene timing changed since the
+ * lines were edited, 'link' (a quiet text link) whenever the lines no longer follow a voice-over the reel has, else null.
+ */
+export function rebuildOffer(d, kind = kindOf(d)) {
+  if (kind !== 'reel' || !hasVoiceover(d)) return null;
+  const c = capsView(d);
+  if (!c.source || c.source === 'voiceover') return null;
+  return needsRebuild(c, d.pages) ? 'prominent' : 'link';
 }
 /** A reel's lines go back to following the voice-over */
 export function rebuildFromVoiceover(d) {
@@ -309,8 +320,10 @@ export function installCaptionPanels(ctx, VS) {
     if (kind === 'reel' && !lines.length && !hasVoiceover(d)) {
       return `${head}<div class="cp-empty"><p class="sm-t muted">Captions come from the voice-over script.</p><button class="btn secondary sm" data-act="cpAudio">${ic('music38', 15)}Open Audio</button></div>`;
     }
-    const rebuild = kind === 'reel' && needsRebuild(c, d.pages) && !ro
-      ? `<div class="note cp-rebuild">${ic('alert', 15)}<span>The voice-over changed since you edited these captions.</span><button class="btn secondary sm" data-act="cpRebuild">${ic('refresh', 14)}Rebuild from voice-over</button></div>` : '';
+    const offer = ro ? null : rebuildOffer(d, kind);
+    const rebuild = offer === 'prominent'
+      ? `<div class="note cp-rebuild">${ic('alert', 15)}<span>The voice-over changed since you edited these captions.</span><button class="btn primary sm" data-act="cpRebuild">${ic('refresh', 14)}Rebuild from voice-over</button></div>`
+      : offer === 'link' ? `<p class="cp-rebuild-link"><button class="btn link sm" data-act="cpRebuild">Rebuild from voice-over</button></p>` : '';
     let body;
     if (lines.length) {
       const keep = new Set(filterRows(lines, q).map((l) => l.id));
@@ -394,7 +407,13 @@ export function installCaptionPanels(ctx, VS) {
     cpMore: (a) => rowMenu(a),
     cpAdd: () => addAtPlayhead(),
     cpOn: () => setOn(),
-    cpRebuild: () => { if (ED.d && can()) { mutate(() => rebuildFromVoiceover(ED.d), panelToo); save(); } },
+    cpRebuild: () => {
+      const d = ED.d; if (!d || !can()) return;
+      ask('Rebuild from voice-over?', 'This replaces the caption lines you have now with lines from the voice-over.', 'Rebuild', () => {
+        if (ED.d !== d || !can()) return;
+        mutate(() => rebuildFromVoiceover(d), panelToo); save();
+      });
+    },
     cpAudio: () => ACT.edTab({ dataset: { k: 'audio' } }),
   });
   document.addEventListener('focusout', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-cp-text]')) commitText(t); });

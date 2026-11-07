@@ -1,6 +1,7 @@
 // Where caption text and timing come from: voice-over scenes, a pasted script, or an SRT/VTT file.
 // Pure ESM, no DOM.
 import { group, lcsPairs } from './captions.js';
+import { timeline } from './motion.js';
 
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const toks = (s) => String(s || '').split(/\s+/).filter(Boolean);
@@ -131,10 +132,12 @@ const fmt = (ms) => {
 export const toSrt = (lines) => lines
   .map((l, i) => `${i + 1}\n${fmt(l.start)} --> ${fmt(l.end)}\n${l.words.map((w) => w.t).join(' ')}\n`).join('\n');
 
+/** What the voice-over captions are built from: each voice-over's text and length, and where its scene sits (start and length) */
 export function voSig(pages) {
-  return (pages || []).map((pg, i) => {
+  const ps = pages || [], sc = timeline(ps).scenes;
+  return ps.map((pg, i) => {
     const vo = pg && pg.scene && pg.scene.vo;
-    return vo && (vo.text || vo.dur) ? `${i}:${String(vo.text || '').trim()}:${vo.dur || 0}` : null;
+    return vo && (vo.text || vo.dur) ? `${i}:${String(vo.text || '').trim()}:${vo.dur || 0}:${sc[i].start}:${sc[i].dur}` : null;
   }).filter((x) => x !== null).join('|');
 }
 
