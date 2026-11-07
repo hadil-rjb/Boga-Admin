@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
-import { clampDrag, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
+import { peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
   canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
@@ -104,24 +104,7 @@ describe('expired proxy links', () => {
   });
 });
 
-describe('subtitle lane', () => {
-  const L = (id, start, end) => ({ id, start, end, words: [] });
-  const ls = [L('a', 0, 1000), L('b', 1500, 2500), L('c', 3000, 4000)];
-  it('clampDrag keeps 200 ms and the neighbours', () => {
-    expect(clampDrag(ls, 1, 'start', 900)).toEqual({ start: 1000, end: 2500 });
-    expect(clampDrag(ls, 1, 'start', 2490)).toEqual({ start: 2300, end: 2500 });
-    expect(clampDrag(ls, 1, 'end', 1510)).toEqual({ start: 1500, end: 1700 });
-    expect(clampDrag(ls, 1, 'end', 9000)).toEqual({ start: 1500, end: 3000 });
-    expect(clampDrag(ls, 1, 'start', 1200)).toEqual({ start: 1200, end: 2500 });
-  });
-  it('clampDrag moves the block without changing its length and stops at neighbours and the video ends', () => {
-    expect(clampDrag(ls, 1, 'move', 1700)).toEqual({ start: 1700, end: 2700 });
-    expect(clampDrag(ls, 1, 'move', 0)).toEqual({ start: 1000, end: 2000 });
-    expect(clampDrag(ls, 1, 'move', 5000)).toEqual({ start: 2000, end: 3000 });
-    expect(clampDrag(ls, 0, 'move', -300)).toEqual({ start: 0, end: 1000 });
-    expect(clampDrag(ls, 2, 'move', 9000, 4500)).toEqual({ start: 3500, end: 4500 });
-    expect(clampDrag(ls, 2, 'end', 9000, 4500)).toEqual({ start: 3000, end: 4500 });
-  });
+describe('waveform peaks and labels', () => {
   it('peakBuckets takes the loudest sample of each bucket', () => {
     const p = peakBuckets(Float32Array.from([0.1, -0.5, 0.2, 0.9, -1.5, 0]), 3);
     expect(Array.from(p).map((v) => +v.toFixed(2))).toEqual([0.5, 0.9, 1]);

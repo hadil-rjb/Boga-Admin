@@ -1,7 +1,7 @@
 /* ============================================================
    Footage editor: a design with `d.footage` takes over the editor (as v37 does for `d.motion`).
    Center: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split.
-   Bottom: the transport (play, time, scrub, Before/After). Left: Subtitles. Right: Look.
+   Bottom: the transport (play, time, Before/After) and the track timeline (timeline.js). Left: Subtitles. Right: Look.
    While the server transcribes and grades, the panels show skeletons; a failed step shows its error and Retry.
    installFootageEditor(ctx, FT) is called by installFootage. The pure helpers at the top are unit-tested.
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
@@ -11,6 +11,7 @@ import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_S
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
+import { createTimeline } from './timeline.js';
 
 /* ---------- 1. pure helpers ---------- */
 const BUSY = ['queued', 'running'];
@@ -91,21 +92,7 @@ export function shouldRefreshProxy(err, url, nowSec, lastSec = 0) {
   return !!err && (err.code === 2 || err.code === 4);
 }
 
-/* ---- subtitle lane: drag constraints and waveform peaks ---- */
-export const MIN_LINE_MS = 200;
-const clampN = (v, a, b) => Math.min(Math.max(v, a), b);
-/**
- * Where line `i` lands when an edge or the block is dragged: 'start' / 'end' take the new edge time, 'move' the new start time
- * (the length stays). At least 200 ms long, inside the video, and never over the previous or next line.
- */
-export function clampDrag(lines, i, edge, ms, dur = Infinity) {
-  const l = lines[i], lo = i > 0 ? lines[i - 1].end : 0, top = dur > 0 ? dur : Infinity, hi = i < lines.length - 1 ? Math.min(lines[i + 1].start, top) : top;
-  const t = Math.round(+ms || 0), len = l.end - l.start;
-  if (edge === 'start') return { start: clampN(t, lo, Math.max(lo, l.end - MIN_LINE_MS)), end: l.end };
-  if (edge === 'end') return { start: l.start, end: clampN(t, Math.min(hi, l.start + MIN_LINE_MS), hi) };
-  const s = clampN(t, lo, Math.max(lo, hi - len));
-  return { start: s, end: s + len };
-}
+/* ---- waveform peaks (the timeline draws them in the Voice track) ---- */
 /** `n` peak buckets (max absolute sample each, 0..1) of decoded samples */
 export function peakBuckets(samples, n) {
   const out = new Float32Array(Math.max(0, n | 0)), len = samples.length;
@@ -266,9 +253,8 @@ export function installFootageEditor(ctx, FT) {
     ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>',
     ftBack5: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
     ftFwd5: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
-    ftZoomIn: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
-    ftZoomOut: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/>',
-    ftFit: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+    ftFilm: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
+    ftVoice: '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
     ftKbd: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   });
   const $ = (s, r = document) => r.querySelector(s);
@@ -280,7 +266,7 @@ export function installFootageEditor(ctx, FT) {
   function start(d) {
     stop();
     if (prepareOpen(d)) save();
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, tl: null, tlHost: null, muted: false };
     ED.tab = 'ftSubs';
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -289,8 +275,9 @@ export function installFootageEditor(ctx, FT) {
   function stop() {
     if (!F) return;
     clearTimeout(F.timer); F.gen++;
+    if (F.tl) F.tl.destroy(); F.tlHost && F.tlHost.remove(); // before the player: a drag in progress is cancelled first
     if (F.player) F.player.destroy();
-    F.ro && F.ro.disconnect(); F.lro && F.lro.disconnect(); F.ac.abort();
+    F.ro && F.ro.disconnect(); F.ac.abort();
     F = null;
   }
   const alive = (S) => F === S && ED.d === S.d && document.body.classList.contains('in-editor');
@@ -365,6 +352,7 @@ export function installFootageEditor(ctx, FT) {
       onError: (err) => refreshProxy(S, err),
     });
     S.player.setSplit(S.split);
+    if (S.muted) S.player.video.muted = true;
   }
   async function refreshProxy(S, err) {
     const now = Math.floor(Date.now() / 1000);
@@ -436,113 +424,58 @@ export function installFootageEditor(ctx, FT) {
     // the transport is drawn before the player exists: enable it as soon as the player is there
     document.querySelectorAll('[data-ft-ctl]').forEach((b) => { b.disabled = !F.player; });
     if (pb && pb.dataset.on !== String(!!playing)) { pb.dataset.on = String(!!playing); pb.innerHTML = ic(playing ? 'pause37' : 'play37', 18); pb.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)'); pb.title = playing ? 'Pause (Space)' : 'Play (Space)'; }
-    const hd = $('#ftHead'); if (hd && dur) hd.style.left = Math.min(100, Math.max(0, (ms / dur) * 100)) + '%';
-    if (playing && dur) follow(ms / dur);
+    if (F.tl) F.tl.setTime(ms, playing);
     hilite(ms, playing);
   }
-  /** The subtitle row being spoken */
+  /** The subtitle row being spoken (the timeline highlights its own block) */
   let lastRow = null;
   function hilite(ms, playing) {
     const lines = ED.d && ED.d.footage ? capsOf(ED.d).lines : [];
     const i = lines.findIndex((l) => ms >= l.start && ms < l.end), id = i >= 0 ? lines[i].id : null;
     if (id === lastRow) return; lastRow = id;
-    document.querySelectorAll('#edPanel .ft-row.on, #ftBlks .ft-blk.on').forEach((x) => x.classList.remove('on'));
-    if (id) { const b = document.querySelector(`#ftBlks .ft-blk[data-id="${CSS.escape(id)}"]`); if (b) b.classList.add('on'); }
+    document.querySelectorAll('#edPanel .ft-row.on').forEach((x) => x.classList.remove('on'));
     if (id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) { r.classList.add('on'); if (playing && !r.contains(document.activeElement)) r.scrollIntoView({ block: 'nearest' }); } }
   }
 
-  /* ---------- timeline lane: waveform and one block per subtitle ---------- */
-  const pc = (v) => Math.max(0, Math.min(100, +v || 0)).toFixed(3);
-  function blockHTML(l, i, dur) {
-    const left = pc((l.start / dur) * 100), w = pc(((l.end - l.start) / dur) * 100), ro = canEdit && !canEdit();
-    return `<div class="ft-blk${ro ? ' ro' : ''}" data-i="${i | 0}" data-id="${esc(l.id)}" style="left:${left}%;width:${w}%" title="${esc(rangeLabel(l))}">${ro ? '' : '<i class="ft-h s" data-edge="start"></i>'}<span dir="auto">${esc(lineText(l))}</span>${ro ? '' : '<i class="ft-h e" data-edge="end"></i>'}</div>`;
+  /* ---------- the timeline (timeline.js): Video, Captions and Voice tracks ---------- */
+  function tlTracks() {
+    if (!F || !ED.d || !isFt(ED.d)) return [];
+    const caps = capsOf(ED.d), on = caps.on !== false, name = (F.rec && F.rec.name) || 'Video';
+    return [
+      { id: 'video', icon: ic('ftFilm', 14), label: 'Video', html: () => `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>` },
+      { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
+      { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
+    ];
   }
-  function blocksHTML() {
-    const dur = F && F.dur; if (!dur || !ED.d || !isFt(ED.d)) return '';
-    return (capsOf(ED.d).lines || []).map((l, i) => blockHTML(l, i, dur)).join('');
+  /** The timeline of the session, mounted once in `host` (and moved back there when the bottom bar is redrawn) */
+  function mountTimeline(host) {
+    const S = F; if (!S) return;
+    if (!S.tlHost) { S.tlHost = document.createElement('div'); S.tlHost.className = 'vs-tl-host'; }
+    host.append(S.tlHost);
+    if (S.tl) { S.tl.redraw(); return; }
+    S.tl = createTimeline(S.tlHost, {
+      dur: () => S.dur,
+      time: () => (S.player ? S.player.time() : 0),
+      seek: (ms) => { if (alive(S) && S.player) S.player.seek(ms); },
+      tracks: tlTracks,
+      canEdit: () => can(),
+      onRetime: (id, start, end, live) => {
+        if (!alive(S)) return;
+        if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
+        editLines((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
+      },
+      onSelect: (id) => { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) r.scrollIntoView({ block: 'nearest' }); },
+      onToggle: (id) => {
+        if (!alive(S)) return;
+        if (id === 'captions') { if (!can()) return; mutate(() => { const c = capsOf(ED.d); c.on = c.on === false; }, () => { sync(); lane(); }); save(); }
+        else if (id === 'voice') { S.muted = !S.muted; if (S.player) S.player.video.muted = S.muted; lane(); } // preview only, the export keeps the sound
+      },
+    });
+    if (S.peaks) S.tl.setPeaks(S.peaks);
   }
-  /* Zoom is in pixels per second; null fits the whole video in the lane. The default keeps subtitles readable on long clips. */
-  const ZOOMS = [null, 10, 20, 40, 80, 160], RULER = 18, DEFAULT_PPS = 40;
-  const laneView = () => { const sc = $('#ftScroll'); return sc ? sc.clientWidth : 0; };
-  function trackWidth() {
-    const v = laneView(), dur = F && F.dur; if (!v || !dur) return v;
-    if (F.zoom === undefined) F.zoom = (dur / 1000) * DEFAULT_PPS > v ? DEFAULT_PPS : null;
-    return F.zoom ? Math.max(v, Math.round((dur / 1000) * F.zoom)) : v;
-  }
-  function sizeTrack() {
-    const tr = $('#ftTrack'); if (!tr || !F) return;
-    tr.style.width = trackWidth() + 'px';
-    const fits = !F.zoom || trackWidth() <= laneView(), i = ZOOMS.indexOf(F.zoom);
-    const zo = $('[data-act=ftZoomOut]'), zi = $('[data-act=ftZoomIn]'), zf = $('[data-act=ftZoomFit]');
-    if (zo) zo.disabled = fits; if (zi) zi.disabled = i >= ZOOMS.length - 1 || !F.dur; if (zf) zf.disabled = fits;
-  }
-  /** Keeps the playhead in view while playing */
-  function follow(frac) {
-    const sc = $('#ftScroll'), tw = trackWidth(), v = laneView(); if (!sc || !tw || tw <= v || (F && F.drag) || (F && F.scrubbing)) return;
-    const x = frac * tw;
-    if (x < sc.scrollLeft || x > sc.scrollLeft + v * 0.85) sc.scrollLeft = Math.max(0, x - v * 0.15);
-  }
-  /** Zooms around the playhead (or the lane's center) */
-  function setZoom(z) {
-    if (!F || !F.dur) return; const sc = $('#ftScroll'); if (!sc) return;
-    const v = laneView(), before = trackWidth(), ms = F.player ? F.player.time() : 0;
-    const headX = (ms / F.dur) * before, anchor = headX >= sc.scrollLeft && headX <= sc.scrollLeft + v ? headX - sc.scrollLeft : v / 2;
-    const frac = (sc.scrollLeft + anchor) / before;
-    F.zoom = z; sizeTrack();
-    sc.scrollLeft = Math.max(0, frac * trackWidth() - anchor); drawWave();
-  }
-  const zoomStep = (dir) => {
-    if (!F) return; const v = laneView(), dur = (F.dur || 0) / 1000; if (!v || !dur) return;
-    const cur = F.zoom || v / dur; // "fit" as an equivalent pps
-    const steps = ZOOMS.filter(Boolean);
-    const next = dir > 0 ? steps.find((z) => z > cur * 1.01) : [...steps].reverse().find((z) => z < cur * 0.99);
-    if (dir > 0 && next) setZoom(next);
-    else if (dir < 0) setZoom(next && next * dur > v ? next : null);
-  };
-  /** Redraws the blocks (after an edit, undo or redo) and the waveform */
-  function lane() { const b = $('#ftBlks'); if (!b || !F) return; b.innerHTML = blocksHTML(); sizeTrack(); drawWave(); lastRow = null; if (F.player) hilite(F.player.time()); }
-  function laneInit() {
-    F && F.lro && F.lro.disconnect();
-    const el = $('#ftLane'), sc = $('#ftScroll'); if (!el || !F) return;
-    if (typeof ResizeObserver !== 'undefined') { F.lro = new ResizeObserver(() => { sizeTrack(); drawWave(); }); F.lro.observe(el); }
-    if (sc) sc.addEventListener('scroll', () => drawWave(), { passive: true });
-    sizeTrack(); drawWave();
-  }
-  const tickStep = (pps) => [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find((s) => s * pps >= 64) || 600;
-  const tickLabel = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}${s % 1 ? '.5' : ''}`;
-  /** The canvas covers the visible part of the lane: ruler on top, waveform below, both following the scroll */
-  function drawWave() {
-    const cv = $('#ftWave'), el = $('#ftLane'), sc = $('#ftScroll'); if (!cv || !el || !F) return;
-    const r = el.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
-    if (!w || !h) return;
-    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-    const c = cv.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, w, h);
-    const tw = trackWidth(), dur = F.dur, sl = sc ? sc.scrollLeft : 0, cs = getComputedStyle(el);
-    if (!tw || !dur) return;
-    c.scale(dpr, dpr);
-    const vw = r.width, vh = r.height, pps = tw / (dur / 1000), rh = RULER;
-    // ruler
-    const step = tickStep(pps), minor = step / 2;
-    c.fillStyle = cs.getPropertyValue('--ft-tick').trim() || 'rgba(148,163,184,.5)';
-    c.font = '500 10px system-ui, -apple-system, sans-serif'; c.textBaseline = 'middle';
-    const first = Math.floor(sl / pps / minor) * minor;
-    for (let t = first; t * pps <= sl + vw; t += minor) {
-      const x = Math.round(t * pps - sl) + 0.5, major = Math.abs(t / step - Math.round(t / step)) < 1e-6;
-      c.fillRect(x, major ? 4 : rh - 6, 1, major ? rh - 4 : 6);
-      if (major) c.fillText(tickLabel(t), x + 4, 9);
-    }
-    c.fillRect(0, rh, vw, 1);
-    // waveform, under the subtitle blocks
-    if (!F.peaks) return;
-    const N = F.peaks.length, top = rh + 4, mid = top + (vh - top) / 2, amp = (vh - top - 4);
-    c.fillStyle = cs.getPropertyValue('--ft-wave').trim() || 'rgba(100,116,139,.5)';
-    for (let x = 0; x < vw; x += 2) {
-      const a0 = Math.floor(((sl + x) / tw) * N), a1 = Math.max(a0 + 1, Math.floor(((sl + x + 2) / tw) * N));
-      let m = 0; for (let k = a0; k < a1 && k < N; k++) if (F.peaks[k] > m) m = F.peaks[k];
-      const a = Math.max(1, m * amp); c.fillRect(x, mid - a / 2, 1.2, a);
-    }
-  }
-  /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the lane has no waveform */
+  /** Redraws the timeline (after an edit, undo or redo) */
+  function lane() { if (F && F.tl) F.tl.redraw(); lastRow = null; if (F && F.player) hilite(F.player.time()); }
+  /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the Voice track has no waveform */
   async function loadPeaks(S) {
     if (S.peaks || S.peaksBusy || !S.rec || !S.rec.proxyUrl) return; S.peaksBusy = true;
     const AC = window.AudioContext || window.webkitAudioContext; let actx = null;
@@ -557,8 +490,8 @@ export function installFootageEditor(ctx, FT) {
       if (!alive(S)) return;
       S.peaks = peakBuckets(audio.getChannelData(0), PEAK_BUCKETS);
       for (let ch = 1; ch < audio.numberOfChannels; ch++) { const o = peakBuckets(audio.getChannelData(ch), PEAK_BUCKETS); for (let k = 0; k < o.length; k++) if (o[k] > S.peaks[k]) S.peaks[k] = o[k]; }
-      drawWave();
-    } catch (e) { /* no audio track, no decoder or the request stopped: the lane stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
+      if (S.tl) S.tl.setPeaks(S.peaks);
+    } catch (e) { /* no audio track, no decoder or the request stopped: the Voice track stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
   }
 
   /* ---------- editing: every change is one mutate() ---------- */
@@ -649,55 +582,6 @@ export function installFootageEditor(ctx, FT) {
     });
   }
 
-  function scrub(e, track) {
-    const S = F; e.preventDefault(); S.scrubbing = true;
-    const at = (ev) => { const r = track.getBoundingClientRect(); S.player && S.player.seek(Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * S.dur); };
-    at(e);
-    const up = () => { S.scrubbing = false; removeEventListener('pointermove', at); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
-    addEventListener('pointermove', at); addEventListener('pointerup', up); addEventListener('pointercancel', up);
-  }
-  /* dragging a block edge, or the block: preview through the player, one mutate() on release */
-  function dragStart(e) {
-    if (!F || e.button > 0 || F.drag) return;
-    if (!can()) { // read-only: the lane still seeks
-      const tr = $('#ftTrack'); if (tr && e.target.closest && e.target.closest('#ftLane') && F.dur && F.player) scrub(e, tr);
-      return;
-    }
-    let blk = e.target.closest('.ft-blk'); const lnEl = $('#ftTrack'); if (!lnEl || !e.target.closest('#ftLane')) return;
-    if (!blk) { // an empty spot of the lane or the ruler: seek there, and keep scrubbing while the pointer is down
-      if (F.dur && F.player) scrub(e, lnEl);
-      return;
-    }
-    if (lineIdx(blk.dataset.id) < 0 || !F.dur) return;
-    e.preventDefault();
-    const h = e.target.closest('.ft-h'), edge = h ? h.dataset.edge : 'move', bid = blk.dataset.id;
-    commitFocus(); // a text commit redraws the lane: pick up the block again
-    if (!blk.isConnected) blk = document.querySelector(`#ftBlks .ft-blk[data-id="${CSS.escape(bid)}"]`);
-    const ls = capsOf(ED.d).lines, i = lineIdx(bid); if (!F || !blk || i < 0) return;
-    const S = F, r = lnEl.getBoundingClientRect(), orig = ls[i];
-    const d = S.drag = { i, id: orig.id, edge, x0: e.clientX, pid: e.pointerId, orig, to: { start: orig.start, end: orig.end }, moved: false, blk };
-    blk.classList.add('drag');
-    try { blk.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-    const at = (ev) => {
-      const dx = ((ev.clientX - d.x0) / r.width) * S.dur;
-      if (Math.abs(ev.clientX - d.x0) > 2) d.moved = true;
-      d.to = clampDrag(ls, i, edge, edge === 'end' ? orig.end + dx : edge === 'start' ? orig.start + dx : orig.start + dx, S.dur);
-      const l = retime(orig, d.to.start, d.to.end), cap = capsOf(ED.d);
-      blk.style.left = pc((d.to.start / S.dur) * 100) + '%'; blk.style.width = pc(((d.to.end - d.to.start) / S.dur) * 100) + '%';
-      S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x, k) => (k === i ? l : x)) });
-    };
-    const done = (commit) => {
-      blk.removeEventListener('pointermove', at); blk.removeEventListener('pointerup', up); blk.removeEventListener('pointercancel', cancel); blk.removeEventListener('lostpointercapture', cancel);
-      blk.classList.remove('drag'); S.drag = null;
-      if (!alive(S)) return;
-      const changed = d.to.start !== orig.start || d.to.end !== orig.end;
-      if (commit && changed) editLines((a) => a.map((x) => (x.id === d.id ? retime(x, d.to.start, d.to.end) : x)));
-      else { sync(); lane(); if (commit && !d.moved && S.player) S.player.seek(orig.start); }
-    };
-    const up = () => done(true), cancel = () => done(false);
-    blk.addEventListener('pointermove', at); blk.addEventListener('pointerup', up); blk.addEventListener('pointercancel', cancel); blk.addEventListener('lostpointercapture', cancel);
-  }
-
   function pagesHTML() {
     const ms = F && F.player ? F.player.time() : 0, dur = F ? F.dur : 0, on = F && F.split != null, playing = !!(F && F.player && F.player.playing());
     const off = F && F.player ? '' : 'disabled';
@@ -711,22 +595,10 @@ export function installFootageEditor(ctx, FT) {
       <div class="ft-tp-g">
         <button class="ft-chip${on ? ' on' : ''} ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line on the video)">${ic('ftCmp10', 16)}<span>Before / After</span></button>
         <span class="ft-div" aria-hidden="true"></span>
-        <div class="ft-zoom" role="group" aria-label="Timeline zoom">
-          <button class="ft-ib" data-act="ftZoomOut" aria-label="Zoom out the timeline" title="Zoom out">${ic('ftZoomOut', 17)}</button>
-          <button class="ft-ib" data-act="ftZoomIn" aria-label="Zoom in the timeline" title="Zoom in">${ic('ftZoomIn', 17)}</button>
-          <button class="ft-ib" data-act="ftZoomFit" aria-label="Fit the whole video" title="Fit the whole video">${ic('ftFit', 17)}</button>
-        </div>
         <span class="ft-ib ft-kbd" tabindex="0" role="img" aria-label="Keyboard shortcuts: Space play or pause, J and L 5 seconds back or forward, left and right arrows one frame" title="Space  play / pause
 J / L  5 s back / forward
 ← / →  one frame">${ic('ftKbd', 17)}</span>
       </div>
-    </div>
-    <div class="ft-lane" id="ftLane" aria-label="Subtitle timeline: click or drag to move the playhead, drag a subtitle to retime it">
-      <canvas id="ftWave" aria-hidden="true"></canvas>
-      <div class="ft-scroll" id="ftScroll"><div class="ft-track" id="ftTrack">
-        <div class="ft-blks" id="ftBlks">${blocksHTML()}</div>
-        <i class="ft-head" id="ftHead" style="left:${F && F.dur ? Math.min(100, (ms / F.dur) * 100) : 0}%"></i>
-      </div></div>
     </div>`;
   }
 
@@ -843,7 +715,10 @@ J / L  5 s back / forward
     edPages: (orig) => function () {
       const host = $('#edPages'); if (!host) return;
       if (!isFt(ED.d)) { host.classList.remove('ft10'); return orig.apply(this, arguments); }
-      host.classList.add('ft10'); host.innerHTML = pagesHTML(); laneInit();
+      host.classList.add('ft10');
+      // the timeline stays mounted while the bottom bar is redrawn (every mutate): its zoom and scroll survive an edit
+      if (F && F.tlHost && F.tlHost.parentNode === host && host.querySelector('.ft-tp')) { lane(); return; }
+      host.innerHTML = pagesHTML(); mountTimeline(host);
     },
   });
   /* leaving the editor (or opening another design) stops the video */
@@ -855,9 +730,6 @@ J / L  5 s back / forward
     ftPlay: () => F && F.player && F.player.toggle(),
     ftBack: () => F && F.player && F.player.seek(Math.max(0, F.player.time() - 5000)),
     ftFwd: () => F && F.player && F.player.seek(F.player.time() + 5000),
-    ftZoomIn: () => zoomStep(1),
-    ftZoomOut: () => zoomStep(-1),
-    ftZoomFit: () => setZoom(null),
     ftSplit: () => setSplit(F && F.split == null ? 0.5 : null),
     ftMore: (a) => rowMenu(a),
     ftAdd: () => addAtPlayhead(),
@@ -886,7 +758,6 @@ J / L  5 s back / forward
     const t = e.target; if (!F || !t || !t.matches || !t.matches('[data-ft-text]')) return;
     if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = capsOf(ED.d).lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
   }, true);
-  document.addEventListener('pointerdown', dragStart);
   /* the split line: drag anywhere on the frame while Before / After is on */
   document.addEventListener('pointerdown', (e) => {
     if (!F || F.split == null || e.button !== 0) return; const fr = $('#ftFrame'); if (!fr || !fr.contains(e.target)) return;
