@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { blockSchedule, isFootageDesign, SCHEDULE_VIDEO, closeAction, READY_IN_STUDIO, UPLOAD_STOPPED } from './footage.js';
+import { blockSchedule, isFootageDesign, SCHEDULE_VIDEO, closeAction, READY_IN_STUDIO, UPLOAD_STOPPED, canStart } from './footage.js';
 
 describe('schedule guard', () => {
   it('refuses a footage design with the exact message, lets other designs through', () => {
@@ -24,5 +24,14 @@ describe('closing the upload modal', () => {
   it('copy', () => {
     expect(READY_IN_STUDIO).toBe('Your video is ready in Studio.');
     expect(UPLOAD_STOPPED).toBe('Upload stopped. Drop the same files again to pick up where you left off.');
+  });
+});
+
+describe('upload modal Start', () => {
+  it('needs only an original, in both modes', () => {
+    expect(canStart({ busy: false, original: null })).toBe(false);
+    expect(canStart({ busy: false, original: {} })).toBe(true);
+    expect(canStart({ busy: false, original: {}, ref: {} })).toBe(true);
+    expect(canStart({ busy: true, original: {} })).toBe(false);
   });
 });

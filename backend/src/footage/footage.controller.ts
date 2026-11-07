@@ -198,13 +198,12 @@ export class FootageController {
     if (doc.role !== "original") throw new BadRequestException("Only an original video can be paired");
     if (doc.status === "uploading" || doc.status === "assembling") throw new ConflictException("Finish uploading this video first");
     if (doc.status === "failed") throw new ConflictException("This video could not be processed");
-    if (!d.ref && !d.lookId) throw new BadRequestException("Choose a reference video or a brand look");
     if (d.ref) {
       const ref = d.ref === id ? null : await this.model.findById(d.ref);
       if (!ref || ref.role !== "reference") throw new BadRequestException("The reference video was not found");
     }
     const pair: Record<string, string> = {};
-    if (d.ref) pair.ref = d.ref; else pair.lookId = d.lookId!; // a reference wins over a saved look
+    if (d.ref) pair.ref = d.ref; else if (d.lookId) pair.lookId = d.lookId; // a reference wins over a saved look; neither is a video imported without one (grade is skipped)
     if (d.lang) pair.lang = d.lang;
     await this.model.updateOne({ _id: id }, { $set: { pair, ...(doc.status === "ready" ? { status: "processing" } : {}) } });
     await this.jobs.enqueue(id, "transcribe");
@@ -251,7 +250,7 @@ export class FootageController {
     if (!STEP_ORDER.includes(step)) throw new BadRequestException("Unknown step");
     if (doc.status === "uploading" || doc.status === "assembling") throw new ConflictException("Finish uploading this video first");
     const jobs: Record<string, any> = doc.jobs || {}, busy = (s: Step) => ["queued", "running"].includes(jobs[s]?.state);
-    if ((step === "transcribe" || step === "grade") && (doc.role !== "original" || !doc.pair)) throw new BadRequestException("Pair this video with a reference or a brand look first");
+    if ((step === "transcribe" || step === "grade") && (doc.role !== "original" || !doc.pair)) throw new BadRequestException("Import this video first");
     if (step === "caption-style" && doc.role !== "reference") throw new BadRequestException("Only a reference video has a subtitle style");
     if (busy(step)) return this.view(doc);
     const steps: Step[] = [step];

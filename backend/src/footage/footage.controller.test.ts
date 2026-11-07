@@ -219,9 +219,14 @@ describe('pair', () => {
     const row = model.rows.find((x: any) => x._id === o);
     expect(row.pair).toEqual({ lookId: 'brand-1' }); expect(row.status).toBe('processing');
   });
+  it('an empty pairing is allowed: the original is imported without a reference', async () => {
+    const o = await mk('original', { status: 'ready' });
+    await ctl.pair(o, {});
+    expect(model.rows.find((x: any) => x._id === o).pair).toEqual({});
+    expect(enqueue).toHaveBeenCalledWith(o, 'grade');
+  });
   it('rejects bad pairings', async () => {
     const o = await mk('original'), r = await mk('reference'), up = await mk('original', 'uploading');
-    await expect(ctl.pair(o, {})).rejects.toMatchObject({ status: 400 });
     await expect(ctl.pair(r, { lookId: 'x' })).rejects.toMatchObject({ status: 400 }); // a reference cannot be paired
     await expect(ctl.pair(o, { ref: o })).rejects.toMatchObject({ status: 400 });
     await expect(ctl.pair(o, { ref: 'f'.repeat(24) })).rejects.toMatchObject({ status: 400 });

@@ -75,7 +75,9 @@ export const UPLOAD_STOPPED = 'Upload stopped. Drop the same files again to pick
  * What closing the upload modal does. 'stop': uploads are still running, abort them (they resume when the same files are dropped).
  * 'finish': both uploads are complete, so the design is still created (without opening it). 'none': nothing was started.
  */
-export const closeAction = ({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
+/** The upload modal's Start needs only the original: the reference and the brand look are optional */
+export const canStart = (st) => !st.busy && !!st.original;
+export const closeAction =({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
 /** The footage part of a new design (its captions live on `d.captions`, see footageCaptions) */
 export function footageDoc({ src, ref = null, lookId = null, size }) {
   const { w, h } = size || DEFAULT_SIZE;
@@ -115,9 +117,10 @@ export function installFootage(ctx) {
   };
 
   /* ---------- 2. upload modal and design creation ---------- */
-  function openNew() {
+  function openNew(mode = 'match') {
     if (canEdit && !canEdit()) return;
-    const looks = (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
+    const plain = mode === 'caption';
+    const looks = plain ? [] : (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
     const st = { original: null, ref: null, lookId: null, busy: false, uploaded: false, closed: false, ac: null, probeAc: null };
     const zone = (k, title, hint) => `<div class="ft-zone"><b class="ft-zt">${title}</b>
       <label class="ft-drop" data-ft-drop="${k}" tabindex="0"><input type="file" accept="video/mp4,video/quicktime,video/*,.mp4,.mov,.m4v" hidden data-ft-file="${k}">
@@ -125,9 +128,9 @@ export function installFootage(ctx) {
       <div class="prog-w ft-pw" data-ft-pw="${k}" hidden><div class="prog"><i style="width:0%"></i></div><span class="prog-pct">0%</span></div></div>`;
     const lookList = looks.length ? `<div class="ft-looks"><div class="au-or"><span>or</span></div><b class="ft-zt">Use a brand look</b>
       <div class="ft-lk">${looks.map((l) => `<button type="button" class="ft-look" data-ft-look="${esc(l.id)}" aria-pressed="false">${esc(l.name || l.id)}</button>`).join('')}</div></div>` : '';
-    modal(`<div class="mh"><h2>Match a reference</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    modal(`<div class="mh"><h2>${plain ? 'Caption a video' : 'Match a reference'}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb ft-mb">${zone('original', 'Your video', 'Drop the raw clip (MP4 or MOV, up to 2 GB)')}
-        ${zone('ref', 'Reference', 'Drop an edited video to copy its look and subtitles')}${lookList}
+        ${plain ? '' : zone('ref', 'Reference (optional)', 'Drop an edited video to copy its look and subtitles')}${lookList}
         <p class="ft-err" data-ft-err role="alert" hidden></p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-start disabled>Start</button></div>`,
       { onClose: () => {
@@ -141,7 +144,7 @@ export function installFootage(ctx) {
     const $ = (s) => bg.querySelector(s), $$ = (s) => [...bg.querySelectorAll(s)];
     const start = $('[data-ft-start]'), err = $('[data-ft-err]');
     const say = (m, info) => { err.textContent = m || ''; err.hidden = !m; err.classList.toggle('ft-info', !!info); };
-    const refresh = () => { start.disabled = st.busy || !st.original || !(st.ref || st.lookId); };
+    const refresh = () => { start.disabled = !canStart(st); };
     const progress = (k, v) => { const w = $(`[data-ft-pw="${k}"]`); if (!w) return; w.hidden = false; const p = Math.round(v * 100); w.querySelector('i').style.width = p + '%'; w.querySelector('.prog-pct').textContent = p + '%'; };
     function pick(k, f) {
       if (st.busy || !f) return;
@@ -185,7 +188,7 @@ export function installFootage(ctx) {
         const [orig, ref] = res.map((r) => r.value);
         // both files are on the server: from here closing the modal no longer stops anything, the design is still created
         st.uploaded = true;
-        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : { lookId: st.lookId }), ...(lang ? { lang } : {}) } });
+        await api(`/footage/${orig.id}/pair`, { method: 'POST', body: { ...(ref ? { ref: ref.id } : st.lookId ? { lookId: st.lookId } : {}), ...(lang ? { lang } : {}) } });
         let probe = null;
         if (ref && !st.closed) {
           start.textContent = 'Reading the reference…'; say('Reading the reference…', true);
@@ -211,7 +214,7 @@ export function installFootage(ctx) {
     const size = outSize(probe), r = ratioFor(size);
     const saved = lookId && (Array.isArray(brand().looks) ? brand().looks : []).find((l) => l && l.id === lookId);
     const d = createDesign({
-      name: `${baseName(original.name)} · matched`, ratio: r,
+      name: `${baseName(original.name)} · ${ref || lookId ? 'matched' : 'captioned'}`, ratio: r,
       mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = footageDoc({ src, ref, lookId, size }); d.captions = footageCaptions({ lang, style: saved && saved.captionStyle }); d.named = true; },
     });
     save();
@@ -222,6 +225,7 @@ export function installFootage(ctx) {
   /** Opens a footage design in the editor; footage-editor.js takes the editor over for designs with d.footage */
   FT.open = (d) => { location.hash = '#/editor/' + d.id; };
   installFootageEditor(ctx, FT);
+  FT.newVideo = () => openNew('caption');
   ACT.ftNew = () => openNew();
   return FT;
 }

@@ -274,6 +274,7 @@ describe('export', () => {
     expect(canExport({ status: 'ready', jobs: {} }, null)).toBe(true);
     expect(canExport({ status: 'processing', jobs: {} }, null)).toBe(false);
     expect(canExport({ status: 'ready', jobs: {} }, { status: 'processing' })).toBe(false);
+    expect(canExport({ status: 'ready', jobs: { grade: { state: 'skipped' }, 'caption-style': { state: 'skipped' } } }, null)).toBe(true);
     expect(canExport(null, null)).toBe(false);
   });
 });

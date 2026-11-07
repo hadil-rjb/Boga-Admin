@@ -316,8 +316,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const src = join(this.store.root, "looks", `${pair.lookId}.cube`), tmp = `${look}.${randomBytes(6).toString("hex")}.tmp`;
         if (!existsSync(src)) throw new Error(LOOK_MISSING);
         try { await fs.copyFile(src, tmp); await fs.rename(tmp, look); } catch (e) { await fs.rm(tmp, { force: true }); throw e; }
-      } else throw new Error("No reference video or brand look is set for this video");
+      } else return "skipped"; // imported without a reference or a look: nothing to match
     } else if (step === "caption-style") {
+      if (!(await this.isReference(id))) return "skipped"; // only a reference has subtitles to describe
       await this.captionStyle(id);
     }
   }

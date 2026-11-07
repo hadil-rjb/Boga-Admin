@@ -356,10 +356,23 @@ describe('JobsService grade', () => {
     await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
     expect(model.docs[ID1].jobs.grade).toMatchObject({ state: 'failed', error: 'grade exploded' }); expect(model.docs[ID1].status).toBe('ready');
   });
-  it('an original without a pair fails grade with a clear message', async () => {
-    orig(undefined);
+  it('an original with an empty pair skips grade and ends ready', async () => {
+    orig({});
     await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
-    expect(model.docs[ID1].jobs.grade.state).toBe('failed');
+    expect(model.docs[ID1].jobs.grade.state).toBe('skipped'); expect(model.docs[ID1].status).toBe('ready');
+    expect(pyCalls()).toHaveLength(0);
+  });
+  it('a reference added later and a retried grade produce a cube', async () => {
+    orig({});
+    await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
+    model.docs[ID1].pair = { ref: ID2 }; model.docs[ID2] = { _id: ID2, role: 'reference', status: 'ready', jobs: { frames: DONE } };
+    await svc.enqueue(ID1, 'grade'); await svc.idle(ID1);
+    expect(model.docs[ID1].jobs.grade.state).toBe('done'); expect(pyCalls()).toHaveLength(1);
+  });
+  it('caption-style on an original without a reference is skipped', async () => {
+    orig({});
+    await svc.enqueue(ID1, 'caption-style'); await svc.idle(ID1);
+    expect(model.docs[ID1].jobs['caption-style'].state).toBe('skipped'); expect(pyCalls()).toHaveLength(0);
   });
   it('a reference does not chain into transcribe or grade', async () => {
     await svc.enqueue(ID1, 'probe'); await svc.idle(ID1);
