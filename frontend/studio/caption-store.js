@@ -13,18 +13,25 @@ export function capsOf(d) {
   return d.captions;
 }
 
+function pristine(c) {
+  return !c || (!(c.lines && c.lines.length) && !c.style && !c.source);
+}
+
 export function migrateCaptions(d) {
   let changed = false;
   const fc = d.footage && d.footage.captions;
   if (fc) {
-    if (!d.captions) {
-      d.captions = { ...CAPTIONS_DEFAULT, lines: fc.lines || [], style: fc.style || null, preset: null, source: 'speech', lang: fc.lang || null };
+    if (pristine(d.captions)) {
+      const lines = fc.lines || [];
+      d.captions = { ...CAPTIONS_DEFAULT, ...(d.captions || {}), lines, style: fc.style || null, preset: null, source: lines.length ? 'speech' : null, lang: fc.lang || null };
     }
     delete d.footage.captions;
     changed = true;
   }
   if (d.motion && d.audio && typeof d.audio.captions === 'boolean') {
-    if (!d.captions) d.captions = { ...CAPTIONS_DEFAULT, lines: [], on: d.audio.captions, source: 'voiceover' };
+    if (pristine(d.captions)) {
+      d.captions = { ...CAPTIONS_DEFAULT, lines: [], ...(d.captions || {}), on: d.audio.captions, source: 'voiceover' };
+    }
     delete d.audio.captions;
     changed = true;
   }

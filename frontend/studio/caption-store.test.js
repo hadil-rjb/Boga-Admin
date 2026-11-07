@@ -34,12 +34,34 @@ describe('caption-store', () => {
     migrateCaptions(e);
     expect(e.captions.on).toBe(false);
   });
-  it('keeps existing captions', () => {
-    const d = { captions: { ...CAPTIONS_DEFAULT, preset: 'x' }, footage: { captions: { lines: [{}], style: null } } };
+  it('pristine d.captions is replaced by legacy footage captions', () => {
+    const lines = [{ id: 1 }];
+    const d = { captions: capsOf({}), footage: { captions: { lines, style: null, lang: 'en' } } };
+    expect(migrateCaptions(d)).toBe(true);
+    expect(d.captions.lines).toBe(lines);
+    expect(d.captions.source).toBe('speech');
+    expect(d.footage.captions).toBeUndefined();
+  });
+  it('non-pristine d.captions wins', () => {
+    const d = { captions: { ...CAPTIONS_DEFAULT, preset: 'x', lines: [{ id: 9 }] }, footage: { captions: { lines: [{ id: 1 }], style: null } } };
     migrateCaptions(d);
     expect(d.captions.preset).toBe('x');
-    expect(d.captions.lines).toEqual([]);
+    expect(d.captions.lines).toEqual([{ id: 9 }]);
     expect(d.footage.captions).toBeUndefined();
+  });
+  it('pristine d.captions on a reel takes audio.captions', () => {
+    const d = { motion: {}, audio: { captions: false }, captions: capsOf({}) };
+    expect(migrateCaptions(d)).toBe(true);
+    expect(d.captions.on).toBe(false);
+    expect(d.captions.source).toBe('voiceover');
+    expect('captions' in d.audio).toBe(false);
+  });
+  it('legacy captions without lines/style leave source null', () => {
+    const d = { footage: { captions: {} } };
+    migrateCaptions(d);
+    expect(d.captions.source).toBeNull();
+    expect(d.captions.lines).toEqual([]);
+    expect(d.captions.style).toBeNull();
   });
   it('styleOf', () => {
     expect(styleOf({})).toEqual(expect.objectContaining(DEFAULT_STYLE));
