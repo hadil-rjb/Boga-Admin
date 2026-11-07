@@ -3258,7 +3258,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .vs-tl-head::before{content:"";position:absolute;top:0;left:50%;width:12px;height:12px;margin-left:-6px;border-radius:3px 3px 6px 6px;background:var(--accent)}
 .ft-look-p .ft-sec{display:flex;flex-direction:column;gap:8px}
 
-/* ---- footage Look panel: grade sliders, subtitle style controls, brand looks ---- */
+/* ---- footage Look panel: grade sliders and brand looks (the caption inspector reuses .ft-rg rows) ---- */
 .ft-look-p .ft-sec+.ft-sec{padding-top:14px;border-top:1px solid var(--border-soft)}
 .ft-rg{display:grid;grid-template-columns:104px 1fr 36px;align-items:center;gap:8px;font-size:13px;color:var(--text-2);margin:0}
 .ft-rg output{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-3)}
@@ -3287,3 +3287,33 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .vs-tl-hd.t-layers{border-top:1px solid var(--border-soft,var(--border))}
 .ft-ib.on{background:rgba(253,14,53,.12);color:var(--accent)}
 .ft-tp .mo-pv[hidden]{display:none}
+
+/* Video Studio caption inspector (studio/caption-inspector.js): 4 × 2 tab grid, one short tab at a time (no scroll at 900 px) */
+.cs{display:flex;flex-direction:column;gap:12px;padding:14px 16px 16px}
+.cs-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.cs-head h3{margin:0;font-size:15px}
+.cs-head span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:4px;border-radius:10px;background:var(--pill)}
+.cs-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0;height:48px;padding:4px 2px;border-radius:7px;color:var(--text-2);font-size:11px;font-weight:500}
+.cs-tab span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-tab:hover{color:var(--text-1)}
+.cs-tab.on{background:var(--surface);color:var(--text-1);box-shadow:var(--shadow-xs)}
+.cs-tab:focus-visible,.cs-anim:focus-visible,.cs-seg button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.cs-body{display:flex;flex-direction:column;gap:10px}
+.cs-sub{margin:4px 0 -2px}
+.cs-seg-r{grid-template-columns:104px 1fr}
+.cs-seg button{height:26px;padding:0 6px}
+.cs-seg button:disabled{opacity:.5;cursor:not-allowed}
+.cs-seg-w{width:100%}
+.cs-anims{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.cs-anim{height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text-2);font-size:13px;font-weight:500}
+.cs-anim:hover{color:var(--text-1);border-color:var(--text-3)}
+.cs-anim.on{border-color:var(--accent);color:var(--text-1);background:rgba(253,14,53,.08)}
+.cs-anim:disabled{opacity:.5;cursor:not-allowed}
+.cs-ref-act{display:flex;gap:8px;align-items:center}
+.cs-busy{display:flex;align-items:center;gap:8px}
+.cs-off{padding:8px 10px;border-radius:8px;background:var(--pill)}
+.cs-lks{max-height:260px;overflow-y:auto}
+.cs-guide{position:absolute;inset:0;pointer-events:none;z-index:4}
+.cs-guide i{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:center;background:rgba(253,14,53,.18);border:1px dashed rgba(253,14,53,.7);color:#fff;font-size:11px;font-style:normal;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.cs-guide b{position:absolute;inset:0 6%;border-left:1px dashed rgba(255,255,255,.45);border-right:1px dashed rgba(255,255,255,.45)}

@@ -114,6 +114,10 @@ export function reelCaptions(d) {
   if (c.source === 'voiceover' || c.source == null) return voiceoverLines(d);
   return c.lines || [];
 }
+/** A style shown while a control of the caption inspector is dragged (caption-inspector.js), before its one mutate() */
+let pvStyle = null;
+/** The reel's preview draws `style` instead of the stored one until it is cleared (null) */
+export function previewStyle(d, style) { pvStyle = style ? { d, style } : null; }
 /**
  * What a reel draws at `t`: { lines, style } when captions are on and a line shows at t (the style's offset applied), else null.
  * `preview` replaces the lines while a caption block is dragged.
@@ -121,7 +125,7 @@ export function reelCaptions(d) {
 export function captionFrame(d, t, preview) {
   if (!captionsOn(d)) return null;
   const lines = preview || reelCaptions(d); if (!lines.length) return null;
-  const style = capsView(d).style || DEFAULT_STYLE;
+  const style = (pvStyle && pvStyle.d === d && pvStyle.style) || capsView(d).style || DEFAULT_STYLE;
   return lineAt(lines, t - (+withDefaults(style).offset || 0)) ? { lines, style } : null;
 }
 /** The lines of a design, whatever its kind */

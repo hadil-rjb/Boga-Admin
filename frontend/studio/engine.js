@@ -24,6 +24,7 @@ import { installFootage, blockSchedule, fmtDur } from './footage';
 import { installVideoStudio } from './video-studio.js';
 import { installReelSource } from './reel-source.js';
 import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
+import { installCaptionInspector } from './caption-inspector.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
@@ -11114,6 +11115,8 @@ const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel
 const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
 /* the shared caption panels (Captions, for videos and reels) */
 installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi }, VS);
+/* the caption style tabs on the right (a caption line selected, or Captions / Styles open), for videos and reels */
+installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi, api }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
 installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,

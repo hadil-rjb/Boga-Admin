@@ -50,6 +50,12 @@ describe('inspectorRoute', () => {
     expect(inspectorRoute(undefined, 'reel')).toBe('scene');
     expect(inspectorRoute({ kind: 'nope' }, 'video')).toBe('source');
   });
+  it('nothing selected while Captions or Styles is open: the caption tabs', () => {
+    expect(inspectorRoute(null, 'video', 'captions')).toBe('caption');
+    expect(inspectorRoute(null, 'reel', 'styles')).toBe('caption');
+    expect(inspectorRoute(null, 'video', 'look')).toBe('source');
+    expect(inspectorRoute({ kind: 'video' }, 'video', 'captions')).toBe('source');
+  });
 });
 
 describe('railTab', () => {

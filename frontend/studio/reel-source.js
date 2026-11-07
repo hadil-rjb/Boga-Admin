@@ -7,12 +7,12 @@
      resize them like a video's, the eye is captions on / off), Voice and Music (each with a session-only "Mute preview"),
      then a Layers row that folds the open scene's layer lanes (folded by default, remembered in boga.mo37Folded);
    - panels: Captions, Styles and Script are the shell's; every other rail item keeps the editor's own panel;
-   - the inspector stays the editor's (Scene / Animation properties);
+   - the inspector stays the editor's (Scene / Animation properties), except the shell's caption style tabs (caption-inspector.js);
    - transport extras: "back to editing" while the canvas shows a preview, loop, and + Scene (the library, aimed at the end).
    installReelSource touches no DOM until the shell draws.
    ============================================================ */
 import { retime } from './captions.js';
-import { captionsOn, linesOf, lineText, prepareReel } from './caption-panels.js';
+import { captionsOn, linesOf, lineText, prepareReel, previewStyle } from './caption-panels.js';
 
 /** Rail items whose panel belongs to the shell (the caption panels); the rest are the motion editor's */
 const SHELL_PANELS = new Set(['captions', 'styles', 'script']);
@@ -91,7 +91,11 @@ export function installReelSource(ctx) {
     canEdit: () => canEdit(),
     onToggle, onRetime, onSelect,
     /** the shared Captions panel: the canvas preview follows an edit */
-    captions: { light: () => { if (M.redraw) M.redraw(); } },
+    captions: {
+      light: () => { if (M.redraw) M.redraw(); },
+      /** the caption inspector's live preview (null: back to the stored style) */
+      preview: (style) => { previewStyle(ED.d, style); if (M.redraw) M.redraw(); },
+    },
   };
   M.onTime = (ms, playing) => { if (isReel()) VS.tick(ms, playing); };
   VS.register('reel', source);

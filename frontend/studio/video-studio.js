@@ -38,13 +38,15 @@ export const railFor = (kind) => (RAILS[kind] || []).map((r) => [...r]);
 export const railTab = (kind, tab) => (railFor(kind).some(([k]) => k === tab) ? tab : 'captions');
 /**
  * Where the inspector goes for a selection: 'caption' (the caption style tabs), 'source' (the source's own inspector,
- * the video's Look) or 'scene' (a reel's scene / layer properties). Nothing selected: the source for a video, the scene for a reel.
+ * the video's Look) or 'scene' (a reel's scene / layer properties). Nothing selected: the caption tabs while the Captions or
+ * Styles panel is open (`tab`), else the source for a video, the scene for a reel.
  */
-export function inspectorRoute(sel, kind) {
+export function inspectorRoute(sel, kind, tab) {
   const k = sel && sel.kind;
   if (k === 'caption') return 'caption';
   if (k === 'video') return 'source';
   if (k === 'scene') return 'scene';
+  if (tab === 'captions' || tab === 'styles') return 'caption';
   return kind === 'video' ? 'source' : 'scene';
 }
 /** The shell opens this design: videos and reels (stills keep the editor) */
@@ -152,9 +154,9 @@ K  pause
 
   /* ---- inspector ---- */
   function select(s) {
-    const kind = kindOf(ED.d), was = inspectorRoute(sel, kind);
+    const kind = kindOf(ED.d), was = inspectorRoute(sel, kind, ED.tab);
     sel = s || null;
-    const now = inspectorRoute(sel, kind);
+    const now = inspectorRoute(sel, kind, ED.tab);
     // the inspector is redrawn when it changes hands (a redraw resets its scroll), or for a caption host that shows the line
     if (src() && (now !== was || (now === 'caption' && INSP.caption))) ed.props();
   }
@@ -185,9 +187,9 @@ K  pause
     edProps: (orig) => function () {
       const S = src(); if (!S) return orig.apply(this, arguments);
       const el = $('#edProps'); if (!el) return;
-      const r = inspectorRoute(sel, kindOf(ED.d));
+      const r = inspectorRoute(sel, kindOf(ED.d), ED.tab);
       let h = r === 'caption' && INSP.caption ? INSP.caption(sel, ED.d) : null;
-      if (h == null && S.inspector) h = S.inspector(sel); // the caption tabs come later: until then the source's inspector
+      if (h == null && S.inspector) h = S.inspector(sel); // the caption tabs gave way (a reel's selected layer): the source's inspector
       if (h == null && S.nativeInspector) return orig.apply(this, arguments); // a reel: the Scene / layer properties
       el.innerHTML = h || '';
     },
@@ -218,10 +220,14 @@ K  pause
     vsPlay: () => { const p = P(); if (p) p.toggle(); },
     vsBack: () => { const p = P(); if (p) p.seek(Math.max(0, p.time() - 5000)); },
     vsFwd: () => { const p = P(); if (p) p.seek(p.time() + 5000); },
-    /* Look opens the video's inspector, Captions and Styles the caption one */
+    /* Look opens the video's inspector, Captions and Styles the caption one; another panel lets go of a selection those made */
     edTab: function (a) {
       const r = _tab.apply(this, arguments), k = a && a.dataset && a.dataset.k;
-      if (src()) { if (k === 'look') select({ kind: 'video' }); else if (k === 'captions' || k === 'styles') select({ kind: 'caption' }); }
+      if (src()) {
+        if (k === 'look') select({ kind: 'video' });
+        else if (k === 'captions' || k === 'styles') select({ kind: 'caption' });
+        else if (sel && sel.kind === 'caption' && !sel.id) select(null);
+      }
       return r;
     },
   });

@@ -245,3 +245,54 @@ describe('Styles panel: language, removal, label', () => {
     expect(d.captions.preset).toBe('bs:1');
   });
 });
+
+/* ---------- caption inspector (caption-inspector.js) ---------- */
+import { setStyleField, INSPECTOR_TABS, regroupFrom, wordsOfLines } from './caption-inspector.js';
+import { DEFAULT_STYLE as DS } from './captions.js';
+
+describe('caption inspector', () => {
+  it('tabs follow the Global Constraints order', () => {
+    expect(INSPECTOR_TABS.map((t) => t[1])).toEqual(['Font', 'Colors', 'Spacing', 'Layout', 'Box', 'Animate', 'Timing', 'Reference']);
+    expect(new Set(INSPECTOR_TABS.map((t) => t[0])).size).toBe(8);
+  });
+  it('setStyleField clamps each numeric field', () => {
+    const c = (path, v) => { const s = setStyleField(DS, path, v); return path.split('.').reduce((o, k) => o[k], s); };
+    expect(c('size', 0.5)).toBe(0.12); expect(c('size', 0)).toBe(0.02); expect(c('size', 0.05)).toBe(0.05);
+    expect(c('ls', -1)).toBe(-0.05); expect(c('ls', 1)).toBe(0.3); expect(c('ls', 0.1)).toBe(0.1);
+    expect(c('lh', 0.2)).toBe(0.9); expect(c('lh', 9)).toBe(2); expect(c('lh', 1.3)).toBe(1.3);
+    expect(c('x', -0.5)).toBe(0); expect(c('x', 2)).toBe(1); expect(c('y', -1)).toBe(0); expect(c('y', 1.5)).toBe(1); expect(c('y', 0.4)).toBe(0.4);
+    expect(c('offset', -5000)).toBe(-1000); expect(c('offset', 5000)).toBe(1000); expect(c('offset', 250)).toBe(250);
+    expect(c('animSpeed', 0.1)).toBe(0.5); expect(c('animSpeed', 9)).toBe(2); expect(c('animSpeed', 1.5)).toBe(1.5);
+  });
+  it('setStyleField returns a new object and never touches the input', () => {
+    const before = JSON.stringify(DS), s = setStyleField(DS, 'stroke.color', '#ff0000');
+    expect(s).not.toBe(DS); expect(JSON.stringify(DS)).toBe(before);
+    expect(s.stroke).toEqual({ color: '#ff0000', width: 0.004 });
+    const h = setStyleField(DS, 'highlight.color', '#00ff00'); expect(h.highlight).not.toBe(DS.highlight); expect(DS.highlight.color).toBe('#E8B54A');
+    expect(setStyleField(null, 'size', 0.05).size).toBe(0.05);
+  });
+  it('setStyleField ignores unusable values and unknown fields', () => {
+    expect(setStyleField(DS, 'size', 'x').size).toBe(DS.size);
+    expect(setStyleField(DS, 'font', 'comic').font).toBe(DS.font);
+    expect(setStyleField(DS, 'anim', 'spin').anim).toBe(DS.anim);
+    expect(setStyleField(DS, 'anim', 'typewriter').anim).toBe('typewriter');
+    expect(setStyleField(DS, 'color', 'red').color).toBe(DS.color);
+    expect(setStyleField(DS, 'nope', 1)).toEqual(DS);
+    expect(setStyleField(DS, 'box', true).box).toEqual({ color: '#000000', pad: 0.012, radius: 0.18 });
+    expect(setStyleField({ ...DS, box: { color: '#111111' } }, 'box', false).box).toBeNull();
+    expect(setStyleField(DS, 'maxWords', 20).maxWords).toBe(8);
+    expect(setStyleField(DS, 'case', 'upper').case).toBe('upper');
+    expect(setStyleField(DS, 'align', 'left').align).toBe('left');
+  });
+  it('regroupFrom picks where the words come from', () => {
+    expect(regroupFrom('video', { source: 'speech' })).toBe('speech');
+    expect(regroupFrom('video', { source: null })).toBe('speech');
+    expect(regroupFrom('video', { source: 'manual' })).toBe('lines');
+    expect(regroupFrom('reel', { source: 'voiceover' })).toBe('voiceover');
+    expect(regroupFrom('reel', {})).toBe('voiceover');
+    expect(regroupFrom('reel', { source: 'srt' })).toBe('lines');
+  });
+  it('wordsOfLines flattens the lines in time order', () => {
+    expect(wordsOfLines([ln('b', 'c d', 2000), ln('a', 'a b', 0)]).map((w) => w.t)).toEqual(['a', 'b', 'c', 'd']);
+  });
+});

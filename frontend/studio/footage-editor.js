@@ -3,14 +3,15 @@
    It is the Video Studio's `video` source (video-studio.js draws the rail, the transport, the timeline and routes the inspector).
    Stage: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split (the transport's extra).
    Tracks: Video, Captions and Voice. Panels: the shared Captions panel (caption-panels.js), helped through `captions`
-   (the panel's body while there are no lines, Re-transcribe). Inspector: Look.
+   (the panel's body while there are no lines, Re-transcribe, the caption inspector's live preview). Inspector: Look (the grade and
+   brand looks; the caption style has its own tabs, caption-inspector.js). Dragging the caption on the frame moves it (style y).
    While the server transcribes and grades, the panels show skeletons; a failed step shows its error and Retry.
    installFootageEditor(ctx, FT) is called by installFootage. The pure helpers at the top are unit-tested.
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
 import { group, retime, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
-import { lineText, captionsOn, langFromLines } from './caption-panels.js';
+import { lineText, captionsOn, langFromLines, editStyle } from './caption-panels.js';
 import { presetById } from './caption-presets.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
@@ -120,7 +121,7 @@ export function fitPeaks(peaks, w) {
 /* the caption rows' helpers live in caption-panels.js (the shared Captions panel) */
 export { textCommit, rangeLabel, lineText } from './caption-panels.js';
 
-/* ---- Look panel: grade sliders, caption style edits, brand looks ---- */
+/* ---- Look panel: grade sliders and brand looks (the caption style edits are caption-inspector.js's; styleEdit stays for its tests and callers) ---- */
 const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
 /** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
 export const GRADE_KEYS = { strength: [0, 100], exposure: [-100, 100], temp: [-100, 100], sat: [-100, 100] };
@@ -478,19 +479,6 @@ export function installFootageEditor(ctx, FT) {
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-ok>${esc(okLabel)}</button></div>`,
       { onClose: () => { if (!ok && onNo) onNo(); }, onMount: (bg, close) => { const b = bg.querySelector('[data-ft-ok]'); b.addEventListener('click', () => { ok = true; close(); onOk(); }); b.focus(); } });
   }
-  function regroup(inp) {
-    if (!F || !can()) return;
-    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = maxWordsOf(capsOf(ED.d).style);
-    inp.value = n; if (n === was) return;
-    ask('Change words per line?', 'This replaces your line breaks', 'Replace', async () => {
-      try {
-        const words = await api(`/footage/${S.id}/words`);
-        if (!alive(S)) return;
-        if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.preset = null; c.lines = group(words, c.style); }); save();
-      } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
-    }, () => { inp.value = was; });
-  }
   function retranscribe() {
     if (!F || !can()) return; const S = F;
     ask('Re-transcribe?', 'This replaces your edited captions', 'Re-transcribe', async () => {
@@ -521,11 +509,7 @@ export function installFootageEditor(ctx, FT) {
   const retxHTML = () => { const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe); return `<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`; };
 
   /* ---------- Look panel ---------- */
-  const optHTML = (list, cur) => list.map(([v, l]) => `<option value="${esc(String(v))}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`).join('');
   const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft-rg"><span>${label}</span><input type="range" ${attr}="${key}" min="${min}" max="${max}" step="${step}" value="${val}" style="--p:${((val - min) / (max - min)) * 100}%" ${dis}><output>${val}</output></label>`;
-  const colorHTML = (key, label, val, dis) => `<label class="ft-rg ft-cl"><span>${label}</span><input type="color" data-ft-s="${key}" value="${colorHex(val)}" ${dis}></label>`;
-  const swHTML = (key, label, on, dis) => `<label class="ft-rg ft-sw"><span>${label}</span><input type="checkbox" data-ft-s="${key}" ${on ? 'checked' : ''} ${dis}></label>`;
-  const selHTML = (key, label, list, cur, dis) => `<label class="ft-rg ft-se"><span>${label}</span><select class="field" data-ft-s="${key}" ${dis}>${optHTML(list, cur)}</select></label>`;
   const brandLooks = () => (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
 
   function gradeHTML(ft, A, src, dis) {
@@ -544,28 +528,6 @@ export function installFootageEditor(ctx, FT) {
       ${dis ? '' : `<button class="btn ghost sm ft-reset" data-act="ftGradeReset">${ic('refresh', 14)}Reset grade</button>`}`;
   }
 
-  function styleHTML(ft, A, dis) {
-    const caps = capsOf(ED.d);
-    const st = caps.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(caps, !!F.ref);
-    if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the caption style…</p>${skel(2)}`;
-    let top = '';
-    if (F.ref && !caps.style && A.style.state === 'failed') top = failBox(A.style.error || 'The caption style could not be read.', F.ref, 'caption-style');
-    else top = `<p class="sm-t">${esc(originCopy(caps, !!F.ref))}</p>`;
-    const note = F.refRec && F.refRec.captionNote; if (note && (origin === 'default' || origin === 'reference')) top += `<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
-    const wc = WEIGHTS.some(([w]) => w === st.weight) ? WEIGHTS : [...WEIGHTS, [st.weight, String(st.weight)]];
-    const has = (caps.lines || []).length, size = Math.round(st.size * 1000) / 10, y = Math.round(st.y * 100);
-    return `${top}${selHTML('font', 'Font', FONT_KEYS.map((k) => [k, FONT_LABELS[k]]), st.font, dis)}
-      ${rgHTML('data-ft-s', 'size', 'Size', 2, 10, 0.5, clampN2(size, 2, 10), dis)}
-      ${selHTML('weight', 'Weight', wc, st.weight, dis)}${colorHTML('color', 'Text color', st.color, dis)}
-      ${swHTML('strokeOn', 'Stroke', !!st.stroke, dis)}${st.stroke ? `${colorHTML('strokeColor', 'Stroke color', st.stroke.color, dis)}${rgHTML('data-ft-s', 'strokeWidth', 'Stroke width', 1, 20, 1, clampN2(Math.round(st.stroke.width * 1000), 1, 20), dis)}` : ''}
-      ${swHTML('shadowOn', 'Shadow', !!st.shadow, dis)}
-      ${selHTML('hlMode', 'Highlight', HL_MODES, hl.mode, dis)}${hl.mode !== 'none' ? colorHTML('hlColor', 'Highlight color', hl.color, dis) : ''}${hl.mode === 'box' ? colorHTML('hlText', 'Highlight text', hl.text, dis) : ''}
-      ${rgHTML('data-ft-s', 'y', 'Position', 5, 95, 1, clampN2(y, 5, 95), dis)}
-      <label class="ft-rg ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${maxWordsOf(caps.style)}" data-ft-wpl aria-label="Words per line" ${dis || !has ? 'disabled' : ''}></label>
-      ${selHTML('anim', 'Animation', ANIMS, st.anim || 'none', dis)}
-      ${dis ? '' : '<p class="xs-t muted">You can also drag the caption on the video to move it.</p>'}`;
-  }
-
   function looksHTML(ft, dis) {
     const list = brandLooks(), own = ft.look.lut === lookPath(F.id);
     const canSave = !dis && F.cube && own;
@@ -582,7 +544,6 @@ export function installFootageEditor(ctx, FT) {
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = can() ? '' : 'disabled';
     return `<div class="body ft-look-p"><h3>Look</h3>
       <section class="ft-sec"><span class="label">Colour grade</span>${gradeHTML(ft, A, src, dis)}</section>
-      <section class="ft-sec"><span class="label">Caption style</span>${styleHTML(ft, A, dis)}</section>
       <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
   }
 
@@ -610,7 +571,13 @@ export function installFootageEditor(ctx, FT) {
     player,
     tracks: tlTracks,
     panel: () => null,
-    captions: { body: noLinesHTML, foot: retxHTML, light: () => sync() },
+    captions: {
+      body: noLinesHTML, foot: retxHTML, light: () => sync(),
+      /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
+      preview: (style) => { if (!F || !F.player) return; if (style) F.player.setCaptions({ ...capsOf(ED.d), style }); else sync(); },
+      /** the inspector paired the video with a new reference: follow it (its progress, then the grade matched to it) */
+      paired: (refId) => { if (!F) return; F.ref = refId; F.refRec = null; F.applied = false; F.err = null; F.sig = ''; F.gen++; poll(); },
+    },
     inspector: () => (F ? lookHTML() : null),
     transportExtra: baHTML,
     canEdit: () => can(),
@@ -641,7 +608,6 @@ export function installFootageEditor(ctx, FT) {
       } catch (e) { a.disabled = false; toast((e && e.message) || 'Could not retry'); }
     },
   });
-  document.addEventListener('change', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-wpl]')) regroup(e.target); });
   /* the split line: drag anywhere on the frame while Before / After is on */
   document.addEventListener('pointerdown', (e) => {
     if (!F || F.split == null || e.button !== 0) return; const fr = $('#ftFrame'); if (!fr || !fr.contains(e.target)) return;
@@ -649,14 +615,11 @@ export function installFootageEditor(ctx, FT) {
     at(e); const up = () => { removeEventListener('pointermove', at); removeEventListener('pointerup', up); };
     addEventListener('pointermove', at); addEventListener('pointerup', up);
   });
-  /* ---- Look panel: live preview on `input`, one mutate() on `change` (release) ---- */
-  const ctlValue = (el) => (el.type === 'checkbox' ? el.checked : el.value);
+  /* ---- Look panel (grade): live preview on `input`, one mutate() on `change` (release) ---- */
   const setOut = (el) => {
     const o = el.closest('.ft-rg') && el.closest('.ft-rg').querySelector('output'); if (o) o.textContent = el.value;
     if (el.type === 'range') el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
   };
-  /** Controls that add or remove other controls: the panel is redrawn after the commit (it is also redrawn on the first edit, for the origin text), focus kept */
-  const STRUCT = new Set(['strokeOn', 'hlMode']);
   function gradePreview(el) {
     if (!F || !F.player || !can()) return; setOut(el);
     F.player.setLook(gradePatch(ED.d.footage.look, el.dataset.ftG, el.value));
@@ -670,20 +633,8 @@ export function installFootageEditor(ctx, FT) {
     if (!F || !can()) return;
     mutate(() => { Object.assign(ED.d.footage.look, GRADE_RESET); }, () => { sync(); ed.props(); }); save();
   }
-  function stylePreview(el) {
-    if (!F || !F.player || !can()) return; setOut(el);
-    const c = capsOf(ED.d);
-    F.player.setCaptions({ ...c, style: styleEdit(c.style, el.dataset.ftS, ctlValue(el)) });
-  }
-  function styleCommit(el) {
-    if (!F || !can()) return; const k = el.dataset.ftS, c0 = capsOf(ED.d), wasCustom = c0.styleFrom === 'custom';
-    const next = styleEdit(c0.style, k, ctlValue(el));
-    if (c0.style && JSON.stringify(next) === JSON.stringify(c0.style)) { sync(); return; }
-    mutate(() => { const c = capsOf(ED.d); c.style = next; c.styleFrom = 'custom'; c.preset = null; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
-    save();
-  }
-  document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
-  document.addEventListener('change', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradeCommit(t); else if (t.matches('[data-ft-s]')) styleCommit(t); });
+  document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradePreview(t); });
+  document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradeCommit(t); });
 
   /* dragging the caption on the video sets its height (y): preview through the player, one mutate() on release */
   function captionDrag(e) {
@@ -702,14 +653,14 @@ export function installFootageEditor(ctx, FT) {
     const at = (ev) => {
       d.y = clampY((ev.clientY - r.top) / r.height - off);
       const c = capsOf(ED.d); S.player && S.player.setCaptions({ ...c, style: { ...(c.style || DEFAULT_STYLE), y: d.y } });
-      const sl = $('#edProps [data-ft-s="y"]'); if (sl) { sl.value = String(Math.round(d.y * 100)); setOut(sl); }
+      const sl = $('#edProps [data-cs="y"]'); if (sl) { sl.value = String(Math.round(d.y * 100)); sl.dispatchEvent(new Event('cs:out', { bubbles: true })); } // the caption inspector's Vertical slider
     };
     const done = (commit) => {
       fr.removeEventListener('pointermove', at); fr.removeEventListener('pointerup', up); fr.removeEventListener('pointercancel', cancel); fr.removeEventListener('lostpointercapture', cancel);
       fr.classList.remove('drag'); S.cdrag = null;
       if (!alive(S)) return;
       if (commit && d.y !== d.y0) {
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; c.preset = null; }, () => { sync(); ed.props(); }); save();
+        mutate(() => editStyle(ED.d, { y: d.y }), () => { sync(); ed.props(); }); save();
       } else { sync(); ed.props(); }
     };
     const up = () => done(true), cancel = () => done(false);
