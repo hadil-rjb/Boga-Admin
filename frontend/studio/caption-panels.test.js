@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, fileBase } from './caption-panels.js';
+import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, PENDING_NOTE, applySrt, decodeSubtitleBytes, fileBase } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
+import { capsOf as capsOf15 } from './caption-store.js';
 
 const ln = (id, text, start = 0) => ({ id, start, end: start + 1000, words: text.split(' ').map((t, k) => ({ t, s: start + k * 100, e: start + k * 100 + 100 })) });
 const scene = (dur, vo) => ({ id: 'p' + dur, layers: [], scene: { k: 'body', dur, tr: 'cut', trd: 400, ...(vo ? { vo } : {}) } });
@@ -332,7 +333,6 @@ describe('caption inspector', () => {
   });
 });
 
-import { capsOf as capsOf15 } from './caption-store.js';
 describe('Script panel', () => {
   const vid = () => ({ name: 'My clip!', footage: { src: 'f1' }, captions: { on: true, lines: [ln('a', 'old line')], style: null, source: 'speech' } });
   const sp = (t) => t.split(' ').map((w, k) => ({ t: w, s: k * 300, e: k * 300 + 250 }));
@@ -348,17 +348,35 @@ describe('Script panel', () => {
   it('no note when there was no speech', () => {
     expect(scriptAction(vid(), 'one two three', [], 3000).note).toBeNull();
   });
-  it('a bad SRT throws and leaves the lines alone', () => {
-    const d = vid();
-    expect(() => srtAction(d, 'not a subtitle file')).toThrow('This file has no readable captions');
-    expect(capsOf15(d).lines.map((l) => l.id)).toEqual(['a']);
+  it('pending speech gives its own note, the 40 percent note stays', () => {
+    expect(scriptAction(vid(), 'one two three', [], 3000, 'pending').note).toBe(PENDING_NOTE);
+    expect(scriptAction(vid(), 'one two three', [], 3000, 'none').note).toBeNull();
+    expect(scriptAction(vid(), 'one two three four five six', sp('zzz yyy xxx www'), 3000, 'pending').note).toBe(SPREAD_NOTE);
   });
-  it('a good SRT sets source srt; a script sets source script', () => {
-    const d = vid(), r = srtAction(d, '1\n00:00:01,000 --> 00:00:02,000\nHi there\n');
-    setLines(d, r.lines, 'srt');
-    expect(capsOf15(d).source).toBe('srt'); expect(words(capsOf15(d).lines)).toEqual(['Hi', 'there']);
-    setLines(d, scriptAction(d, 'abc def', [], 2000).lines, 'script');
+  it('a bad SRT leaves the lines identical', () => {
+    const d = vid(), before = JSON.parse(JSON.stringify(capsOf15(d)));
+    const r = applySrt(d, 'not a subtitle file');
+    expect(r).toEqual({ ok: false, error: 'This file has no readable captions' });
+    expect(capsOf15(d)).toEqual(before);
+  });
+  it('a good SRT replaces the lines with source srt', () => {
+    const d = vid(), r = applySrt(d, '1\n00:00:01,000 --> 00:00:02,000\nHi there\n');
+    expect(r.ok).toBe(true); expect(capsOf15(d).source).toBe('srt'); expect(words(capsOf15(d).lines)).toEqual(['Hi', 'there']);
+  });
+  it('a script sets source script', () => {
+    const d = vid(); setLines(d, scriptAction(d, 'abc def', [], 2000).lines, 'script');
     expect(capsOf15(d).source).toBe('script');
+  });
+  it('a reel keeps script / srt lines with their source and voSig', () => {
+    const d = reel();
+    setLines(d, [ln('x', 'hi there')], 'script');
+    expect(capsOf15(d).source).toBe('script'); expect(capsOf15(d).voSig).toBe(voSig(d.pages)); expect(linesOf(d).map((l) => l.id)).toEqual(['x']);
+    expect(applySrt(d, '1\n00:00:00,000 --> 00:00:01,000\nYo\n').ok).toBe(true);
+    expect(capsOf15(d).source).toBe('srt'); expect(capsOf15(d).voSig).toBe(voSig(d.pages)); expect(words(linesOf(d))).toEqual(['Yo']);
+  });
+  it('decodes UTF-8, and Windows-1256 when UTF-8 breaks', () => {
+    expect(decodeSubtitleBytes(new TextEncoder().encode('مرحبا'))).toBe('مرحبا');
+    expect(decodeSubtitleBytes(new Uint8Array([0xe3, 0xd1, 0xcd, 0xc8, 0xc7]))).toBe('مرحبا');
   });
   it('file base is the safe design name', () => { expect(fileBase({ name: 'My clip!' })).toBe('My-clip'); expect(fileBase({})).toBe('video'); });
 });

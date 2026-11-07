@@ -161,6 +161,7 @@ export function rebuildFromVoiceover(d) {
 }
 
 /* ---------- Script panel: pure helpers ---------- */
+export const PENDING_NOTE = "The speech isn't ready yet, so the lines are spread over the video.";
 export const SPREAD_NOTE = 'Not enough of the script matched the speech, so the lines are spread over the video.';
 /** The base of a download's file name: the design name made safe, 60 characters at most */
 export const fileBase = (d) => String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video';
@@ -168,10 +169,24 @@ export const fileBase = (d) => String((d && d.name) || 'video').trim().replace(/
  * Captions made from a pasted script: { lines, note }. `speech` are the speech words (video: the transcript, reel: the voice-over);
  * `dur` is the length the lines are spread over when they do not match. `note` only when speech existed but did not match.
  */
-export function scriptAction(d, text, speech, dur = 0) {
+export function scriptAction(d, text, speech, dur = 0, speechState = 'ok') {
   const sp = Array.isArray(speech) ? speech : [];
   const r = linesFromScript(text, { speechWords: sp, start: 0, end: dur, style: styleOf(d) });
-  return { lines: r.lines, note: r.spread && sp.length ? SPREAD_NOTE : null };
+  // 'pending': the speech words are not available yet (fetch failed, or empty while transcribing / failed); 'none': there is no speech to match
+  const note = !r.spread ? null : sp.length ? SPREAD_NOTE : speechState === 'pending' ? PENDING_NOTE : null;
+  return { lines: r.lines, note };
+}
+/** Subtitle file bytes as text: UTF-8, else Windows-1256 (Arabic files often use it) when UTF-8 shows replacement characters */
+export function decodeSubtitleBytes(u8) {
+  const t = new TextDecoder('utf-8').decode(u8);
+  if (!t.includes('\ufffd')) return t;
+  try { return new TextDecoder('windows-1256').decode(u8); } catch (e) { return t; }
+}
+/** Parses a subtitle file and, only when it has captions, stores them as the design's ('srt'): { ok } or { ok: false, error } with nothing changed. Call inside mutate() */
+export function applySrt(d, text) {
+  let r; try { r = srtAction(d, text); } catch (e) { return { ok: false, error: (e && e.message) || 'This file has no readable captions' }; }
+  setLines(d, r.lines, 'srt');
+  return { ok: true };
 }
 /** The lines of an SRT or VTT file; throws Error('This file has no readable captions') and touches nothing when there are none */
 export const srtAction = (d, text) => ({ lines: parseSubtitles(text) });
@@ -246,6 +261,7 @@ export function editStyle(d, patch) {
 }
 
 /* ---------- DOM ---------- */
+let scriptHooked = false;
 export function installCaptionPanels(ctx, VS) {
   const { ED, ACT, ic, esc, mutate, save, canEdit, toast, ed, brand, modal } = ctx;
   const $ = (s) => document.querySelector(s);
@@ -541,23 +557,30 @@ export function installCaptionPanels(ctx, VS) {
     scriptText = ta ? ta.value : scriptText;
     if (!scriptText.trim()) { toast('Paste your script first.'); return; }
     const S = src(), P = S && S.player;
-    let speech = [], dur = 0;
+    let speech = [], dur = 0, state = 'none';
     if (kindOf(d) === 'reel') { const tl = timeline(d.pages); speech = voiceoverWords(d.pages, tl, LEAD); dur = tl.total; }
     else {
       dur = P && P.duration ? P.duration() : 0;
       const id = d.footage && d.footage.src;
       if (id && apiFn) { busy = true; try { const w = await apiFn(`/footage/${id}/words`); if (Array.isArray(w)) speech = w; } catch (e) { speech = []; } busy = false; }
+      state = speech.length ? 'ok' : 'pending'; // no words: still transcribing, failed or unreachable
       if (ED.d !== d) return;
     }
-    const r = scriptAction(d, scriptText, speech, dur);
+    const r = scriptAction(d, scriptText, speech, dur, state);
     if (!r.lines.length) { toast('The script has no words.'); return; }
     putLines(d, r.lines, 'script', r.note);
   }
   function openFile(file) {
     const d = ED.d; if (!d || !can() || !file) return;
-    file.text().then((t) => {
-      let r; try { r = srtAction(d, t); } catch (e) { toast((e && e.message) || 'This file has no readable captions'); return; }
-      putLines(d, r.lines, 'srt');
+    file.arrayBuffer().then((buf) => {
+      const text = decodeSubtitleBytes(new Uint8Array(buf));
+      try { srtAction(d, text); } catch (e) { toast((e && e.message) || 'This file has no readable captions'); return; }
+      const go = () => {
+        if (ED.d !== d || !can()) return;
+        let res; mutate(() => { res = applySrt(d, text); }, panelToo); save();
+        if (!res.ok) toast(res.error);
+      };
+      if (linesOf(d).length) ask('Replace the captions?', 'This replaces the caption lines you have now.', 'Replace', go); else go();
     }, () => toast('This file has no readable captions'));
   }
   function downloadSrt() {
@@ -571,8 +594,11 @@ export function installCaptionPanels(ctx, VS) {
     scOpen: () => { const f = $('#edPanel [data-sc-file]'); if (f) f.click(); },
     scSave: () => downloadSrt(),
   });
-  document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-text]')) scriptText = t.value; });
-  document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-file]')) { const f = t.files && t.files[0]; t.value = ''; openFile(f); } });
+  if (!scriptHooked) { // installing the panels twice must not stack the listeners
+    scriptHooked = true;
+    document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-text]')) scriptText = t.value; });
+    document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-file]')) { const f = t.files && t.files[0]; t.value = ''; openFile(f); } });
+  }
 
   /** What sources use: one undoable edit of the lines, the on / off switch, a row brought into view, the fonts */
   VS.captions = { edit: (fn) => edit(fn), toggle: setOn, reveal, loadFonts, light };
