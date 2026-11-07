@@ -180,6 +180,27 @@ export function addBrandStyle(styles, name, style, mkId = () => 'cs' + Date.now(
   return { ok: true, styles: [...list, { id: mkId(), name: nm, style: JSON.parse(JSON.stringify(style || DEFAULT_STYLE)) }] };
 }
 /** The last applied ids, newest first, without repeats, 8 at most */
+/** The brand's saved styles without `id` */
+export const removeBrandStyle = (styles, id) => (Array.isArray(styles) ? styles : []).filter((x) => x && x.id !== id);
+/** 'ar' when any word is in Arabic script, 'en' when there are words but none, else null */
+export function langFromLines(lines) {
+  let any = false;
+  for (const l of lines || []) for (const w of (l && l.words) || []) {
+    any = true; if (/[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff]/.test(w.t || '')) return 'ar';
+  }
+  return any ? 'en' : null;
+}
+/** The caption language of a design: the stored `lang`, else read from its lines ('en' when there are none) */
+export function captionLang(d) {
+  const l = capsView(d).lang; if (l) return /^ar/i.test(String(l)) ? 'ar' : 'en';
+  return langFromLines(linesOf(d)) || 'en';
+}
+/** The Styles header: the preset or saved style's name, else where the style came from */
+export function styleLabel(c, nameOf) {
+  if (c && c.preset != null) { const p = presetById(c.preset); if (p) return p.name; const n = nameOf && nameOf(c.preset); if (n) return n; }
+  const f = c && c.styleFrom;
+  return f === 'reference' ? 'Reference' : f === 'look' ? 'Brand look' : (f === 'custom' || (c && c.style && !f)) ? 'Custom' : 'Default';
+}
 export const pushRecent = (ids, id) => [id, ...(ids || []).filter((x) => x !== id)].slice(0, RECENT_MAX);
 
 /* the style writers change `d` in place: call them inside mutate() */
@@ -188,10 +209,10 @@ export function applyPresetTo(d, id) {
   prepareReel(d);
   const c = capsOf(d); c.style = applyPreset(c.style, id); c.preset = id; delete c.styleFrom;
 }
-/** A saved style or a brand look's style applied: no preset; `from` is 'look' for a look, else 'custom' */
-export function applyBrandStyle(d, style, from = 'custom') {
+/** A saved style or a brand look's style applied: its card id goes in `preset` (never a built-in preset id); `from` is 'look' for a look, else 'custom' */
+export function applyBrandStyle(d, style, from = 'custom', id = null) {
   prepareReel(d);
-  const c = capsOf(d); c.style = JSON.parse(JSON.stringify(style)); c.preset = null; c.styleFrom = from;
+  const c = capsOf(d); c.style = JSON.parse(JSON.stringify(style)); c.preset = id; c.styleFrom = from; // `id` ('bs:…' / 'bl:…') marks the applied card
 }
 /** Any hand edit of the style (patch: the changed fields): the style is custom from then on */
 export function editStyle(d, patch) {
@@ -355,7 +376,7 @@ export function installCaptionPanels(ctx, VS) {
   }
   /** Previews: drawn once with captions.draw on a 160x200 neutral frame (ms 900), cached by id + language (+ the style for brand entries) */
   const previews = new Map();
-  const langOf = (d) => (/^ar/i.test(String(capsView(d).lang || '')) ? 'ar' : 'en');
+  const langOf = (d) => captionLang(d);
   function previewUrl(item, lang) {
     const key = `${item.id}|${lang}` + (item.brand ? '|' + JSON.stringify(item.style) : '');
     if (previews.has(key)) return previews.get(key);
@@ -381,31 +402,41 @@ export function installCaptionPanels(ctx, VS) {
     const items = presetsFor(cat, sq, recents(), brandItems());
     if (!items.length) return `<p class="xs-t muted st-none">${cat === 'recent' ? 'Styles you apply show up here.' : cat === 'brand' ? 'Save a caption style to the brand, or a brand look with one.' : 'No style matches.'}</p>`;
     return `<div class="st-grid">${items.map((it) => {
-      const on = !it.brand && c.preset === it.id, u = previewUrl(it, lang);
-      return `<button class="st-card${on ? ' on' : ''}" data-act="stApply" data-id="${esc(it.id)}" aria-pressed="${on}" ${ro ? 'disabled' : ''} title="${esc(it.name)}">
-        <span class="st-pv">${u ? `<img src="${u}" alt="" width="160" height="200" draggable="false">` : ''}</span><span class="st-nm">${esc(it.name)}${it.look ? ' (look)' : ''}</span></button>`;
+      const on = c.preset === it.id, u = previewUrl(it, lang);
+      const del = it.rawId && !ro ? `<button class="btn ghost icon sm st-del" data-act="stDel" data-id="${esc(it.id)}" aria-label="Delete ${esc(it.name)}" title="Delete">${ic('trash', 14)}</button>` : '';
+      return `<div class="st-wrap"><button class="st-card${on ? ' on' : ''}" data-act="stApply" data-id="${esc(it.id)}" aria-pressed="${on}" ${ro ? 'disabled' : ''} title="${esc(it.name)}">
+        <span class="st-pv">${u ? `<img src="${u}" alt="" width="160" height="200" draggable="false">` : ''}</span><span class="st-nm">${esc(it.name)}${it.look ? ' (look)' : ''}</span></button>${del}</div>`;
     }).join('')}</div>`;
   }
   function stylesRender(d) {
-    const c = capsView(d), p = c.preset && presetById(c.preset), ro = !can();
+    const c = capsView(d), ro = !can(), label = styleLabel(c, (id) => { const it = brandItems().find((x) => x.id === id); return it && it.name; });
     if (VS.captions && VS.captions.loadFonts) VS.captions.loadFonts();
     const chips = chipsFor(d).map(([k, n, ct]) => `<button class="chip${cat === k ? ' on' : ''}" data-act="stCat" data-k="${k}" aria-pressed="${cat === k}">${esc(n)} <span class="st-ct">${ct}</span></button>`).join('');
-    return `<div class="st"><div class="cp-head"><h3>Styles</h3><span class="xs-t muted st-cur">${p ? esc(p.name) : 'Custom'}</span></div>
+    return `<div class="st"><div class="cp-head"><h3>Styles</h3><span class="xs-t muted st-cur">${esc(label)}</span></div>
       <label class="cp-search">${ic('search', 15)}<input class="field" type="search" data-st-q value="${esc(sq)}" placeholder="Search styles" aria-label="Search styles"></label>
       <div class="chips st-chips">${chips}</div><div id="stGrid">${gridHTML(d)}</div>
       ${ro ? '' : `<div class="ft-foot"><button class="btn secondary sm" data-act="stSave">${ic('plus', 15)}Save as brand style</button></div>`}</div>`;
   }
   VS.panel('styles', stylesRender);
-  function stylesToo() { const pn = $('#edPanel'), y = pn ? pn.scrollTop : 0; ed.panel(); const p2 = $('#edPanel'); if (p2) p2.scrollTop = y; light(); }
+  function stylesToo() { const pn = $('#edPanel'), y = pn ? pn.scrollTop : 0; ed.panel(); const p2 = $('#edPanel'); if (p2) p2.scrollTop = y; if (ed.props) ed.props(); light(); }
   function gridOnly() { const g = $('#stGrid'); if (g && ED.d) g.innerHTML = gridHTML(ED.d); }
   function applyItem(id) {
     if (!ED.d || !can()) return;
     if (id.startsWith('bs:') || id.startsWith('bl:')) {
       const it = brandItems().find((x) => x.id === id); if (!it) return;
-      mutate(() => applyBrandStyle(ED.d, it.style, it.from), stylesToo); save(); return;
+      mutate(() => applyBrandStyle(ED.d, it.style, it.from, it.id), stylesToo); save(); return;
     }
     if (!presetById(id)) return;
     mutate(() => applyPresetTo(ED.d, id), stylesToo); pushRecentId(id); save();
+  }
+  function deleteBrandStyle(id) {
+    const b = getBrand(), it = brandItems().find((x) => x.id === id); if (!b || !it || !it.rawId || !can()) return;
+    const go = () => { b.captionStyles = removeBrandStyle(b.captionStyles, it.rawId); save(); toast('Brand style deleted'); if (ED.tab === 'styles') stylesToo(); };
+    if (!modal) { go(); return; }
+    modal(`<div class="mh"><h2>Delete this brand style?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">${esc(it.name)} is removed from the brand. Designs that use it keep their captions as they are.</p></div>
+      <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-st-ok>Delete</button></div>`,
+    { onMount: (bg, close) => { const ok = bg.querySelector('[data-st-ok]'); ok.addEventListener('click', () => { close(); go(); }); ok.focus(); } });
   }
   function saveBrandStyle() {
     if (!ED.d || !can()) return;
@@ -432,11 +463,12 @@ export function installCaptionPanels(ctx, VS) {
     stApply: (a) => applyItem(a.dataset.id),
     stCat: (a) => { cat = a.dataset.k; stylesToo(); },
     stSave: () => saveBrandStyle(),
+    stDel: (a) => deleteBrandStyle(a.dataset.id),
   });
   document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-st-q]')) { sq = t.value; gridOnly(); } });
   /* a web font arrived: the previews are drawn again once */
   if (typeof document !== 'undefined' && document.fonts && document.fonts.addEventListener) {
-    document.fonts.addEventListener('loadingdone', () => { previews.clear(); if (ED.d && ED.tab === 'styles' && !(document.activeElement && document.activeElement.matches && document.activeElement.matches('[data-st-q]'))) gridOnly(); });
+    document.fonts.addEventListener('loadingdone', () => { previews.clear(); if (ED.d && ED.tab === 'styles') gridOnly(); });
   }
 
   /** The caption fonts (the stacks of captions.js), once */

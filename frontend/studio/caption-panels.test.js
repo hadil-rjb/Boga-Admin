@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, BRAND_STYLE_MAX } from './caption-panels.js';
+import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
 
 const ln = (id, text, start = 0) => ({ id, start, end: start + 1000, words: text.split(' ').map((t, k) => ({ t, s: start + k * 100, e: start + k * 100 + 100 })) });
@@ -216,5 +216,32 @@ describe('Styles panel helpers', () => {
     expect(d.captions.style.size).toBe(0.09);
     applyBrandStyle(d, { size: 0.05 }, 'look');
     expect(d.captions.preset).toBe(null); expect(d.captions.styleFrom).toBe('look');
+  });
+});
+
+describe('Styles panel: language, removal, label', () => {
+  const ar = ln('a', 'مرحبا بكم'), en = ln('b', 'hello there');
+  it('langFromLines and captionLang', () => {
+    expect(langFromLines([en, ar])).toBe('ar'); expect(langFromLines([en])).toBe('en'); expect(langFromLines([])).toBe(null);
+    expect(captionLang({ footage: {}, captions: { lang: null, lines: [ar] } })).toBe('ar');
+    expect(captionLang({ footage: {}, captions: { lang: 'en', lines: [ar] } })).toBe('en');
+    expect(captionLang({ footage: {}, captions: { lang: 'ar-TN', lines: [] } })).toBe('ar');
+    expect(captionLang({ footage: {}, captions: { lang: null, lines: [] } })).toBe('en');
+  });
+  it('removeBrandStyle drops one by id', () => {
+    expect(removeBrandStyle([{ id: 'a' }, { id: 'b' }], 'a')).toEqual([{ id: 'b' }]);
+    expect(removeBrandStyle(undefined, 'a')).toEqual([]);
+  });
+  it('styleLabel shows Custom only for a custom style', () => {
+    expect(styleLabel({ preset: 'viral-impact' })).toBe('Impact');
+    expect(styleLabel({ preset: 'bs:1' }, () => 'Mine')).toBe('Mine');
+    expect(styleLabel({ preset: null, styleFrom: 'custom', style: {} })).toBe('Custom');
+    expect(styleLabel({ styleFrom: 'reference', style: {} })).toBe('Reference');
+    expect(styleLabel({ styleFrom: 'look', style: {} })).toBe('Brand look');
+    expect(styleLabel({ style: null })).toBe('Default');
+  });
+  it('applyBrandStyle marks the applied card', () => {
+    const d = { footage: {}, captions: { lines: [] } }; applyBrandStyle(d, { size: 0.05 }, 'custom', 'bs:1');
+    expect(d.captions.preset).toBe('bs:1');
   });
 });

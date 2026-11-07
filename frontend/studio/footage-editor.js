@@ -10,7 +10,8 @@
    ============================================================ */
 import { apiUrl } from '../lib/api';
 import { group, retime, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
-import { lineText, captionsOn } from './caption-panels.js';
+import { lineText, captionsOn, langFromLines } from './caption-panels.js';
+import { presetById } from './caption-presets.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
@@ -58,8 +59,8 @@ export function analysisPatch(caps, ft, { id, words, refStyle, refNote, hasCube 
   return Object.keys(out).length ? out : null;
 }
 export function applyPatch(caps, ft, p) {
-  if (p.style) { caps.style = p.style; if (p.styleFrom) caps.styleFrom = p.styleFrom; }
-  if (p.lines) { caps.lines = p.lines; caps.source = 'speech'; caps.voSig = null; } // lines from the analysis are the speech's
+  if (p.style) { caps.style = p.style; caps.preset = null; if (p.styleFrom) caps.styleFrom = p.styleFrom; }
+  if (p.lines) { caps.lines = p.lines; caps.source = 'speech'; caps.voSig = null; if (!caps.lang) caps.lang = langFromLines(p.lines) || caps.lang || null; } // lines from the analysis are the speech's
   if (p.lut) ft.look.lut = p.lut;
   if ('lookId' in p) ft.lookId = p.lookId;
   return ft;
@@ -182,8 +183,8 @@ export function styleEdit(style, key, v) {
 /** Where the caption style came from: the stored origin, else guessed (a preset is the user's pick, a style came from the reference or the look) */
 export function styleOrigin(captions, hasRef) {
   const c = captions || {};
+  if (c.preset != null) return String(c.preset).startsWith('bl:') ? 'look' : String(c.preset).startsWith('bs:') ? 'brand' : 'preset';
   if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
-  if (c.preset != null) return 'custom';
   return c.style ? (hasRef ? 'reference' : 'look') : 'default';
 }
 /** The panel's sentence about the style's origin */
@@ -192,7 +193,14 @@ export const ORIGIN_COPY = {
   look: 'Captions use the brand look’s style.',
   default: 'Captions use the default style.',
   custom: 'Captions use your own style.',
+  brand: 'Captions use a saved brand style.',
+  preset: 'Captions use a preset style.',
 };
+/** The sentence about the origin: names the preset when one is applied */
+export function originCopy(captions, hasRef) {
+  const o = styleOrigin(captions, hasRef), p = o === 'preset' && presetById(captions.preset);
+  return p ? `Captions use the ${p.name} style.` : ORIGIN_COPY[o];
+}
 /** Seconds into a video of `dur` seconds at which the reference thumbnail is taken: frame 30 of the 60 sampled frames */
 export const thumbTime = (dur) => Math.max(0, (29.5 / 60) * (+dur || 0));
 /** Thumbnail size: 160 px wide */
@@ -209,7 +217,7 @@ export function lookRecord({ id, name, lut, captionStyle, refThumb, now = new Da
 export function applyLookTo(caps, ft, look, lines) {
   const was = maxWordsOf(caps.style);
   ft.look.lut = look.lut; ft.lookId = look.id;
-  if (look.captionStyle) { caps.style = JSON.parse(JSON.stringify(look.captionStyle)); caps.styleFrom = 'look'; }
+  if (look.captionStyle) { caps.style = JSON.parse(JSON.stringify(look.captionStyle)); caps.styleFrom = 'look'; caps.preset = null; }
   if (lines) caps.lines = lines;
   return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
 }
@@ -479,7 +487,7 @@ export function installFootageEditor(ctx, FT) {
         const words = await api(`/footage/${S.id}/words`);
         if (!alive(S)) return;
         if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.lines = group(words, c.style); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.preset = null; c.lines = group(words, c.style); }); save();
       } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
     }, () => { inp.value = was; });
   }
@@ -542,7 +550,7 @@ export function installFootageEditor(ctx, FT) {
     if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the caption style…</p>${skel(2)}`;
     let top = '';
     if (F.ref && !caps.style && A.style.state === 'failed') top = failBox(A.style.error || 'The caption style could not be read.', F.ref, 'caption-style');
-    else top = `<p class="sm-t">${ORIGIN_COPY[origin]}</p>`;
+    else top = `<p class="sm-t">${esc(originCopy(caps, !!F.ref))}</p>`;
     const note = F.refRec && F.refRec.captionNote; if (note && (origin === 'default' || origin === 'reference')) top += `<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
     const wc = WEIGHTS.some(([w]) => w === st.weight) ? WEIGHTS : [...WEIGHTS, [st.weight, String(st.weight)]];
     const has = (caps.lines || []).length, size = Math.round(st.size * 1000) / 10, y = Math.round(st.y * 100);
@@ -671,7 +679,7 @@ export function installFootageEditor(ctx, FT) {
     if (!F || !can()) return; const k = el.dataset.ftS, c0 = capsOf(ED.d), wasCustom = c0.styleFrom === 'custom';
     const next = styleEdit(c0.style, k, ctlValue(el));
     if (c0.style && JSON.stringify(next) === JSON.stringify(c0.style)) { sync(); return; }
-    mutate(() => { const c = capsOf(ED.d); c.style = next; c.styleFrom = 'custom'; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
+    mutate(() => { const c = capsOf(ED.d); c.style = next; c.styleFrom = 'custom'; c.preset = null; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
     save();
   }
   document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
@@ -701,7 +709,7 @@ export function installFootageEditor(ctx, FT) {
       fr.classList.remove('drag'); S.cdrag = null;
       if (!alive(S)) return;
       if (commit && d.y !== d.y0) {
-        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; }, () => { sync(); ed.props(); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; c.preset = null; }, () => { sync(); ed.props(); }); save();
       } else { sync(); ed.props(); }
     };
     const up = () => done(true), cancel = () => done(false);

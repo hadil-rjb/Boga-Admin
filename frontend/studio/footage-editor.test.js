@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
-  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
+  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, originCopy, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
   canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
@@ -194,7 +194,7 @@ describe('where the subtitle style came from', () => {
   });
   it('styleOrigin: a preset is custom, else guessed from the style and the reference', () => {
     expect(styleOrigin({ style: null }, true)).toBe('default'); expect(styleOrigin({ style: DEFAULT_STYLE }, true)).toBe('reference'); expect(styleOrigin({ style: DEFAULT_STYLE }, false)).toBe('look');
-    expect(styleOrigin({ style: null, preset: 'neon' }, true)).toBe('custom'); expect(styleOrigin(undefined, false)).toBe('default');
+    expect(styleOrigin({ style: null, preset: 'neon' }, true)).toBe('preset'); expect(styleOrigin(undefined, false)).toBe('default');
     expect(ORIGIN_COPY.custom).toBe('Captions use your own style.');
   });
 });
@@ -304,5 +304,22 @@ describe('textCommit (a field committed before a drag)', () => {
   it('returns null when nothing changes or the line is gone', () => {
     expect(textCommit(lines, 'x', '  hello there ')).toBeNull();
     expect(textCommit(lines, 'zz', 'a')).toBeNull();
+  });
+});
+
+describe('style origin after a preset, and the caption language', () => {
+  it('a preset wins over a stale look origin and the sentence names it', () => {
+    const c = { style: {}, preset: 'viral-impact', styleFrom: 'look' };
+    expect(styleOrigin(c, false)).toBe('preset');
+    expect(originCopy(c, false)).toBe('Captions use the Impact style.');
+    expect(originCopy({ style: {}, styleFrom: 'look' }, false)).toBe(ORIGIN_COPY.look);
+    expect(styleOrigin({ style: {}, preset: 'bl:x' }, false)).toBe('look');
+    expect(styleOrigin({ style: {}, preset: 'bs:x' }, false)).toBe('brand');
+  });
+  it('applyPatch stores the language read from the lines when none is set, and clears the preset on a new style', () => {
+    const ar = [{ id: 'a', start: 0, end: 1, words: [{ t: 'مرحبا', s: 0, e: 1 }] }];
+    const c = { lines: [], style: null, preset: 'x', lang: null }; applyPatch(c, { look: {} }, { lines: ar, style: { size: 0.05 } });
+    expect(c.lang).toBe('ar'); expect(c.preset).toBe(null);
+    const c2 = { lines: [], lang: 'en' }; applyPatch(c2, { look: {} }, { lines: ar }); expect(c2.lang).toBe('en');
   });
 });
