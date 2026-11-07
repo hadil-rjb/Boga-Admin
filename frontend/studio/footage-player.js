@@ -187,6 +187,8 @@ export function createPlayer(host, opts) {
     setLook: (look) => { st.look = { ...st.look, ...(look || {}) }; uploadLut(); render(false); },
     setCaptions: (c) => { st.captions = { style: null, lines: [], ...(c || {}) }; render(false); },
     setSplit: (x) => { st.split = x == null ? null : Math.max(0, Math.min(1, +x)); render(false); },
+    /** The original sound's volume, 0..1 (the export applies the same; "Mute preview" stays separate: video.muted) */
+    setVolume: (v) => { const n = +v; video.volume = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1; },
     /** A new signed URL for the same video (expired link): keeps the time and the play state */
     setSrc: (url) => {
       const t = st.ms, wasPlaying = P.playing();

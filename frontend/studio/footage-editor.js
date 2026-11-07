@@ -2,7 +2,8 @@
    Footage editor: a design with `d.footage` takes over the editor (as v37 does for `d.motion`).
    It is the Video Studio's `video` source (video-studio.js draws the rail, the transport, the timeline and routes the inspector).
    Stage: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split (the transport's extra).
-   Tracks: Video, Captions and Voice. Panels: the shared Captions panel (caption-panels.js), helped through `captions`
+   Tracks: Video, Captions, Voice and Music. Panels: Media, Look, Audio (the original's volume, a music bed picked with the
+   reel's music picker, ducking; previewed with an <audio> element synced to the player) and the shared Captions panel (caption-panels.js), helped through `captions`
    (the panel's body while there are no lines, Re-transcribe, the caption inspector's live preview). Inspector: Look (the grade and
    brand looks; the caption style has its own tabs, caption-inspector.js). Dragging the caption on the frame moves it (style y).
    While the server transcribes and grades, the panels show skeletons; a failed step shows its error and Retry.
@@ -170,6 +171,54 @@ export function applyLookTo(caps, ft, look, lines) {
   return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
 }
 
+/* ---- Audio: the original's volume, a music bed, ducking (preview here, export in export.service.ts / ffmpeg.ts) ---- */
+const unit = (v, d) => { const n = v == null || v === '' ? d : +v; return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : d; };
+/** The id of a hosted audio file (/api/media/<24hex>.<ext>), or null */
+export const mediaIdOf = (src) => (/\/media\/([0-9a-f]{24})\./.exec(String(src || '')) || [])[1] || null;
+/** `d.footage.audio` with its defaults: { vol 0..1 (1), music: { src, mediaId, name, vol 0..1 (0.6), duck (true), dur ms } | null } */
+export function ftAudioOf(ft) {
+  const a = (ft && ft.audio) || {}, m = a.music;
+  const music = m && m.src ? { src: String(m.src), mediaId: m.mediaId || mediaIdOf(m.src), name: String(m.name || 'Music'), vol: unit(m.vol, 0.6), duck: m.duck !== false, dur: +m.dur || 0 } : null;
+  return { vol: unit(a.vol, 1), music };
+}
+/** The music the design stores for a file the picker returned ({ src, name, dur }); the volume and ducking of `prev` stay. null for a file the server does not host */
+export function musicRecord(f, prev) {
+  const id = mediaIdOf(f && f.src); if (!id) return null;
+  return { src: f.src, mediaId: id, name: String(f.name || 'Music').slice(0, 60), vol: unit(prev && prev.vol, 0.6), duck: !(prev && prev.duck === false), dur: Math.max(0, Math.round(+f.dur || 0)) };
+}
+/** The spans (ms) where someone speaks: the caption words, joined across gaps under 300 ms (a line without words counts whole) */
+export function speechSpans(lines) {
+  const raw = [];
+  for (const l of lines || []) {
+    const ws = (l && l.words) || [];
+    if (ws.length) ws.forEach((w) => { if (w.e > w.s) raw.push([w.s, w.e]); }); else if (l && l.end > l.start) raw.push([l.start, l.end]);
+  }
+  raw.sort((x, y) => x[0] - y[0]);
+  const out = [];
+  for (const [s, e] of raw) { const p = out[out.length - 1]; if (p && s - p[1] < 300) p[1] = Math.max(p[1], e); else out.push([s, e]); }
+  return out;
+}
+/** How far the music dips under speech in the preview: about what the export's compressor (threshold 0.05, ratio 8) does on a voice */
+export const DUCK_FLOOR = 0.28;
+const DUCK_RAMP = 300;
+/** The music's gain factor at t: DUCK_FLOOR under speech, a 300 ms ramp on each side, 1 elsewhere */
+export function duckAt(t, spans) {
+  let dist = Infinity;
+  for (const [s, e] of spans || []) { const d = t < s ? s - t : t > e ? t - e : 0; if (d < dist) dist = d; if (!d) break; }
+  return dist >= DUCK_RAMP ? 1 : DUCK_FLOOR + (1 - DUCK_FLOOR) * (dist / DUCK_RAMP);
+}
+/** The music's volume at t. It ducks only when the original can be heard (with no sound, or at 0, the export plays the music alone) */
+export function musicGainAt(t, audio, spans, hasSound) {
+  const m = audio && audio.music; if (!m) return 0;
+  const v = unit(m.vol, 0.6);
+  return m.duck !== false && hasSound && audio.vol > 0 ? v * duckAt(t, spans) : v;
+}
+/** Where the music is at t (seconds): it loops from the start of the video, as aloop does in the export */
+export const musicTimeAt = (ms, durSec) => (durSec > 0 ? (ms / 1000) % durSec : ms / 1000);
+
+/** A 0..100 slider's value as 0..1 */
+const unitOf = (n) => unit(Math.round(+n || 0) / 100, 0);
+
 /* ---- Export ---- */
 const even = (v) => Math.max(2, Math.round(v / 2) * 2);
 /**
@@ -188,7 +237,8 @@ export function exportSizes(out) {
 /** POST /footage/export body: the server reads nothing from the design store, so everything the MP4 needs travels here */
 export function exportPayload(d, size) {
   const ft = d.footage, caps = capsOf(d), on = captionsOn(d), out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
-  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: on ? styleOf(d) : null, lines: on ? caps.lines || [] : [] }, out: ft.out }, w: size.w, h: size.h, fps };
+  const A = ftAudioOf(ft), audio = { vol: A.vol, music: A.music && A.music.mediaId ? { mediaId: A.music.mediaId, vol: A.music.vol, duck: A.music.duck } : null };
+  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: on ? styleOf(d) : null, lines: on ? caps.lines || [] : [] }, out: ft.out, audio }, w: size.w, h: size.h, fps };
 }
 /** The download's file name: the design name, the size, .mp4 */
 export const exportName = (d, size) => `${fileBase(d)}-${size.w}x${size.h}.mp4`;
@@ -219,7 +269,7 @@ export function installFootageEditor(ctx, FT) {
     if (prepareOpen(d)) save();
     const old = $('#ftStage'); if (old) old.remove(); // a new video in the same design: the stage is made again (its size observer too)
     if (!d.footage.src && !FT.upload(d)) ED.tab = 'media'; // an empty video opens on Media (the stage shows the drop zone)
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false, musicMuted: false, mel: null, aLive: null, aBusy: false, spans: null, spansOf: null };
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
     poll();
@@ -229,6 +279,7 @@ export function installFootageEditor(ctx, FT) {
     clearTimeout(F.timer); F.gen++;
     VS.reset(); // the timeline goes before the player: a drag in progress is cancelled first
     if (F.player) F.player.destroy();
+    stopMusic(F);
     F.ro && F.ro.disconnect(); F.ac.abort();
     F = null;
   }
@@ -284,7 +335,39 @@ export function installFootageEditor(ctx, FT) {
     const ft = ED.d.footage;
     ensureCube(F, ft.look.lut);
     F.player.setLook(ft.look); F.player.setCaptions(capsOf(ED.d)); F.player.setSplit(F.split);
+    soundSync();
   }
+
+  /* ---- the sound in the preview: the original's volume on the video, the music bed in an <audio> element that follows the player ---- */
+  /** The design's audio, with a slider being dragged (F.aLive) previewed on top */
+  const audioNow = () => { const a = ftAudioOf(ED.d.footage), L = F && F.aLive; if (!L) return a; return { vol: L.vol ?? a.vol, music: a.music && { ...a.music, vol: L.mvol ?? a.music.vol } }; };
+  /** The original has a sound track (unknown until probed: assume it does) */
+  const hasSound = () => !(F && F.rec && F.rec.meta && F.rec.meta.audio === false);
+  function soundSync() {
+    if (!F || !F.player) return;
+    F.player.setVolume(audioNow().vol);
+    musicTick(F.player.time(), F.player.playing());
+  }
+  /** Every frame (and on pause / seek): the music plays, pauses and seeks with the video; its volume dips while the captions' words are spoken */
+  function musicTick(ms, playing) {
+    const S = F; if (!S || !ED.d || !isFt(ED.d)) return;
+    const a = audioNow(), m = a.music;
+    if (!m) { if (S.mel) S.mel.pause(); return; }
+    let el = S.mel;
+    if (!el || el.dataset.src !== m.src) {
+      stopMusic(S);
+      el = S.mel = new Audio(); el.crossOrigin = 'anonymous'; el.preload = 'auto'; el.loop = true; el.dataset.src = m.src; el.src = m.src;
+    }
+    const lines = capsOf(ED.d).lines || [];
+    if (S.spansOf !== lines) { S.spansOf = lines; S.spans = speechSpans(lines); }
+    el.volume = S.musicMuted ? 0 : Math.max(0, Math.min(1, musicGainAt(ms, a, S.spans, hasSound())));
+    const dur = isFinite(el.duration) ? el.duration : 0, want = musicTimeAt(ms, dur);
+    const off = Math.abs(el.currentTime - want), drift = dur ? Math.min(off, dur - off) : off;
+    const seek = () => { try { el.currentTime = want; } catch (e) { /* not seekable yet */ } };
+    if (playing) { if (el.paused) { seek(); el.play().catch(() => {}); } else if (drift > 0.3) seek(); }
+    else { if (!el.paused) el.pause(); if (drift > 0.05) seek(); }
+  }
+  function stopMusic(S) { if (S && S.mel) { S.mel.pause(); S.mel.removeAttribute('src'); try { S.mel.load(); } catch (e) { /* ignore */ } S.mel = null; } }
   /** A brand look's cube ('looks/<id>.cube') is fetched once; the player picks it up when it arrives (a failure is remembered, not retried) */
   function ensureCube(S, lut) {
     const m = /^looks\/([\w-]{1,64})\.cube$/.exec(lut || '');
@@ -300,11 +383,12 @@ export function installFootageEditor(ctx, FT) {
     S.player = createPlayer(box, {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: capsOf(S.d),
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
-      onTime: (ms, playing) => VS.tick(ms, playing),
+      onTime: (ms, playing) => { VS.tick(ms, playing); musicTick(ms, playing); },
       onReady: (dur) => { S.dur = dur; VS.tick(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
       onError: (err) => refreshProxy(S, err),
     });
     S.player.setSplit(S.split);
+    S.player.setVolume(ftAudioOf(ft).vol);
     if (S.muted) S.player.video.muted = true;
   }
   async function refreshProxy(S, err) {
@@ -384,7 +468,14 @@ export function installFootageEditor(ctx, FT) {
       { id: 'video', icon: ic('vsFilm', 14), label: 'Video', html: () => clip },
       { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
+      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: !!F.musicMuted, html: musicClipHTML },
     ];
+  }
+  /** The Music track: the bed over the whole video (it loops), or "+ Add music"; both open the Audio panel */
+  function musicClipHTML() {
+    const m = ftAudioOf(ED.d.footage).music;
+    return m ? `<button class="au-clip au-m" data-act="ftAudioOpen" style="left:0;width:100%" title="${esc(m.name)} · volume ${Math.round(m.vol * 100)}%${m.duck ? ' · lowered under speech' : ''}">${ic('music38', 11)}<span dir="auto">${esc(m.name)}</span></button>`
+      : `<button class="au-add" data-act="ftAudioOpen" style="left:0">${ic('plus', 11)}Add music</button>`;
   }
   /** The timeline's callbacks (video-studio.js owns the timeline): retime a caption, show its row, hide captions or mute the preview */
   function onRetime(id, start, end, live) {
@@ -398,6 +489,7 @@ export function installFootageEditor(ctx, FT) {
     const S = F; if (!S || !alive(S)) return;
     if (id === 'captions') VS.captions.toggle(); // one mutate(): preview and export
     else if (id === 'voice') { S.muted = !S.muted; if (S.player) S.player.video.muted = S.muted; lane(); } // preview only, the export keeps the sound
+    else if (id === 'music') { S.musicMuted = !S.musicMuted; soundSync(); lane(); } // preview only too
   }
   /** Redraws the timeline (after an edit, undo or redo) */
   const lane = () => VS.refresh();
@@ -607,6 +699,43 @@ export function installFootageEditor(ctx, FT) {
       <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
   }
 
+  /* ---------- Audio panel: the original's volume, the music bed (the reel's picker: compose or upload), ducking ---------- */
+  function audioPanelHTML() {
+    const a = ftAudioOf(ED.d.footage), m = a.music, dis = can() ? '' : 'disabled', busy = F.aBusy;
+    const orig = !F.id ? '<p class="sm-t muted">Add your video first.</p>'
+      : !hasSound() ? '<p class="sm-t muted">This video has no sound.</p>'
+      : rgHTML('data-ft-a', 'vol', 'Volume', 0, 100, 1, Math.round(a.vol * 100), dis);
+    const add = `<button class="btn secondary sm" data-act="ftMusicPick" ${dis || (busy ? 'disabled' : '')}>${busy ? '<i class="au-spin"></i>Adding music…' : `${ic('plus', 15)}Add music`}</button>`;
+    const music = !m ? `<p class="xs-t muted">A music bed plays under your video and loops to its end.</p>${dis ? '' : add}`
+      : `<div class="au2-tracks"><div class="au2-tr"><span class="au2-ic m">${ic('music38', 15)}</span>
+          <div class="au2-meta"><b dir="auto" title="${esc(m.name)}">${esc(m.name)}</b><small>${m.dur ? esc(fmtMs(m.dur)) + ' · ' : ''}loops under the video</small></div>
+          ${dis ? '' : `<button type="button" class="btn ghost icon sm au2-ib" data-act="ftMusicPick" aria-label="Change the music" title="Change the music" ${busy ? 'disabled' : ''}>${busy ? '<i class="au-spin"></i>' : ic('refresh', 15)}</button>
+          <button type="button" class="btn ghost icon sm au2-ib" data-act="ftMusicDel" aria-label="Remove the music" title="Remove the music">${ic('trash', 15)}</button>`}</div></div>
+        ${rgHTML('data-ft-a', 'mvol', 'Volume', 0, 100, 1, Math.round(m.vol * 100), dis)}
+        <div class="au2-opt">${ic('music38', 15)}<span>Lower the music under speech</span><button type="button" class="switch ${m.duck ? 'on' : ''}" data-act="ftDuck" aria-label="Lower the music under speech" aria-pressed="${m.duck}" ${dis}></button></div>
+        ${m.duck && (!hasSound() || a.vol === 0) ? '<p class="xs-t muted">The original sound is off, so the music stays at its volume.</p>' : ''}`;
+    return `<div class="body ft-look-p ft-audio-p"><h3>Audio</h3>
+      <section class="ft-sec"><span class="label">Original sound</span>${orig}</section>
+      <section class="ft-sec"><span class="label">Music</span>${music}</section></div>`;
+  }
+  /** One undoable change of d.footage.audio */
+  function setAudio(fn) {
+    if (!F || !can()) return;
+    F.aLive = null;
+    mutate(() => { const ft = ED.d.footage, a = ftAudioOf(ft); ft.audio = fn({ vol: a.vol, music: a.music }); }, () => { soundSync(); lane(); if (ED.tab === 'audio') ed.panel(); });
+    save();
+  }
+  function pickMusic(btn) {
+    if (!F || !can() || F.aBusy || !ctx.pickMusic) return; const S = F;
+    const seconds = (S.dur || (S.rec && S.rec.meta && S.rec.meta.dur * 1000) || 30000) / 1000;
+    ctx.pickMusic(btn, { seconds, onBusy: (on) => { S.aBusy = on; if (alive(S) && ED.tab === 'audio') ed.panel(); } }, (f) => {
+      if (!alive(S)) return;
+      const rec = musicRecord(f, ftAudioOf(ED.d.footage).music);
+      if (!rec) { toast('This music file could not be used. Try another one.'); return; }
+      setAudio((a) => ({ ...a, music: rec }));
+    });
+  }
+
   /** The player as the shell drives it (transport, keys, timeline): a no-op until the video can play */
   const player = {
     ready: () => !!(F && F.player),
@@ -630,7 +759,7 @@ export function installFootageEditor(ctx, FT) {
     },
     player,
     tracks: tlTracks,
-    panel: (k) => (!F || F.d !== ED.d ? null : k === 'media' ? mediaHTML() : k === 'look' ? lookPanelHTML() : null),
+    panel: (k) => (!F || F.d !== ED.d ? null : k === 'media' ? mediaHTML() : k === 'look' ? lookPanelHTML() : k === 'audio' ? audioPanelHTML() : null),
     captions: {
       body: noLinesHTML, foot: retxHTML, light: () => sync(),
       /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
@@ -665,6 +794,10 @@ export function installFootageEditor(ctx, FT) {
     ftScript: () => { if (F && !F.id) return; ACT.edTab({ dataset: { k: 'script' } }); const t = $('#edPanel [data-sc-text]'); if (t) t.focus(); },
     ftSrt: () => { ACT.edTab({ dataset: { k: 'script' } }); const f = $('#edPanel [data-sc-file]'); if (f) f.click(); },
     ftDelLook: (a) => deleteLook(a.dataset.id),
+    ftAudioOpen: () => ACT.edTab({ dataset: { k: 'audio' } }),
+    ftMusicPick: (b) => pickMusic(b),
+    ftMusicDel: () => setAudio((a) => ({ ...a, music: null })),
+    ftDuck: () => setAudio((a) => (a.music ? { ...a, music: { ...a.music, duck: !a.music.duck } } : a)),
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
       try {
@@ -727,6 +860,17 @@ export function installFootageEditor(ctx, FT) {
   }, true);
   document.addEventListener('keydown', (e) => { const z = zoneOf(e); if (z && e.target === z && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); const i = z.querySelector('input'); if (i) i.click(); } });
   document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradePreview(t); });
+  /* ---- Audio panel volumes: heard live on `input`, one mutate() on `change` ---- */
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-a]') || !F || !can()) return;
+    setOut(t); F.aLive = { ...(F.aLive || {}), [t.dataset.ftA]: unitOf(t.value) }; soundSync();
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-a]') || !F || !can()) return;
+    const k = t.dataset.ftA, v = unitOf(t.value), a = ftAudioOf(ED.d.footage);
+    if (k === 'vol' ? a.vol === v : !a.music || a.music.vol === v) { F.aLive = null; soundSync(); return; }
+    setAudio((x) => (k === 'vol' ? { ...x, vol: v } : { ...x, music: { ...x.music, vol: v } }));
+  });
   document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradeCommit(t); });
 
   /* dragging the caption on the video sets its height (y): preview through the player, one mutate() on release */

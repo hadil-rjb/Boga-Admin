@@ -87,7 +87,35 @@ export function parseProgress(line: string, durMs: number): number | null {
   return Math.min(1, Math.max(0, Number(m[1]) / 1000 / durMs));
 }
 
-export type ExportArgs = { src: string; probe: Probe; cube: string; concat: string; out: string; w: number; h: number; fps: number; limitSec?: number };
+/** A music bed for the export: a local audio file, its volume (0..1) and whether it dips under the original's speech */
+export type ExportMusic = { path: string; vol: number; duck: boolean };
+export type ExportArgs = { src: string; probe: Probe; cube: string; concat: string; out: string; w: number; h: number; fps: number; limitSec?: number; vol?: number; music?: ExportMusic | null };
+
+const gain = (v: number) => String(+Math.max(0, Math.min(1, v)).toFixed(3));
+/**
+ * The audio half of the export: extra inputs, the filtergraph chains (appended to -filter_complex), the -map and codec args.
+ * - original only at volume 1: a plain copy of the first audio stream (as before);
+ * - original at another volume: [0:a:0]volume=V[aout];
+ * - original + music: the music (input 2) looped with aloop and set to its volume; with duck, a sidechain compressor keyed by
+ *   the original (before its volume, so a quiet original still ducks the music) dips it under speech; amix sums the two
+ *   (normalize=0: no halving, the preview adds the two the same way), duration=first: the original sets the length;
+ * - music alone (no original audio, or the original at 0): the looped music trimmed to the video;
+ * - nothing to hear: -an.
+ */
+export function exportAudio(probe: Probe, vol = 1, music: ExportMusic | null = null, limitSec?: number): { inputs: string[]; graph: string; map: string[]; codec: string[] } {
+  const orig = probe.audio && vol > 0, aac = ['-c:a', 'aac', '-b:a', '192k'];
+  if (!orig && !music) return { inputs: [], graph: '', map: [], codec: ['-an'] };
+  if (!music) {
+    if (vol >= 1) return { inputs: [], graph: '', map: ['-map', '0:a:0?'], codec: aac };
+    return { inputs: [], graph: `;[0:a:0]volume=${gain(vol)}[aout]`, map: ['-map', '[aout]'], codec: aac };
+  }
+  const m = `[2:a:0]aloop=-1:2e9,volume=${gain(music.vol)}`;
+  let graph: string;
+  if (!orig) graph = `;${m},atrim=0:${+(limitSec ?? probe.dur).toFixed(3)}[aout]`;
+  else if (music.duck) graph = `;[0:a:0]asplit=2[a0s][sc];[a0s]volume=${gain(vol)}[a0];${m}[m];[m][sc]sidechaincompress=threshold=0.05:ratio=8[md];[a0][md]amix=inputs=2:duration=first:normalize=0[aout]`;
+  else graph = `;[0:a:0]volume=${gain(vol)}[a0];${m}[m];[a0][m]amix=inputs=2:duration=first:normalize=0[aout]`;
+  return { inputs: ['-i', music.path], graph, map: ['-map', '[aout]'], codec: aac };
+}
 
 /**
  * The export encode: the source (rotated and HDR-handled like the proxy), cover-cropped to w × h like the preview
@@ -101,22 +129,24 @@ export type ExportArgs = { src: string; probe: Probe; cube: string; concat: stri
  * fps (phones record 30.004). `-r fps` then sets the output rate. shortest=1: the source video sets the length, never the
  * overlay (which runs a little past the end).
  */
-export function buildExportArgs({ src, probe, cube, concat, out, w, h, fps, limitSec }: ExportArgs): string[] {
+export function buildExportArgs({ src, probe, cube, concat, out, w, h, fps, limitSec, vol = 1, music = null }: ExportArgs): string[] {
   const v: string[] = [];
   if (ROTATE[probe.rotation]) v.push(ROTATE[probe.rotation]);
   v.push(`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'format=rgb48le', `lut3d=file=${cube}:interp=tetrahedral`, `scale=${RGB_TO_709}`, 'format=yuv420p');
   const o = ['format=rgba', `scale=${RGB_TO_709}`, 'format=yuva420p'];
-  const fc = `[0:v]${v.join(',')}[v];[1:v]${o.join(',')}[o];[v][o]overlay=0:0:format=auto:eof_action=repeat:shortest=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]`;
+  const A = exportAudio(probe, vol, music, limitSec);
+  const fc = `[0:v]${v.join(',')}[v];[1:v]${o.join(',')}[o];[v][o]overlay=0:0:format=auto:eof_action=repeat:shortest=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]${A.graph}`;
   return [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-noautorotate', '-display_rotation', '0', '-i', src, // as the proxy: we rotate ourselves, no display matrix survives
     '-f', 'concat', '-safe', '0', '-i', concat,
+    ...A.inputs,
     '-filter_complex', fc,
-    '-map', '[out]', ...(probe.audio ? ['-map', '0:a:0?'] : []), '-sn', '-dn',
+    '-map', '[out]', ...A.map, '-sn', '-dn',
     ...(limitSec ? ['-t', String(limitSec)] : []),
     '-r', String(fps), '-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-pix_fmt', 'yuv420p',
     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
-    ...(probe.audio ? ['-c:a', 'aac', '-b:a', '192k'] : ['-an']),
+    ...A.codec,
     '-movflags', '+faststart', '-f', 'mp4',
     '-progress', 'pipe:1', '-nostats', out,
   ];

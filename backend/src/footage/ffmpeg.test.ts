@@ -94,5 +94,38 @@ describe('buildExportArgs', () => {
     expect(f).toMatch(/overlay=0:0:format=auto:eof_action=repeat:shortest=1,/); // the source sets the length, not the overlay
     expect(a.join(' ')).toMatch(/-colorspace bt709 -color_primaries bt709 -color_trc bt709/); expect(a.join(' ')).toMatch(/-r 30 -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p/);
   });
+  describe('audio (original volume, music bed, ducking)', () => {
+    const pr = (audio: boolean) => ({ dur: 12.5, w: 1080, h: 1920, rotation: 0 as const, fps: 30, hdr: null, audio });
+    const music = (duck: boolean) => ({ path: '/w/music.mp3', vol: 0.6, duck });
+    it('original + music with ducking: the music is a third input, looped, ducked by the original, mixed', () => {
+      const a = buildExportArgs({ ...base, probe: pr(true), vol: 0.8, music: music(true) }), f = fc(a);
+      expect(a.join(' ')).toMatch(/-f concat -safe 0 -i c\.txt -i \/w\/music\.mp3 /);
+      expect(f).toContain('volume=0.8[a0]');
+      expect(f).toContain('[2:a:0]aloop=-1:2e9,volume=0.6[m]');
+      expect(f).toContain('sidechaincompress=threshold=0.05:ratio=8[md]');
+      expect(f).toContain('amix=inputs=2:duration=first');
+      expect(a.join(' ')).toMatch(/-map \[out\] -map \[aout\] /); expect(a).not.toContain('0:a:0?');
+      expect(a.join(' ')).toMatch(/-c:a aac -b:a 192k/); expect(a).not.toContain('-an');
+    });
+    it('no ducking: mixed without sidechaincompress', () => {
+      const f = fc(buildExportArgs({ ...base, probe: pr(true), vol: 1, music: music(false) }));
+      expect(f).toContain('amix=inputs=2:duration=first'); expect(f).not.toContain('sidechaincompress');
+    });
+    it('original at 0 and no music → -an; the default (1, no music) keeps the plain copy of the first audio stream', () => {
+      const a = buildExportArgs({ ...base, probe: pr(true), vol: 0 });
+      expect(a).toContain('-an'); expect(a).not.toContain('-c:a'); expect(fc(a)).not.toMatch(/\[0:a/);
+      const b = buildExportArgs({ ...base, probe: pr(true), vol: 1 });
+      expect(b.join(' ')).toMatch(/-map 0:a:0\? /); expect(fc(b)).not.toMatch(/volume/);
+      expect(fc(buildExportArgs({ ...base, probe: pr(true), vol: 0.5 }))).toContain('[0:a:0]volume=0.5[aout]');
+    });
+    it('no original audio (or muted): the music alone, trimmed to the video, never ducked', () => {
+      for (const a of [buildExportArgs({ ...base, probe: pr(false), music: music(true) }), buildExportArgs({ ...base, probe: pr(true), vol: 0, music: music(true) })]) {
+        const f = fc(a);
+        expect(f).toContain('[2:a:0]aloop=-1:2e9,volume=0.6,atrim=0:12.5[aout]');
+        expect(f).not.toContain('amix'); expect(f).not.toContain('sidechaincompress'); expect(a).not.toContain('-an');
+      }
+      expect(fc(buildExportArgs({ ...base, probe: pr(false), music: music(false), limitSec: 3 }))).toContain('atrim=0:3[aout]');
+    });
+  });
   it('limitSec adds -t, the output is last', () => { const a = buildExportArgs({ ...base, probe: parseProbe(ref), limitSec: 10 }); expect(a.join(' ')).toMatch(/-t 10 /); expect(a.at(-1)).toBe('o.mp4'); });
 });

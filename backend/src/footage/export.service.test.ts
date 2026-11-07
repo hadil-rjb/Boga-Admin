@@ -118,6 +118,35 @@ describe('validateExport', () => {
   });
 });
 
+describe('validateExport audio', () => {
+  const MID = 'c'.repeat(24);
+  const withAudio = (audio: any) => validateExport(body({ footage: { ...body().footage, audio } }));
+  it('defaults to the original at full volume and no music', () => {
+    expect(req().audio).toEqual({ vol: 1, music: null });
+    expect(withAudio(null).audio).toEqual({ vol: 1, music: null });
+  });
+  it('copies the volume and the music (mediaId, vol, duck) only', () => {
+    expect(withAudio({ vol: 0.4, music: { mediaId: MID, vol: 0.3, duck: false, src: '/api/media/x.mp3', name: 'x', evil: 1 } }).audio).toEqual({ vol: 0.4, music: { mediaId: MID, vol: 0.3, duck: false } });
+    expect(withAudio({ music: { mediaId: MID } }).audio).toEqual({ vol: 1, music: { mediaId: MID, vol: 0.6, duck: true } });
+  });
+  it('rejects an invalid music id and volumes out of 0..1', () => {
+    for (const mediaId of ['x', '../' + MID, MID.toUpperCase(), MID + 'a', 42]) expect(() => withAudio({ music: { mediaId } }), String(mediaId)).toThrow(new ExportInvalid('Invalid music'));
+    expect(() => withAudio({ music: 'x' })).toThrow(new ExportInvalid('Invalid music'));
+    expect(() => withAudio({ vol: 1.5 })).toThrow(ExportInvalid);
+    expect(() => withAudio({ vol: '1' })).toThrow(ExportInvalid);
+    expect(() => withAudio({ music: { mediaId: MID, vol: -0.1 } })).toThrow(ExportInvalid);
+  });
+  it('the export hash changes when the audio changes, and not for the default', () => {
+    const a = req();
+    expect(exportHash(withAudio({ vol: 1, music: null }), 'c')).toBe(exportHash(a, 'c'));
+    expect(exportHash(withAudio({ vol: 0.5 }), 'c')).not.toBe(exportHash(a, 'c'));
+    const m = withAudio({ music: { mediaId: MID } });
+    expect(exportHash(m, 'c')).not.toBe(exportHash(a, 'c'));
+    expect(exportHash(withAudio({ music: { mediaId: MID, duck: false } }), 'c')).not.toBe(exportHash(m, 'c'));
+    expect(exportHash(withAudio({ music: { mediaId: MID, vol: 0.2 } }), 'c')).not.toBe(exportHash(m, 'c'));
+  });
+});
+
 describe('exportHash', () => {
   it('ignores line ids, follows everything drawn', () => {
     const a = req(), b = validateExport(body({ footage: { ...body().footage, captions: { style: null, lines: lines.map((l) => ({ ...l, id: 'other' })) } } }));
@@ -233,6 +262,21 @@ describe('ExportService', () => {
     await expect(svc.start(req())).rejects.toThrow(/still being prepared/);
     model.docs[SRC].status = 'ready';
     await expect(svc.start(validateExport(body({ footage: { ...body().footage, look: { lut: 'looks/gone.cube' } } })))).rejects.toThrow(/no longer exists/);
+  });
+  it('music: the media bytes go to a file in the job folder for the encode, and are gone after', async () => {
+    const MID = 'c'.repeat(24); let seen = '', bytes = '';
+    svc.music = async (id) => (id === MID ? { data: Buffer.from('ID3music'), mime: 'audio/mpeg' } : null);
+    svc.runner = (async (cmd: string, args: string[]) => { seen = args[args.indexOf('-filter_complex') - 1]; bytes = readFileSync(seen, 'utf8'); safeWrite(args.at(-1), 'mp4'); return { stdout: '', stderr: '' }; }) as any;
+    const { jobId } = await svc.start(validateExport(body({ footage: { ...body().footage, audio: { vol: 0.5, music: { mediaId: MID, vol: 0.3, duck: true } } } }))); await svc.idle();
+    expect((await svc.status(jobId))!.state).toBe('done');
+    expect(seen).toBe(join(store.dir(SRC), 'exports', `${jobId}.work`, 'music.mp3')); expect(bytes).toBe('ID3music');
+    expect(existsSync(seen)).toBe(false);
+  });
+  it('music that no longer exists (or is not audio) fails the export with a clear message', async () => {
+    svc.music = async () => null;
+    const { jobId } = await svc.start(validateExport(body({ footage: { ...body().footage, audio: { music: { mediaId: 'e'.repeat(24) } } } }))); await svc.idle();
+    expect(await svc.status(jobId)).toMatchObject({ state: 'failed', error: 'The music file was not found. Choose the music again.' });
+    expect(ffmpegCalls).toHaveLength(0);
   });
   it('limitMs shortens the overlay and adds -t; no lut means an identity grade with tweaks only', async () => {
     await svc.start(validateExport(body({ limitMs: 2000, footage: { ...body().footage, look: { lut: null } } }), { allowLimit: true })); await svc.idle();

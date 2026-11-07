@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, Optional } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { ChildProcess } from "child_process";
 import { createHash, randomBytes } from "crypto";
@@ -6,8 +6,9 @@ import { existsSync, promises as fs } from "fs";
 import { join } from "path";
 import { Model } from "mongoose";
 import type { Browser, Page } from "puppeteer-core";
+import type { MediaDocument } from "../media/media.schema";
 import { launchChromium } from "../social/publishing/headless";
-import { buildExportArgs, parseProgress, Probe } from "./ffmpeg";
+import { buildExportArgs, ExportMusic, parseProgress, Probe } from "./ffmpeg";
 import { Footage, FootageDocument } from "./footage.schema";
 import { signFile } from "./footage.sign";
 import { FootageStore } from "./footage.store";
@@ -43,11 +44,17 @@ export const INTERRUPTED = "This export was interrupted. Export again.";
 export type Word = { t: string; s: number; e: number };
 export type Line = { id?: string; start: number; end: number; words: Word[] };
 export type ExportLook = { lut: string | null; strength: number; exposure: number; temp: number; sat: number };
+/** The sound: the original's volume (0 mutes it) and an optional music bed (a hosted audio file, /api/media/<id>) */
+export type ExportAudio = { vol: number; music: { mediaId: string; vol: number; duck: boolean } | null };
+/** Loads a hosted audio file's bytes (null when it does not exist or is not audio) */
+export type MusicSource = (mediaId: string) => Promise<{ data: Buffer; mime: string } | null>;
+export const MUSIC_GONE = "The music file was not found. Choose the music again.";
 export type ExportRequest = {
   designId: string;
   src: string;
   look: ExportLook;
   captions: { style: Record<string, any> | null; lines: Line[] };
+  audio: ExportAudio;
   w: number; h: number; fps: 24 | 25 | 30 | 60;
   /** test only (never accepted in production): export the first limitMs of the clip */
   limitMs?: number;
@@ -75,7 +82,8 @@ const evenSize = (v: unknown, what: string) => {
 /**
  * The export request, shape-checked and copied (nothing unknown passes through): src a 24-hex id, look.lut null or
  * footage/<24hex>/look.cube or looks/<id>.cube, strength 0..1, tweaks −1..1, at most 5000 lines of at most 60 words of at
- * most 200 characters, numeric ms, a style object of at most 8 KB, w/h even 240..3840, fps 24|25|30|60.
+ * most 200 characters, numeric ms, a style object of at most 8 KB, w/h even 240..3840, fps 24|25|30|60, audio.vol 0..1
+ * (default 1), audio.music null or { mediaId 24-hex, vol 0..1 (0.6), duck boolean (true) }.
  */
 export function validateExport(body: any, { allowLimit = false } = {}): ExportRequest {
   if (!isObj(body)) throw new ExportInvalid("Expected a JSON body");
@@ -113,9 +121,10 @@ export function validateExport(body: any, { allowLimit = false } = {}): ExportRe
     if (!isObj(C.style) || JSON.stringify(C.style).length > 8192) throw new ExportInvalid("Invalid subtitle style");
     style = JSON.parse(JSON.stringify(C.style));
   }
+  const audio = validateAudio(ft.audio);
   const w = evenSize(body.w, "Width"), h = evenSize(body.h, "Height");
   if (![24, 25, 30, 60].includes(body.fps)) throw new ExportInvalid("Frame rate must be 24, 25, 30 or 60");
-  const out: ExportRequest = { designId, src, look, captions: { style, lines }, w, h, fps: body.fps };
+  const out: ExportRequest = { designId, src, look, captions: { style, lines }, audio, w, h, fps: body.fps };
   if (body.limitMs != null) {
     if (!allowLimit) throw new ExportInvalid("limitMs is not accepted");
     out.limitMs = Math.max(1000, ms(body.limitMs, "limitMs"));
@@ -123,17 +132,31 @@ export function validateExport(body: any, { allowLimit = false } = {}): ExportRe
   return out;
 }
 
+function validateAudio(a: unknown): ExportAudio {
+  if (a == null) return { vol: 1, music: null };
+  if (!isObj(a)) throw new ExportInvalid("Invalid audio");
+  const vol = a.vol == null ? 1 : num(a.vol, 0, 1, "The original sound volume");
+  if (a.music == null) return { vol, music: null };
+  const m = a.music;
+  if (!isObj(m) || typeof m.mediaId !== "string" || !/^[0-9a-f]{24}$/.test(m.mediaId)) throw new ExportInvalid("Invalid music");
+  if (m.duck != null && typeof m.duck !== "boolean") throw new ExportInvalid("Invalid music");
+  return { vol, music: { mediaId: m.mediaId, vol: m.vol == null ? 0.6 : num(m.vol, 0, 1, "The music volume"), duck: m.duck !== false } };
+}
+const defaultAudio = (a: ExportAudio | undefined) => !a || (a.vol === 1 && !a.music);
+
 /** Bump whenever the encode changes its output for the same request (filters, timing, codec settings): old exports are not reused */
 export const EXPORT_PIPELINE_VERSION = 2;
 
 /**
  * SHA-1 of what the MP4 depends on: src, look, captions, out size, the grade cube's digest (a re-matched grade is not
- * served stale) and the pipeline version. Line ids are left out: they do not change a pixel.
+ * served stale), the audio (only when it is not the default, so earlier exports keep their hash) and the pipeline version.
+ * Line ids are left out: they do not change a pixel.
  */
 export function exportHash(r: ExportRequest, cubeDigest: string | null, version: number = EXPORT_PIPELINE_VERSION): string {
   const out = { w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitMs: r.limitMs } : {}) };
   const captions = { style: r.captions.style, lines: r.captions.lines.map(({ start, end, words }) => ({ start, end, words })) };
-  return createHash("sha1").update(JSON.stringify({ v: version, src: r.src, look: r.look, captions, out, cube: cubeDigest })).digest("hex");
+  const audio = defaultAudio(r.audio) ? {} : { audio: r.audio };
+  return createHash("sha1").update(JSON.stringify({ v: version, src: r.src, look: r.look, captions, out, cube: cubeDigest, ...audio })).digest("hex");
 }
 
 /**
@@ -223,6 +246,7 @@ export class ChromiumCaptions implements CaptionRenderer {
   }
 }
 
+const AUDIO_EXT: Record<string, string> = { "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/ogg": "ogg", "audio/flac": "flac", "audio/x-flac": "flac", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/webm": "webm" };
 type Job = { id: string; footageId: string; hash: string; state: JobState; progress: number; error?: string };
 const PNG_PREFIX = "data:image/png;base64,";
 const pngOf = (dataUrl: string) => {
@@ -240,10 +264,24 @@ export class ExportService implements OnModuleDestroy {
   /** Replaceable in tests */
   runner: Runner = (cmd, args, o) => runProcess(cmd, args, o, this.children);
   renderer: CaptionRenderer = new ChromiumCaptions();
+  /** The music bed's bytes (replaceable in tests): the hosted audio file, never anything else */
+  music: MusicSource = async (id) => {
+    if (!this.media) return null;
+    const doc: any = await this.media.findById(id).select("+data").lean();
+    if (!doc || !/^audio\//.test(String(doc.mime)) || !doc.data) return null;
+    const data = Buffer.isBuffer(doc.data) ? doc.data : Buffer.from(doc.data.buffer ?? doc.data);
+    return { data, mime: String(doc.mime) };
+  };
   /** Test hook: every job's background run */
   readonly runs = new Map<string, Promise<void>>();
 
-  constructor(@InjectModel(Footage.name) private model: Model<FootageDocument>, private store: FootageStore, private pipeline: JobsService) {}
+  constructor(
+    @InjectModel(Footage.name) private model: Model<FootageDocument>,
+    private store: FootageStore,
+    private pipeline: JobsService,
+    // "Media" (= Media.name): the schema class is not imported here, its decorators need metadata the test runner does not emit
+    @Optional() @InjectModel("Media") private media?: Model<MediaDocument>,
+  ) {}
 
   async onModuleDestroy() { for (const c of this.children) c.kill("SIGKILL"); await this.renderer.stop?.().catch(() => undefined); }
 
@@ -364,8 +402,18 @@ export class ExportService implements OnModuleDestroy {
       progress(0.3);
       const concat = join(work, "concat.txt");
       await fs.writeFile(concat, concatText(plan.map((s) => ({ file: s.blank ? blank : files.get(s.t)!, dur: s.dur }))));
-      // 3. the encode, under the global ffmpeg lock
-      const args = buildExportArgs({ src: await this.sourcePath(job.footageId), probe: meta, cube, concat, out: tmp, w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitSec: durMs / 1000 } : {}) });
+      // 3. the music bed: its bytes in the work folder for the encode (removed with it)
+      const audio = r.audio ?? { vol: 1, music: null };
+      let music: ExportMusic | null = null;
+      if (audio.music) {
+        const m = await this.music(audio.music.mediaId);
+        if (!m) throw new Error(MUSIC_GONE);
+        const path = join(work, `music.${AUDIO_EXT[m.mime.split(";")[0]] ?? "bin"}`);
+        await fs.writeFile(path, m.data);
+        music = { path, vol: audio.music.vol, duck: audio.music.duck };
+      }
+      // 4. the encode, under the global ffmpeg lock
+      const args = buildExportArgs({ src: await this.sourcePath(job.footageId), probe: meta, cube, concat, out: tmp, w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitSec: durMs / 1000 } : {}), vol: audio.vol, music });
       const onLine = (line: string) => { const p = parseProgress(line, durMs); if (p !== null) progress(0.3 + 0.7 * p); };
       await this.pipeline.withFfmpeg(() => this.runner("ffmpeg", args, { onLine, timeoutMs: STEP_TIMEOUT.media(durMs / 1000) }));
       await fs.rename(tmp, final);

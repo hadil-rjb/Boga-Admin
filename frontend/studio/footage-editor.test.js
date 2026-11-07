@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
-  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
 
@@ -215,7 +215,7 @@ describe('export', () => {
   it('payload carries the footage, the size and the fps', () => {
     const d = { id: 'd1', name: 'x', footage: ft(), captions: cp({ lines: [{ id: 'l', start: 0, end: 1, words: [W('a', 0, 1)] }] }) };
     const p = exportPayload(d, { w: 720, h: 1280 });
-    expect(p).toEqual({ designId: 'd1', footage: { src: 'a'.repeat(24), look: d.footage.look, captions: { style: styleOf(d), lines: d.captions.lines }, out: d.footage.out }, w: 720, h: 1280, fps: 30 });
+    expect(p).toEqual({ designId: 'd1', footage: { src: 'a'.repeat(24), look: d.footage.look, captions: { style: styleOf(d), lines: d.captions.lines }, out: d.footage.out, audio: { vol: 1, music: null } }, w: 720, h: 1280, fps: 30 });
     const off = exportPayload({ ...d, captions: { ...d.captions, on: false } }, { w: 720, h: 1280 });
     expect(off.footage.captions).toEqual({ style: null, lines: [] });
     expect(exportPayload({ ...d, footage: { ...d.footage, out: { w: 1, h: 1, fps: 29 } } }, { w: 720, h: 1280 }).fps).toBe(30);
@@ -298,5 +298,48 @@ describe('Media and Look helpers', () => {
     expect(hasRefPair({ pair: {} })).toBe(false);
     expect(hasRefPair(null)).toBe(false);
     expect(FE_REPLACE_ASK).toBe('Replace this video? Captions will be made again from the new video.');
+  });
+});
+
+describe('audio (original volume, music bed, ducking)', () => {
+  const MID = 'c'.repeat(24), SRC = `https://api.x/api/media/${MID}.mp3`;
+  it('ftAudioOf: defaults, clamps, and the music only with a src', () => {
+    expect(ftAudioOf(ft())).toEqual({ vol: 1, music: null });
+    expect(ftAudioOf(ft({ audio: { vol: 3, music: { src: '' } } }))).toEqual({ vol: 1, music: null });
+    expect(ftAudioOf(ft({ audio: { vol: 0.25, music: { src: SRC, name: 'Chill' } } }))).toEqual({ vol: 0.25, music: { src: SRC, mediaId: MID, name: 'Chill', vol: 0.6, duck: true, dur: 0 } });
+    expect(ftAudioOf(ft({ audio: { vol: -1, music: { src: SRC, vol: 0.2, duck: false, dur: 9000 } } })).music).toMatchObject({ vol: 0.2, duck: false, dur: 9000, name: 'Music' });
+  });
+  it('mediaIdOf reads the hosted file id; musicRecord keeps what the design stores', () => {
+    expect(mediaIdOf(SRC)).toBe(MID); expect(mediaIdOf('/api/media/x.mp3')).toBeNull(); expect(mediaIdOf(null)).toBeNull();
+    expect(musicRecord({ src: SRC, name: 'x'.repeat(90), dur: 4000 }, null)).toEqual({ src: SRC, mediaId: MID, name: 'x'.repeat(60), vol: 0.6, duck: true, dur: 4000 });
+    expect(musicRecord({ src: SRC, name: 'New', dur: 1 }, { vol: 0.3, duck: false })).toMatchObject({ vol: 0.3, duck: false, name: 'New' });
+    expect(musicRecord({ src: 'blob:x' }, null)).toBeNull();
+  });
+  it('the export payload carries the audio: volume, and the music as mediaId, vol, duck', () => {
+    const d = { id: 'd1', name: 'x', footage: ft({ audio: { vol: 0.5, music: { src: SRC, name: 'Chill', vol: 0.3, duck: false } } }), captions: cp() };
+    expect(exportPayload(d, { w: 720, h: 1280 }).footage.audio).toEqual({ vol: 0.5, music: { mediaId: MID, vol: 0.3, duck: false } });
+  });
+  it('speech spans: the words, merged across short gaps; lines without words count whole', () => {
+    const lines = [{ start: 0, end: 2000, words: [W('a', 100, 400), W('b', 500, 900), W('c', 1500, 1900)] }, { start: 3000, end: 3600, words: [] }];
+    expect(speechSpans(lines)).toEqual([[100, 900], [1500, 1900], [3000, 3600]]);
+    expect(speechSpans([])).toEqual([]); expect(speechSpans(null)).toEqual([]);
+  });
+  it('duckAt: full under speech, a 300 ms ramp around it, 1 away from it', () => {
+    const sp = [[1000, 2000]];
+    expect(duckAt(1500, sp)).toBe(DUCK_FLOOR); expect(duckAt(1000, sp)).toBe(DUCK_FLOOR);
+    expect(duckAt(2150, sp)).toBeCloseTo(DUCK_FLOOR + (1 - DUCK_FLOOR) * 0.5, 6);
+    expect(duckAt(500, sp)).toBe(1); expect(duckAt(5000, [])).toBe(1);
+    expect(DUCK_FLOOR).toBeGreaterThan(0.1); expect(DUCK_FLOOR).toBeLessThan(0.4); // about the export's 8:1 compressor on speech
+  });
+  it('musicGainAt: the music volume, dipped under speech only when ducking and the original can be heard', () => {
+    const a = { vol: 1, music: { vol: 0.5, duck: true } }, sp = [[1000, 2000]];
+    expect(musicGainAt(1500, a, sp, true)).toBeCloseTo(0.5 * DUCK_FLOOR, 6);
+    expect(musicGainAt(1500, { ...a, music: { vol: 0.5, duck: false } }, sp, true)).toBe(0.5);
+    expect(musicGainAt(1500, a, sp, false)).toBe(0.5); // no original sound: nothing to duck under (the export mixes the music alone)
+    expect(musicGainAt(1500, { ...a, vol: 0 }, sp, true)).toBe(0.5); // original at 0: the same
+    expect(musicGainAt(1500, { vol: 1, music: null }, sp, true)).toBe(0);
+  });
+  it('musicTimeAt: the music loops from the start of the video, as the export (aloop)', () => {
+    expect(musicTimeAt(2500, 10)).toBeCloseTo(2.5); expect(musicTimeAt(12500, 10)).toBeCloseTo(2.5); expect(musicTimeAt(2500, 0)).toBeCloseTo(2.5);
   });
 });

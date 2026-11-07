@@ -10982,6 +10982,31 @@ function clipCss(l, frames) {
     return need.filter(Boolean).length;
   }
   const step = (t) => { S.progress = t; redraw(); };
+  /**
+   * The reel's music choices for another editor (a video's Audio panel): a menu under `btn` with Compose (one row per mood,
+   * made in the browser and stored) and Upload your own. cb({ src, name, dur, gen? }) once the file is stored on the server.
+   * opts: { seconds (how long a composed bed is, at most 120 s: it loops under longer videos), onBusy(on) }.
+   */
+  RT.pickMusic = (btn, opts, cb) => {
+    const o = opts || {};
+    const run = async (fn, done) => {
+      o.onBusy && o.onBusy(true);
+      try { const m = await fn(); cb(m); done && toast(done); } catch (e) { toast((e && e.message) || 'The music could not be added'); } finally { o.onBusy && o.onBusy(false); }
+    };
+    const compose = (mood) => run(async () => {
+      const M = COMP.MOODS[mood] || COMP.MOODS.corporate, seconds = Math.min(120, Math.max(8, +o.seconds || 30));
+      const buf = await COMP.compose({ seconds, mood, pace: 3500, seed: Math.floor(Math.random() * 1e9) });
+      const r = await upload(wavOf(buf));
+      return { src: r.url, name: M.name, dur: Math.round(buf.duration * 1000), gen: { mood } };
+    }, 'Music composed for this video');
+    menu(btn, [
+      ...Object.entries(COMP.MOODS).map(([k, M]) => [`Compose: ${M.name}`, 'wand', () => compose(k)]),
+      '-', ['Upload your own…', 'upload', () => pick(false, (files) => {
+        const f = [...files].find(isAudio); if (!f) return toast('Choose an audio file (MP3, WAV, M4A or OGG)');
+        run(async () => { const r = await upload(f); return { src: r.url, name: nameOf(f), dur: await lengthOf(r.url) }; }, 'Music added');
+      })],
+    ]);
+  };
   /** File picker opened from a menu */
   const pick = (multiple, cb) => { const i = document.createElement('input'); i.type = 'file'; i.accept = 'audio/*'; i.multiple = multiple; i.onchange = () => i.files && i.files.length && cb(i.files); i.click(); };
   /** A small menu under a ⋯ button: rows [label, icon, fn, disabled, cls] or '-' */
@@ -11124,7 +11149,7 @@ installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, br
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
 installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save, ed: edApi });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
-  wrapEd, ed: edApi, VS });
+  wrapEd, ed: edApi, VS, pickMusic: (...a) => RT.pickMusic(...a) });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */
 {
   const _dcFt = designCard;

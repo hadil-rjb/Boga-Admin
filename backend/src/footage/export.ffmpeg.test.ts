@@ -62,4 +62,27 @@ describe.skipIf(!real)('export overlay timing (real ffmpeg)', () => {
     const n = raw.length / (64 * 64 * 3), first = Array.from({ length: n }, (_, k) => raw[k * 64 * 64 * 3 + (32 * 64 + 32) * 3] > 128).indexOf(true);
     expect(first).toBe(Math.ceil(1.420 * 30.004)); // source frame 43 (pts 1.43314 ≥ 1.420); a 30 fps overlay grid would give 44
   });
+
+  it('a music bed loops under the original, ducked, and the MP4 keeps the video length; music alone is trimmed to it', async () => {
+    const { look } = await loadShared();
+    const cube = join(dir, 'id3.cube'), list = join(dir, 'o3.txt'), blank = png('blank3.png', 'black@0.0');
+    writeFileSync(cube, look.writeCube(look.identityCube(2)));
+    writeFileSync(list, concatText([{ file: blank, dur: 3000 }]));
+    const src = join(dir, 'src3.mp4'), mute = join(dir, 'src4.mp4'), music = join(dir, 'music.mp3');
+    // 3 s of video with a 440 Hz tone (48 kHz), 1 s of 880 Hz music (44.1 kHz, so the graph has to resample)
+    ff('-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=30:d=3', '-f', 'lavfi', '-i', 'sine=f=440:r=48000:d=3', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', src);
+    ff('-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=30:d=3', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', mute);
+    ff('-f', 'lavfi', '-i', 'sine=f=880:r=44100:d=1', '-c:a', 'libmp3lame', music);
+    const probe = (audio: boolean) => ({ dur: 3, w: 64, h: 64, rotation: 0 as const, fps: 30, hdr: null, audio });
+    const len = (f: string, sel: string) => Number(execFileSync('ffprobe', ['-v', 'error', '-select_streams', sel, '-show_entries', 'stream=duration', '-of', 'csv=p=0', f], { encoding: 'utf8' }).trim());
+    for (const [i, input, audio, duck] of [[0, src, true, true], [1, src, true, false], [2, mute, false, true]] as const) {
+      const out = join(dir, `mix${i}.mp4`);
+      execFileSync('ffmpeg', buildExportArgs({ src: input, probe: probe(audio), cube, concat: list, out, w: 64, h: 64, fps: 30, vol: 0.8, music: { path: music, vol: 0.6, duck } }), { stdio: 'ignore' });
+      expect(Math.abs(len(out, 'a:0') - 3), `audio ${i}`).toBeLessThan(0.1);
+      expect(Math.abs(len(out, 'v:0') - 3), `video ${i}`).toBeLessThan(0.05);
+      // the music keeps playing in the last second (it looped): not silent there
+      const err = spawnSync('ffmpeg', ['-hide_banner', '-ss', '2.2', '-i', out, '-vn', '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+      expect(Number(/max_volume: (-?[\d.]+) dB/.exec(err)![1]), `level ${i}`).toBeGreaterThan(-30);
+    }
+  });
 });

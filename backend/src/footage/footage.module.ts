@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { MongooseModule } from "@nestjs/mongoose";
 import { AiModule } from "../ai/ai.module";
 import { AiService } from "../ai/ai.service";
+import { Media, MediaSchema } from "../media/media.schema";
 import { FOOTAGE_AI } from "./caption-style";
 import { FootageController } from "./footage.controller";
 import { Footage, FootageSchema } from "./footage.schema";
@@ -12,7 +13,7 @@ import { ExportService } from "./export.service";
 import { JobsService } from "./jobs.service";
 
 @Module({
-  imports: [AiModule, MongooseModule.forFeature([{ name: Footage.name, schema: FootageSchema }])],
+  imports: [AiModule, MongooseModule.forFeature([{ name: Footage.name, schema: FootageSchema }, { name: Media.name, schema: MediaSchema }])],
   controllers: [FootageController],
   providers: [{ provide: FOOTAGE_AI, useExisting: AiService }, FootageStore, FootageRefs, FootageSweep, JobsService, ExportService],
   exports: [FootageStore, JobsService],
