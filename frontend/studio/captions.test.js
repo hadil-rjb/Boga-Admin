@@ -25,6 +25,33 @@ describe('captions', () => {
     expect(l[1].start - l[0].end).toBeGreaterThanOrEqual(100);
     expect(l[0].end).toBeGreaterThan(l[0].start);
   });
+  it('gap sets the exact end, floors at start+1, and leaves a satisfied gap alone', () => {
+    const s = { ...DEFAULT_STYLE, gap: 100 };
+    const a = group([W('a.',0,500),W('b',550,1000)], s);
+    expect(a[0].end).toBe(450);
+    const b = group([W('a.',0,50),W('b',60,1000)], s);
+    expect(b[0].end).toBe(1);
+    const c = group([W('a.',0,500),W('b',700,1000)], s);
+    expect(c[0].end).toBe(500);
+  });
+  it('minDur does not merge when maxChars would break', () => {
+    const l = group([W('aaaa',0,200),W('bbbb',300,900)], { ...DEFAULT_STYLE, maxWords: 4, maxChars: 6, minDur: 600 });
+    expect(l).toHaveLength(2);
+  });
+  it('minDur does not merge across end punctuation', () => {
+    const l = group([W('a.',0,200),W('b',300,1500)], { ...DEFAULT_STYLE, maxWords: 4, minDur: 600 });
+    expect(l).toHaveLength(2);
+    expect(l[0].end).toBe(300);
+  });
+  it('minDur extension is capped at start + minDur', () => {
+    const l = group([W('a.',0,200),W('b',2000,2500)], { ...DEFAULT_STYLE, minDur: 600 });
+    expect(l[0].end).toBe(600);
+  });
+  it('minDur then gap together', () => {
+    const l = group([W('a.',0,200),W('b',400,1500)], { ...DEFAULT_STYLE, minDur: 600, gap: 100 });
+    expect(l[0].end).toBe(300);
+    expect(l[0].end).toBeGreaterThan(l[0].start);
+  });
   it('absent minDur/gap keeps the old output', () => {
     const l = group([W('a',0,200),W('b',1000,1500)], DEFAULT_STYLE);
     expect(l.map((x) => [x.start, x.end])).toEqual([[0,200],[1000,1500]]);

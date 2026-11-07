@@ -58,7 +58,7 @@ export function group(words, style) {
     cur.push(w);
   }
   if (cur.length) lines.push(mkLine(cur));
-  // minDur and gap apply only when the caller sets them (withDefaults' minDur must not leak in).
+  // minDur/gap apply only when the style passed to group() sets them (withDefaults output would enable minDur 600).
   const minDur = Number(style.minDur) > 0 ? Number(style.minDur) : 0;
   const gap = Number(style.gap) > 0 ? Number(style.gap) : 0;
   if (minDur) {
@@ -67,9 +67,11 @@ export function group(words, style) {
       let l = lines[i];
       while (l.end - l.start < minDur && i + 1 < lines.length) {
         const n = lines[i + 1];
+        const ext = () => ({ ...l, end: Math.max(l.end, Math.min(n.start, l.start + minDur)) });
+        if (END_PUNCT.test(l.words[l.words.length - 1].t)) { l = ext(); break; }
         const all = [...l.words, ...n.words];
         const chars = all.reduce((c, x) => c + x.t.length + 1, 0) - 1;
-        if (all.length > style.maxWords || chars > style.maxChars) { l = { ...l, end: Math.max(l.end, n.start) }; break; }
+        if (all.length > style.maxWords || chars > style.maxChars) { l = ext(); break; }
         l = mkLine(all); i++;
       }
       out.push(l);
