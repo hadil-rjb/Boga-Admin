@@ -11113,7 +11113,7 @@ const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel
 /* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
 const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
 /* the shared caption panels (Captions, for videos and reels) */
-installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, ed: edApi }, VS);
+installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
 installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame } from './caption-panels.js';
+import { filterRows, fold, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, BRAND_STYLE_MAX } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
 
 const ln = (id, text, start = 0) => ({ id, start, end: start + 1000, words: text.split(' ').map((t, k) => ({ t, s: start + k * 100, e: start + k * 100 + 100 })) });
@@ -174,5 +174,47 @@ describe('fix round 1', () => {
     expect(captionFrame(d, 200)).toBeNull(); // the offset delays the line
     const mine = [ln('p', 'drag', 0)];
     expect(captionFrame(d, 1500, mine).lines).toBe(mine);
+  });
+});
+
+describe('Styles panel helpers', () => {
+  const brandStyles = [{ id: 'b1', name: 'Our Karaoke', style: { size: 0.05 } }, { id: 'b2', name: 'Plain', style: { size: 0.04 } }];
+  it('presetsFor filters by category, search, recent and brand', () => {
+    const all = presetsFor('all', '', [], []);
+    expect(all.length).toBeGreaterThan(20);
+    const kar = presetsFor('karaoke', '', [], []);
+    expect(kar.length).toBeGreaterThan(0);
+    expect(kar.every((p) => p.cat === 'karaoke')).toBe(true);
+    expect(presetsFor('all', 'IMPACT', [], []).map((p) => p.id)).toContain('viral-impact');
+    expect(presetsFor('all', 'zzzzqq', [], [])).toEqual([]);
+    expect(presetsFor('recent', '', ['viral-yellow', 'nope', 'viral-impact'], []).map((p) => p.id)).toEqual(['viral-yellow', 'viral-impact']);
+    expect(presetsFor('brand', '', [], brandStyles).map((p) => p.id)).toEqual(['b1', 'b2']);
+    expect(presetsFor('brand', 'plain', [], brandStyles).map((p) => p.id)).toEqual(['b2']);
+    expect(presetsFor('brand', '', [], brandStyles).every((p) => p.brand)).toBe(true);
+  });
+  it('a 21st brand style is refused', () => {
+    let list = [];
+    for (let i = 0; i < BRAND_STYLE_MAX; i++) { const r = addBrandStyle(list, 'S' + i, { size: 0.05 }, () => 'id' + i); expect(r.ok).toBe(true); list = r.styles; }
+    expect(list.length).toBe(20);
+    expect(addBrandStyle(list, 'One more', { size: 0.05 }).ok).toBe(false);
+    expect(addBrandStyle([], '  ', { size: 0.05 }).ok).toBe(true); // an empty name falls back to a default
+  });
+  it('pushRecent keeps the last 8, newest first, without repeats', () => {
+    let r = []; for (let i = 0; i < 10; i++) r = pushRecent(r, 'p' + i);
+    expect(r.length).toBe(8); expect(r[0]).toBe('p9');
+    expect(pushRecent(r, 'p5')[0]).toBe('p5'); expect(pushRecent(r, 'p5').length).toBe(8);
+  });
+  it('applying a preset then changing size makes the style custom', () => {
+    const d = { footage: {}, captions: { on: true, lines: [], style: null, preset: null, source: 'speech', styleFrom: 'look' } };
+    applyPresetTo(d, 'viral-impact');
+    expect(d.captions.preset).toBe('viral-impact');
+    expect(d.captions.styleFrom).toBeFalsy();
+    expect(d.captions.style.anim).toBe('pop');
+    editStyle(d, { size: 0.09 });
+    expect(d.captions.preset).toBe(null);
+    expect(d.captions.styleFrom).toBe('custom');
+    expect(d.captions.style.size).toBe(0.09);
+    applyBrandStyle(d, { size: 0.05 }, 'look');
+    expect(d.captions.preset).toBe(null); expect(d.captions.styleFrom).toBe('look');
   });
 });
