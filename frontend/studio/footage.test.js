@@ -28,7 +28,7 @@ describe('closing the upload modal', () => {
 });
 
 describe('upload modal Start', () => {
-  it('needs only an original, in both modes', () => {
+  it('needs only an original', () => {
     expect(canStart({ busy: false, original: null })).toBe(false);
     expect(canStart({ busy: false, original: {} })).toBe(true);
     expect(canStart({ busy: false, original: {}, ref: {} })).toBe(true);
@@ -64,5 +64,18 @@ describe('the 10-minute limit', () => {
   it('copy', () => {
     expect(REPLACE_ASK).toBe('Replace this video? Captions will be made again from the new video.');
     expect(NO_GRADE_YET).toBe('No colour grade yet. Match a reference or apply a brand look.');
+  });
+});
+
+import { ownsUpload } from './footage.js';
+describe('an upload acts on its design only while it owns it', () => {
+  it('stopped or replaced uploads never commit', () => {
+    const map = new Map(), st = { ac: new AbortController() }, other = { ac: new AbortController() };
+    map.set('d1', st);
+    expect(ownsUpload(map, 'd1', st)).toBe(true);
+    map.set('d1', other); expect(ownsUpload(map, 'd1', st)).toBe(false); // a newer upload replaced it
+    map.set('d1', st); st.ac.abort(); expect(ownsUpload(map, 'd1', st)).toBe(false); // Stop
+    map.delete('d1'); expect(ownsUpload(map, 'd1', other)).toBe(false);
+    expect(ownsUpload(map, 'd1', null)).toBe(false);
   });
 });

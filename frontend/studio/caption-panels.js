@@ -260,6 +260,17 @@ export function editStyle(d, patch) {
   const c = capsOf(d); c.style = { ...(c.style || DEFAULT_STYLE), ...patch }; c.preset = null; c.styleFrom = 'custom';
 }
 
+/** A video with no file yet: a pasted script would land every word at 0 ms, so Paste script waits for the video */
+export const NEEDS_VIDEO = 'Add your video first';
+export const needsVideo = (d) => kindOf(d) === 'video' && !(d.footage && d.footage.src);
+/** Why Make captions must not run for a video (no file, or no length yet), or null. Reels are not concerned. */
+export function scriptBlocked(d, dur) {
+  if (kindOf(d) !== 'video') return null;
+  if (needsVideo(d)) return NEEDS_VIDEO + '.';
+  if (!(+dur > 0)) return 'Your video is still being prepared.';
+  return null;
+}
+
 /* ---------- DOM ---------- */
 let scriptHooked = false;
 export function installCaptionPanels(ctx, VS) {
@@ -527,11 +538,11 @@ export function installCaptionPanels(ctx, VS) {
   let scriptText = '', busy = false;
   const apiFn = ctx.api;
   function scriptRender(d) {
-    const ro = !can(), has = linesOf(d).length > 0;
+    const ro = !can(), has = linesOf(d).length > 0, wait = needsVideo(d);
     return `<div class="cp sc"><div class="cp-head"><h3>Script</h3></div>
       <label class="label" for="scText">Paste your script</label>
-      <textarea class="inp" id="scText" data-sc-text dir="auto" rows="8" spellcheck="false" ${ro ? 'readonly' : ''}>${esc(scriptText)}</textarea>
-      ${ro ? '' : `<div class="ft-foot"><button class="btn primary sm" data-act="scMake" ${busy ? 'disabled' : ''}>${ic('type', 15)}Make captions</button></div>`}
+      <textarea class="inp" id="scText" data-sc-text dir="auto" rows="8" spellcheck="false" ${ro || wait ? 'readonly' : ''}>${esc(scriptText)}</textarea>
+      ${ro ? '' : `<div class="ft-foot"><button class="btn primary sm" data-act="scMake" ${busy || wait ? 'disabled' : ''}>${ic('type', 15)}Make captions</button>${wait ? `<span class="xs-t muted">${NEEDS_VIDEO}</span>` : ''}</div>`}
       <div class="ft-foot">${ro ? '' : `<button class="btn secondary sm" data-act="scOpen">${ic('upload', 15)}Open SRT or VTT</button>`}<button class="btn secondary sm" data-act="scSave" ${has ? '' : 'disabled'}>${ic('download', 15)}Download SRT</button></div>
       <input type="file" accept=".srt,.vtt" data-sc-file hidden></div>`;
   }
@@ -561,6 +572,7 @@ export function installCaptionPanels(ctx, VS) {
     if (kindOf(d) === 'reel') { const tl = timeline(d.pages); speech = voiceoverWords(d.pages, tl, LEAD); dur = tl.total; }
     else {
       dur = P && P.duration ? P.duration() : 0;
+      const no = scriptBlocked(d, dur); if (no) { toast(no); return; }
       const id = d.footage && d.footage.src;
       if (id && apiFn) { busy = true; try { const w = await apiFn(`/footage/${id}/words`); if (Array.isArray(w)) speech = w; } catch (e) { speech = []; } busy = false; }
       state = speech.length ? 'ok' : 'pending'; // no words: still transcribing, failed or unreachable

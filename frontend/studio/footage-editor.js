@@ -11,7 +11,7 @@
    ============================================================ */
 import { apiUrl } from '../lib/api';
 import { group, retime, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
-import { lineText, captionsOn, langFromLines, editStyle, fileBase } from './caption-panels.js';
+import { lineText, captionsOn, langFromLines, editStyle, fileBase, NEEDS_VIDEO } from './caption-panels.js';
 import { dragCaption } from './caption-inspector.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
@@ -460,7 +460,11 @@ export function installFootageEditor(ctx, FT) {
     return '<p class="sm-t muted">No speech was found in this video.</p>' + altHTML();
   }
   /** Captions without speech to listen to: paste the script or open a subtitle file instead (both in the Script panel) */
-  const altHTML = () => (can() ? `<div class="ft-alt"><button class="btn secondary sm" data-act="ftScript">${ic('type', 15)}Paste script</button><button class="btn secondary sm" data-act="ftSrt">${ic('upload', 15)}Open SRT or VTT</button></div>` : '');
+  const altHTML = () => {
+    if (!can()) return '';
+    const wait = !F || !F.id; // no video yet: a pasted script would land every word at 0 ms
+    return `<div class="ft-alt"><button class="btn secondary sm" data-act="ftScript" ${wait ? `disabled title="${NEEDS_VIDEO}"` : ''}>${ic('type', 15)}Paste script</button><button class="btn secondary sm" data-act="ftSrt">${ic('upload', 15)}Open SRT or VTT</button></div>${wait ? `<span class="xs-t muted">Paste script: ${NEEDS_VIDEO.toLowerCase()}.</span>` : ''}`;
+  };
   /** An empty video's Captions panel: 1. Add your video, 2. Add captions */
   function stepsHTML() {
     const up = FT.upload(ED.d), busy = !!(up && !up.err);
@@ -560,10 +564,10 @@ export function installFootageEditor(ctx, FT) {
     else {
       const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut);
       grade = `<p class="sm-t${ft.look.lut ? '' : ' muted'}">${own && F.cube ? `The colours match ${src}.` : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(!ft.look.lut && A.grade.state === 'skipped' ? NO_GRADE_YET : 'No colour grade yet.')}</p>
-        <p class="xs-t muted">Strength, exposure, temperature and saturation are in the panel on the right.</p>`;
+        <p class="xs-t muted">Adjust strength, exposure, temperature and saturation in Look settings.</p>`;
     }
     const paired = hasRefPair(F.rec) || !!F.ref, R = F.refUp;
-    const ref = R ? `<div class="ft-up" role="status"><b>Uploading the reference</b><div class="prog-w"><div class="prog"><i data-ft-refbar style="width:${Math.round(R.p * 100)}%"></i></div><span class="prog-pct" data-ft-refpct>${Math.round(R.p * 100)}%</span></div></div>`
+    const ref = R ? `<div class="ft-up" role="status"><b>Uploading the reference</b><div class="prog-w"><div class="prog"><i data-ft-refbar style="width:${Math.round(R.p * 100)}%"></i></div><span class="prog-pct" data-ft-refpct>${Math.round(R.p * 100)}%</span></div><button class="btn ghost sm" data-act="ftStopRef">Stop</button></div>`
       : dis ? '' : `<p class="xs-t muted">${paired ? 'The colours and caption style come from your reference video.' : 'Drop an edited video to copy its colours and caption style.'}</p>
         <button class="btn ${paired ? 'secondary' : 'primary'} sm" data-act="ftMatchRef" ${F.id && F.rec && !A.failed ? '' : 'disabled'}>${ic('upload', 15)}${paired ? 'Change the reference' : 'Match a reference'}</button>
         <input type="file" accept="${ACCEPT}" hidden data-ft-ref-file>`;
@@ -580,6 +584,7 @@ export function installFootageEditor(ctx, FT) {
     const bar = () => { const p = Math.round(S.refUp.p * 100); document.querySelectorAll('[data-ft-refbar]').forEach((i) => { i.style.width = p + '%'; }); document.querySelectorAll('[data-ft-refpct]').forEach((x) => { x.textContent = p + '%'; }); };
     try {
       const ref = await uploadFootage(file, { role: 'reference', brand: brand().id, api, signal: S.refUp.ac.signal, onProgress: (v) => { if (S.refUp) { S.refUp.p = v; bar(); } } });
+      if (S.refUp.ac.signal.aborted) throw new DOMException('Upload stopped', 'AbortError'); // Stop after the last chunk: no pairing
       const lang = S.rec && S.rec.pair && S.rec.pair.lang;
       await api(`/footage/${S.id}/pair`, { method: 'POST', body: { ref: ref.id, ...(lang ? { lang } : {}) } });
       S.refUp = null;
@@ -616,7 +621,7 @@ export function installFootageEditor(ctx, FT) {
   };
   VS.register('video', {
     mount() {
-      if (!F || F.d !== ED.d || F.id !== (ED.d.footage.src || null) || (F.player && !document.body.contains(F.player.video))) start(ED.d);
+      if (!F || F.d !== ED.d || F.id !== (ED.d.footage.src || null) || F.ref !== (ED.d.footage.ref || null) || (F.player && !document.body.contains(F.player.video))) start(ED.d);
       drawStage(); sync(); exportButton();
     },
     unmount() {
@@ -655,8 +660,9 @@ export function installFootageEditor(ctx, FT) {
       // the file picker opens from the confirm button's click (a user gesture)
       ask('Replace video', REPLACE_ASK, 'Replace', () => { const i = $('#edPanel [data-ft-replace-file]'); if (i) i.click(); });
     },
+    ftStopRef: () => { if (F && F.refUp) { F.refUp.ac.abort(); toast('Upload stopped. Drop the same file again to pick up where it stopped.'); } },
     ftMatchRef: () => { const i = $('#edPanel [data-ft-ref-file]'); if (i) i.click(); },
-    ftScript: () => { ACT.edTab({ dataset: { k: 'script' } }); const t = $('#edPanel [data-sc-text]'); if (t) t.focus(); },
+    ftScript: () => { if (F && !F.id) return; ACT.edTab({ dataset: { k: 'script' } }); const t = $('#edPanel [data-sc-text]'); if (t) t.focus(); },
     ftSrt: () => { ACT.edTab({ dataset: { k: 'script' } }); const f = $('#edPanel [data-sc-file]'); if (f) f.click(); },
     ftDelLook: (a) => deleteLook(a.dataset.id),
     ftRetry: async (a) => {
@@ -707,12 +713,18 @@ export function installFootageEditor(ctx, FT) {
   /** The drop zone under the pointer (anywhere on the stage while the video is empty) */
   const zoneOf = (e) => {
     if (!F || !e.target || !e.target.closest) return null;
-    return e.target.closest('[data-ft-add]') || (!F.id && e.target.closest('#ftStage') ? $('#ftStage [data-ft-add]') : null);
+    return e.target.closest('[data-ft-add]') || (!F.id && e.target.closest('#ftStage') ? $('#ftStage') : null);
   };
   // capture phase: ahead of the editor's own "drop an image on the canvas"
-  document.addEventListener('dragover', (e) => { const z = zoneOf(e); if (z) { e.preventDefault(); e.stopImmediatePropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; z.classList.add('over'); } }, true);
-  document.addEventListener('dragleave', (e) => { const z = zoneOf(e); if (z && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#ftStage, [data-ft-add]'))) z.classList.remove('over'); }, true);
-  document.addEventListener('drop', (e) => { const z = zoneOf(e); if (!z) return; e.preventDefault(); e.stopImmediatePropagation(); z.classList.remove('over'); addFile(e.dataTransfer && e.dataTransfer.files[0], false); }, true);
+  const zoneEl = (z) => (z && z.matches('[data-ft-add]') ? z : z && z.querySelector('[data-ft-add]'));
+  document.addEventListener('dragover', (e) => { const z = zoneOf(e); if (z) { e.preventDefault(); e.stopImmediatePropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; const a = zoneEl(z); if (a) a.classList.add('over'); } }, true);
+  document.addEventListener('dragleave', (e) => { const z = zoneOf(e), a = zoneEl(z); if (a && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#ftStage, [data-ft-add]'))) a.classList.remove('over'); }, true);
+  // the empty stage takes every drop (an upload running: a no-op), so a video never reaches the editor's image drop
+  document.addEventListener('drop', (e) => {
+    const z = zoneOf(e); if (!z) return; e.preventDefault(); e.stopImmediatePropagation(); document.querySelectorAll('.ft-add.over').forEach((x) => x.classList.remove('over'));
+    const up = ED.d && FT.upload(ED.d); if (up && !up.err) return;
+    addFile(e.dataTransfer && e.dataTransfer.files[0], false);
+  }, true);
   document.addEventListener('keydown', (e) => { const z = zoneOf(e); if (z && e.target === z && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); const i = z.querySelector('input'); if (i) i.click(); } });
   document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradePreview(t); });
   document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradeCommit(t); });

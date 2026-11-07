@@ -380,3 +380,16 @@ describe('Script panel', () => {
   });
   it('file base is the safe design name', () => { expect(fileBase({ name: 'My clip!' })).toBe('My-clip'); expect(fileBase({})).toBe('video'); });
 });
+
+import { scriptBlocked, needsVideo, NEEDS_VIDEO } from './caption-panels.js';
+describe('Paste script waits for the video', () => {
+  it('refuses a video without a file or a length, never a reel', () => {
+    expect(NEEDS_VIDEO).toBe('Add your video first');
+    const empty = { footage: { src: null } }, ready = { footage: { src: 'f1' } }, reel = { motion: {} };
+    expect(needsVideo(empty)).toBe(true); expect(needsVideo(ready)).toBe(false); expect(needsVideo(reel)).toBe(false);
+    expect(scriptBlocked(empty, 12000)).toBe('Add your video first.');
+    expect(scriptBlocked(ready, 0)).toBe('Your video is still being prepared.');
+    expect(scriptBlocked(ready, 12000)).toBe(null);
+    expect(scriptBlocked(reel, 0)).toBe(null);
+  });
+});

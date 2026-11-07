@@ -98,6 +98,8 @@ export const MAX_SEC = 600;
 export const TOO_LONG = 'This video is longer than 10 minutes.';
 /** The message refusing a video of `sec` seconds, or null (an unknown length is let through: the probe checks again) */
 export const lengthError = (sec) => (+sec > MAX_SEC ? TOO_LONG : null);
+/** An upload may still act on its design: not stopped, and still the design's current upload (a newer one replaces it) */
+export const ownsUpload = (map, id, st) => !!st && !(st.ac && st.ac.signal.aborted) && map.get(id) === st;
 /** A local video file's length in seconds, read by the browser before the upload (null when it cannot decode it in time) */
 export function fileDuration(file, { timeout = 8000 } = {}) {
   return new Promise((resolve) => {
@@ -139,10 +141,9 @@ export function installFootage(ctx) {
   };
 
   /* ---------- 2. upload modal and design creation ---------- */
-  function openNew(mode = 'match') {
+  function openNew() {
     if (canEdit && !canEdit()) return;
-    const plain = mode === 'caption';
-    const looks = plain ? [] : (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
+    const looks = (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
     const st = { original: null, ref: null, lookId: null, busy: false, uploaded: false, closed: false, ac: null, probeAc: null };
     const zone = (k, title, hint) => `<div class="ft-zone"><b class="ft-zt">${title}</b>
       <label class="ft-drop" data-ft-drop="${k}" tabindex="0"><input type="file" accept="video/mp4,video/quicktime,video/*,.mp4,.mov,.m4v" hidden data-ft-file="${k}">
@@ -150,9 +151,9 @@ export function installFootage(ctx) {
       <div class="prog-w ft-pw" data-ft-pw="${k}" hidden><div class="prog"><i style="width:0%"></i></div><span class="prog-pct">0%</span></div></div>`;
     const lookList = looks.length ? `<div class="ft-looks"><div class="au-or"><span>or</span></div><b class="ft-zt">Use a brand look</b>
       <div class="ft-lk">${looks.map((l) => `<button type="button" class="ft-look" data-ft-look="${esc(l.id)}" aria-pressed="false">${esc(l.name || l.id)}</button>`).join('')}</div></div>` : '';
-    modal(`<div class="mh"><h2>${plain ? 'Caption a video' : 'Match a reference'}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    modal(`<div class="mh"><h2>Match a reference</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb ft-mb">${zone('original', 'Your video', 'Drop the raw clip (MP4 or MOV, up to 2 GB)')}
-        ${plain ? '' : zone('ref', 'Reference (optional)', 'Drop an edited video to copy its look and captions')}${lookList}
+        ${zone('ref', 'Reference (optional)', 'Drop an edited video to copy its look and captions')}${lookList}
         <p class="ft-err" data-ft-err role="alert" hidden></p></div>
       <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-ft-start disabled>Start</button></div>`,
       { onClose: () => {
@@ -247,8 +248,6 @@ export function installFootage(ctx) {
   /** Opens a footage design in the editor; footage-editor.js takes the editor over for designs with d.footage */
   FT.open = (d) => { location.hash = '#/editor/' + d.id; };
   installFootageEditor(ctx, FT);
-  /** "Caption a video": an empty video design straight on the drop zone (the modal's 'caption' mode stays for callers that want it) */
-  FT.newVideo = () => FT.videoBlank();
   ACT.ftNew = () => openNew();
   /* ---- Caption a video: a blank video design opens on the drop zone; a dropped file is uploaded into it (attach) ---- */
   /** Creates the blank video design and opens it (the Studio → Videos tile "Caption a video") */
@@ -273,12 +272,16 @@ export function installFootage(ctx) {
     if (!d || !d.footage || (canEdit && !canEdit())) return false;
     const cur = UP.get(d.id); if (cur && !cur.err) return false; // one upload per design
     const st = { p: 0, phase: 'reading', name: file ? file.name : '', err: null, ac: new AbortController() };
-    const fail = (m) => { st.err = m; st.phase = null; changed(d); return false; };
+    const live = () => ownsUpload(UP, d.id, st);
+    /** a failure shows only while this upload is still the design's; drop() forgets it only if it is */
+    const fail = (m) => { if (!live()) return false; st.err = m; st.phase = null; changed(d); return false; };
+    const drop = () => { if (UP.get(d.id) === st) { UP.delete(d.id); changed(d); } };
+    const STOP = () => new DOMException('Upload stopped', 'AbortError');
     UP.set(d.id, st); changed(d);
     if (!isVideoFile(file)) return fail('Choose a video file (MP4 or MOV)');
     const local = lengthError(await fileDuration(file));
+    if (!live()) return false; // stopped while the length was read
     if (local) return fail(local); // refused before anything is sent
-    if (st.ac.signal.aborted || UP.get(d.id) !== st) return false; // stopped while the length was read
     const signal = st.ac.signal, localUrl = URL.createObjectURL(file), posterP = grabPoster(localUrl, { timeout: 10000 }).finally(() => URL.revokeObjectURL(localUrl));
     let id = null;
     try {
@@ -286,13 +289,16 @@ export function installFootage(ctx) {
       const rec = await uploadFootage(file, { role: 'original', brand: brand().id, api, signal, onProgress: (v) => { st.p = v; changed(d); } });
       id = rec.id;
       st.phase = 'checking'; st.p = 1; changed(d);
+      if (!live()) throw STOP();
       const meta = await readProbe(api, id, { signal });
-      if (signal.aborted) throw new DOMException('Upload stopped', 'AbortError');
+      if (!live()) throw STOP();
       if (meta && lengthError(meta.dur)) { api('/footage/' + id, { method: 'DELETE' }).catch(() => {}); return fail(TOO_LONG); }
       const ft = d.footage, pairBody = ft.ref ? { ref: ft.ref } : ft.lookId ? { lookId: ft.lookId } : {};
       try { await api(`/footage/${id}/pair`, { method: 'POST', body: pairBody }); }
-      catch (e) { if (!ft.ref || (e && e.status !== 400)) throw e; await api(`/footage/${id}/pair`, { method: 'POST', body: {} }); } // the reference is gone: no grade
+      catch (e) { if (!ft.ref || (e && e.status !== 400)) throw e; if (!live()) throw STOP(); await api(`/footage/${id}/pair`, { method: 'POST', body: {} }); } // the reference is gone: no grade
+      if (!live()) throw STOP();
       const shot = await posterP, first = !ft.src;
+      if (!live()) throw STOP(); // checked right before the commit: a stopped or replaced upload never lands
       UP.delete(d.id);
       (FT.commit || ((dd, fn) => { fn(dd); save(); }))(d, (dd) => {
         const f = dd.footage, old = f.src;
@@ -307,13 +313,11 @@ export function installFootage(ctx) {
       changed(d);
       return true;
     } catch (e) {
-      if (isAbort(e)) { UP.delete(d.id); changed(d); return false; }
+      if (isAbort(e) || !live()) { drop(); return false; }
       return fail((e && e.message) || 'The upload failed. Drop the same file again to pick up where it stopped.');
     }
   };
   /** Stops the design's upload (it resumes when the same file is dropped again) */
   FT.stopUpload = (d) => { const st = d && UP.get(d.id); if (st && st.ac) st.ac.abort(); if (st) { UP.delete(d.id); changed(d); } };
-  /** Clears a refused or failed upload's message */
-  FT.clearUpload = (d) => { const st = d && UP.get(d.id); if (st && st.err) { UP.delete(d.id); changed(d); } };
   return FT;
 }
