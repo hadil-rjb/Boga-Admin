@@ -77,7 +77,7 @@ export const UPLOAD_STOPPED = 'Upload stopped. Drop the same files again to pick
  */
 /** The upload modal's Start needs only the original: the reference and the brand look are optional */
 export const canStart = (st) => !st.busy && !!st.original;
-export const closeAction =({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
+export const closeAction = ({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
 /** The footage part of a new design (its captions live on `d.captions`, see footageCaptions) */
 export function footageDoc({ src, ref = null, lookId = null, size }) {
   const { w, h } = size || DEFAULT_SIZE;
