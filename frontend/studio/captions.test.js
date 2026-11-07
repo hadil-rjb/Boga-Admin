@@ -326,14 +326,18 @@ describe('animations', () => {
     expect(a(600 + D / 2).alpha).toBeCloseTo(0.5);
     expect(a(600 + 3 * D).alpha).toBe(1);
   });
-  it('bounce: dy -0.25 before, overshoots, settles to 0 after 2 ramps', () => {
+  it('bounce: on the baseline before its start, hops up when spoken, back to 0 after 2 ramps', () => {
     const a = (ms) => animAt(st('bounce'), ln, 1, ms);
-    expect(a(599).dy).toBeCloseTo(-0.25);
+    expect(a(0).dy).toBe(0);
+    expect(a(599).dy).toBe(0);
+    expect(a(600).dy).toBe(0);
     expect(a(600 + D / 2).dy).toBeLessThan(0);
     expect(a(600 + D / 2).dy).toBeGreaterThan(-0.25);
+    expect(a(600 + D).dy).toBeCloseTo(-0.25);
     expect(a(600 + 3 * D).dy).toBe(0);
-    const peak = Math.max(...Array.from({ length: 27 }, (_, k) => a(600 + k * 10).dy));
-    expect(peak).toBeGreaterThan(0);
+    const ys = Array.from({ length: 27 }, (_, k) => a(600 + k * 10).dy);
+    expect(Math.max(...ys)).toBe(0); // never below the baseline
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(-0.25);
     expect(a(599).visible && a(599).alpha === 1).toBe(true);
   });
   it('slide: line level dy 0.6 to 0 and alpha 0 to 1 after line.start', () => {
@@ -390,6 +394,7 @@ describe('animations', () => {
   });
   it('draw applies dy for bounce', () => {
     const y = (ms) => calls(st('bounce'), ms).filter((x) => x[0] === 'translate')[2][2];
-    expect(y(599)).toBeLessThan(y(1000 + 3 * D));
+    expect(y(999)).toBe(y(1000 + 3 * D)); // the third word ('c', from 1000 ms) on the baseline before and after its hop
+    expect(y(1000 + D)).toBeLessThan(y(999)); // raised while it hops
   });
 });

@@ -182,7 +182,6 @@ const ANIM_MS = 133;
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 // Ramp duration (ms) of a style: ANIM_MS / animSpeed, speed clamped to 0.5-2.
 const animDur = (style) => ANIM_MS / Math.min(2, Math.max(0.5, Number(style.animSpeed) || 1));
-const OVERSHOOT = 1.70158;
 // Deterministic per-word animation state from time alone.
 // dy is a fraction of the font px (positive = down); visible:false words are not drawn;
 // highlight:true marks a word as active (karaoke fills every word whose start has passed).
@@ -202,9 +201,9 @@ export function animAt(style, line, wordIndex, ms) {
     case 'word': visible = w.s <= ms; break;
     case 'typewriter': visible = w.s <= ms; alpha = clamp01((ms - w.s) / dur); break;
     case 'bounce': {
-      const q = clamp01((ms - w.s) / (2 * dur)) - 1;
-      const e = 1 + (OVERSHOOT + 1) * q * q * q + OVERSHOOT * q * q; // ease-out-back: 0 -> overshoot -> 1
-      dy = 0.25 * (e - 1) + 0;
+      // on the baseline until spoken, then a hop up (0.25 em at the top) and back down over 2 ramps
+      const p = clamp01((ms - w.s) / (2 * dur));
+      dy = p > 0 && p < 1 ? -0.25 * Math.sin(Math.PI * p) : 0;
       break;
     }
     case 'slide': {
