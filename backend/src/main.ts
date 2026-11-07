@@ -23,12 +23,15 @@ app.enableCors({
   // plus any origins listed in CORS_ORIGIN (comma-separated), e.g. a preview deployment
   origin: [
     "https://boga-workspace.vercel.app",
+    "https://www.boga.agency",
+    "https://boga.agency",
     "http://localhost:3000",
     ...(process.env.CORS_ORIGIN || "").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean),
   ],
   credentials: true,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-brand-id"],
+  // x-share-token: "anyone with the link" viewers authenticate with it (see auth/jwt-auth.guard.ts)
+  allowedHeaders: ["Content-Type", "Authorization", "x-brand-id", "x-share-token"],
 });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   await app.listen(process.env.PORT || 4000);
