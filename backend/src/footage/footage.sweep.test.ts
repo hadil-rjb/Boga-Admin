@@ -33,4 +33,21 @@ describe('FootageSweep', () => {
     await fs.stat(store.dir(oldUsed));
     await fs.stat(store.dir(newUnused));
   });
+  it('reaps an unpaired reference upload (the Reference tab\'s "Copy from a video") by the same 7-day rule', async () => {
+    const refOld = '4'.repeat(24), refNew = '5'.repeat(24);
+    for (const id of [refOld, refNew]) await store.writeChunk(id, 0, Buffer.from('a'));
+    const records = [
+      { _id: refOld, role: 'reference', createdAt: new Date(now - 8 * DAY) },
+      { _id: refNew, role: 'reference', createdAt: new Date(now - 2 * DAY) },
+    ];
+    const model: any = {
+      find: (q: any) => ({ select: () => ({ lean: async () => records.filter((r) => r.createdAt < q.createdAt.$lt) }) }),
+      deleteOne: async () => {},
+    };
+    // only the copied caption style lands in the design, never the record's id: nothing references it
+    const sweep = new FootageSweep(model, store, { used: async () => new Set<string>() } as any);
+    expect(await sweep.run(now)).toEqual([refOld]);
+    await expect(fs.stat(store.dir(refOld))).rejects.toThrow();
+    await fs.stat(store.dir(refNew));
+  });
 });
