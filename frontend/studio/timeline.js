@@ -1,5 +1,5 @@
 /* ============================================================
-   Timeline: the shared track timeline of the video studio (footage videos now, reels next).
+   Timeline: the shared track timeline of the video studio (footage videos and reels).
    A ruler with time labels on a canvas that follows the scroll, zoom out / in / fit, a playhead that the scroll follows
    while playing, click or drag on an empty spot to seek. One row per track, each with a header (icon, name, eye).
    `captions` blocks can be moved and retimed (live preview, then one onRetime on release); `voice` shows the waveform
@@ -43,7 +43,8 @@ export function clampDrag(lines, i, edge, ms, dur = Infinity) {
 
 /**
  * The control in a track's header: 'eye' hides the track from the preview and the export (it changes the design),
- * 'mute' silences the preview only (session state, allowed in read-only), null for the picture itself.
+ * 'mute' silences the preview only (session state, allowed in read-only), 'fold' opens or closes the rows under it
+ * (a reel's layer lanes, `open` says which), null for the picture itself.
  */
 export function toggleKind(t) {
   if (t && t.toggle !== undefined) return t.toggle;
@@ -59,6 +60,8 @@ export const canZoomIn = (cur, viewPx, durMs) => durMs > 0 && nextZoom(cur, 1, v
 const RULER = 22;
 /** Row height of each kind of track (the header beside it has the same height) */
 const ROW_H = { video: 30, scenes: 36, captions: 36, voice: 34, music: 30 };
+/** A track's row height: its own `height`, else the kind's */
+const rowH = (t) => +t.height || ROW_H[t.id] || 30;
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pc = (v) => Math.max(0, Math.min(100, +v || 0)).toFixed(3);
 const fmt = (ms) => { const s = Math.max(0, (+ms || 0) / 1000); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; };
@@ -70,12 +73,14 @@ const ICON = {
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   speaker: '<path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5Z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.8"/>',
   speakerOff: '<path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5Z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>',
   eyeOff: '<path d="M9.9 9.9a3 3 0 1 0 4.2 4.2"/><path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13 13 0 0 1-1.7 2.7"/><path d="M6.6 6.6A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><line x1="2" x2="22" y1="2" y2="22"/>',
 };
 
 /**
  * Mounts the timeline in `host`. Options (a function is read on every draw, a value is fixed):
- *   dur() ms, time() ms, seek(ms), tracks() [{ id, icon (HTML), label, html?(pps), blocks?: [{ id, start, end, text, on }], hidden? }],
+ *   dur() ms, time() ms, seek(ms), tracks() [{ id, icon (HTML), label, html?(pps), blocks?: [{ id, start, end, text, on }], hidden?,
+ *     height? (px, else the kind's), toggle? (see toggleKind), open? (a 'fold' track) }],
  *   onRetime(id, start, end, live): live = true while a caption block is dragged (preview only), false once on release when it changed;
  *     (id, null, null, true) when a previewed drag ends without a change or is cancelled (show the design again),
  *   onSelect(id): a caption block was clicked without moving (the timeline also seeks to its start),
@@ -138,15 +143,16 @@ export function createTimeline(host, opts = {}) {
     return `<div class="vs-tl-blk${ro ? ' ro' : ''}" data-i="${i | 0}" data-id="${esc(b.id)}" style="left:${pc((b.start / d) * 100)}%;width:${pc(((b.end - b.start) / d) * 100)}%" title="${esc(`${fmt(b.start)} – ${fmt(b.end)}`)}">${ro ? '' : '<i class="vs-tl-h s" data-edge="start"></i>'}<span dir="auto">${esc(b.text)}</span>${ro ? '' : '<i class="vs-tl-h e" data-edge="end"></i>'}</div>`;
   }
   function rowHTML(t, d, pps) {
-    const h = ROW_H[t.id] || 30, ro = !can();
+    const h = rowH(t), ro = !can();
     let inner = '';
     if (d && t.html) inner = t.html(pps);
     else if (d && t.blocks) inner = t.blocks.map((b, i) => blockHTML(b, i, d, ro)).join('');
     return `<div class="vs-tl-row t-${esc(t.id)}${t.hidden ? ' off' : ''}" data-track="${esc(t.id)}" style="height:${h}px">${inner}</div>`;
   }
   function headerHTML(t) {
-    const h = ROW_H[t.id] || 30, k = toggleKind(t);
-    const eye = k === 'mute' ? `<button class="vs-tl-ib vs-tl-eye vs-tl-mute" data-tl-eye="${esc(t.id)}" aria-pressed="${!!t.hidden}" aria-label="${t.hidden ? 'Unmute preview' : 'Mute preview'}" title="${t.hidden ? 'Unmute preview' : 'Mute preview'}">${svg(t.hidden ? ICON.speakerOff : ICON.speaker, 15)}</button>`
+    const h = rowH(t), k = toggleKind(t);
+    const eye = k === 'fold' ? `<button class="vs-tl-ib vs-tl-fold" data-tl-eye="${esc(t.id)}" aria-expanded="${!!t.open}" aria-label="${t.open ? 'Hide' : 'Show'} ${esc(t.label)}" title="${t.open ? 'Hide' : 'Show'} ${esc(t.label)}">${svg(ICON.chev, 15)}</button>`
+      : k === 'mute' ? `<button class="vs-tl-ib vs-tl-eye vs-tl-mute" data-tl-eye="${esc(t.id)}" aria-pressed="${!!t.hidden}" aria-label="${t.hidden ? 'Unmute preview' : 'Mute preview'}" title="${t.hidden ? 'Unmute preview' : 'Mute preview'}">${svg(t.hidden ? ICON.speakerOff : ICON.speaker, 15)}</button>`
       : k === 'eye' ? `<button class="vs-tl-ib vs-tl-eye" data-tl-eye="${esc(t.id)}" aria-pressed="${!t.hidden}" aria-label="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" title="${t.hidden ? 'Show' : 'Hide'} ${esc(t.label)}" ${can() ? '' : 'disabled'}>${svg(t.hidden ? ICON.eyeOff : ICON.eye, 15)}</button>` : '';
     return `<div class="vs-tl-hd t-${esc(t.id)}${t.hidden ? ' off' : ''}" style="height:${h}px"><span class="vs-tl-ic">${t.icon || ''}</span><span class="vs-tl-lb">${esc(t.label)}</span>${eye}</div>`;
   }

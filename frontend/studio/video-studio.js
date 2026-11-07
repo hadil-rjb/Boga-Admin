@@ -1,16 +1,17 @@
 /* ============================================================
-   Video Studio shell: one editor for videos (and reels next). Sources register per kind and the shell draws the rest:
+   Video Studio shell: one editor for videos and reels. Sources register per kind and the shell draws the rest:
    - the rail for the kind (railFor) and its side panel: a shared panel (VS.panel) first, else the source's panel,
      else the panel's title and one sentence of what it will hold;
    - the transport under the stage (back 5 s, play, forward 5 s, time, the source's extra controls, keyboard J/K/L,
      Space and the arrows), driven by `source.player`;
    - the bottom area: the source's tracks in the shared timeline (timeline.js);
    - the inspector, routed by the selection (VS.select).
-   For now the shell only takes over videos (kindOf(d) === 'video'); reels and stills keep today's editor.
+   The shell takes over videos (footage-editor.js) and reels (reel-source.js); stills keep today's editor.
 
    A source: { mount(stage), unmount(), player, tracks() -> Track[], panel(key) -> html | null, inspector(sel) -> html | null,
    transportExtra() -> html } and, optionally, panelDrawn(key), canEdit(), onRetime(...), onSelect(id), onToggle(id)
-   (the timeline's callbacks). `player`: { toggle(), play(), pause(), seek(ms), time(), duration(), playing() } and
+   (the timeline's callbacks), nativePanel(key) (true: the editor's own panel draws that rail item) and nativeInspector
+   (true: the editor's own properties draw when the shell has no inspector for the selection). `player`: { toggle(), play(), pause(), seek(ms), time(), duration(), playing() } and
    optionally ready() (false until the media can play) and frameMs().
    The source tells the shell about playback with VS.tick(ms, playing), new tracks with VS.refresh(), the waveform with
    VS.setPeaks(peaks), and a closed session with VS.reset().
@@ -22,10 +23,10 @@ import { fmtMs } from './footage-player.js';
 
 /* ---------- pure helpers ---------- */
 const RAILS = {
-  video: [['media', 'Media', 'vsFilm'], ['captions', 'Captions', 'vsCc'], ['styles', 'Styles', 'palette'], ['script', 'Script', 'doc'],
+  video: [['media', 'Media', 'vsFilm'], ['captions', 'Captions', 'vsCc'], ['styles', 'Styles', 'vsStyle'], ['script', 'Script', 'doc'],
     ['audio', 'Audio', 'music38'], ['look', 'Look', 'vsLook'], ['agent', 'Agent', 'studio']],
   // the keys of the editor's existing RAIL entries are kept so their panels still work
-  reel: [['templates', 'Templates', 'layout'], ['motion', 'Motion', 'film37'], ['captions', 'Captions', 'vsCc'], ['styles', 'Styles', 'palette'],
+  reel: [['templates', 'Templates', 'layout'], ['motion', 'Motion', 'film37'], ['captions', 'Captions', 'vsCc'], ['styles', 'Styles', 'vsStyle'],
     ['script', 'Script', 'doc'], ['audio', 'Audio', 'music38'], ['elements', 'Elements', 'shapes'], ['text', 'Text', 'type'],
     ['uploads', 'Uploads', 'upload'], ['brand', 'Brand', 'palette'], ['figma', 'Figma', 'figma'], ['data', 'Live data', 'chart'],
     ['comps', 'Components', 'comp33'], ['agent', 'Agent', 'studio']],
@@ -45,8 +46,8 @@ export function inspectorRoute(sel, kind) {
   if (k === 'scene') return 'scene';
   return kind === 'video' ? 'source' : 'scene';
 }
-/** The shell opens this design (videos only for now) */
-export const takesOver = (d) => kindOf(d) === 'video';
+/** The shell opens this design: videos and reels (stills keep the editor) */
+export const takesOver = (d) => kindOf(d) !== 'still';
 /** What a rail item without a panel yet will hold: one sentence under its title */
 export const SOON = {
   media: 'Your video with its name, length and size, and a way to replace it.',
@@ -62,6 +63,7 @@ export function installVideoStudio(ctx) {
   const { ED, ACT, IC, ic, esc, wrapEd, ed } = ctx;
   Object.assign(IC, {
     vsFilm: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
+    vsStyle: '<path d="M4 7V5h11v2"/><path d="M9.5 5v14"/><path d="M7 19h5"/><path d="M18 9.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9Z"/>',
     vsCc: '<rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/>',
     vsLook: '<circle cx="9" cy="9" r="7"/><circle cx="15" cy="15" r="7"/>',
     vsBack5: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
@@ -114,7 +116,15 @@ K  pause
 
   /* ---- timeline: mounted once per session in its host, moved back in when the bottom area is redrawn ---- */
   function mountTimeline(S, host) {
-    if (!tlHost) { tlHost = document.createElement('div'); tlHost.className = 'vs-tl-host'; }
+    if (!tlHost) {
+      tlHost = document.createElement('div'); tlHost.className = 'vs-tl-host';
+      // a click on the Video track or on a scene puts the inspector back on the Look or the scene's properties
+      tlHost.addEventListener('click', (e) => {
+        const row = e.target.closest('.vs-tl-row'); if (!row || !src()) return;
+        if (row.dataset.track === 'video') select({ kind: 'video' });
+        else if (row.dataset.track === 'scenes') { const b = e.target.closest('[data-i]'); if (b) select({ kind: 'scene', i: +b.dataset.i }); }
+      });
+    }
     host.append(tlHost);
     if (tl) { tl.redraw(); return; }
     const P = S.player, mine = () => src() === S;
@@ -158,10 +168,13 @@ K  pause
     edPanel: (orig) => function () {
       const S = src(); if (!S) return orig.apply(this, arguments);
       const kind = kindOf(ED.d); ED.tab = railTab(kind, ED.tab);
-      if (ED.tab === 'agent') return orig.apply(this, arguments); // the agent panel as today
-      const p = $('#edPanel'); if (!p) return;
-      const k = ED.tab, label = (railFor(kind).find((r) => r[0] === k) || [k, k])[1];
+      const k = ED.tab;
+      if (k === 'agent') return orig.apply(this, arguments); // the agent panel as today
       let h = PANELS[k] ? PANELS[k](ED.d, kind) : null;
+      // no shared panel: the rail items the editor already draws for the source (a reel's Templates, Motion, Audio…)
+      if (h == null && S.nativePanel && S.nativePanel(k)) return orig.apply(this, arguments);
+      const p = $('#edPanel'); if (!p) return;
+      const label = (railFor(kind).find((r) => r[0] === k) || [k, k])[1];
       if (h == null && S.panel) h = S.panel(k);
       if (h == null) h = `<div class="vs-soon"><h3>${esc(label)}</h3><p class="sm-t muted">${esc(SOON[k] || '')}</p></div>`;
       p.classList.remove('agent'); p.innerHTML = h;
@@ -173,6 +186,7 @@ K  pause
       const r = inspectorRoute(sel, kindOf(ED.d));
       let h = r === 'caption' && INSP.caption ? INSP.caption(sel, ED.d) : null;
       if (h == null && S.inspector) h = S.inspector(sel); // the caption tabs come later: until then the source's inspector
+      if (h == null && S.nativeInspector) return orig.apply(this, arguments); // a reel: the Scene / layer properties
       el.innerHTML = h || '';
     },
     edStage: (orig) => function () {
@@ -184,10 +198,13 @@ K  pause
     edPages: (orig) => function () {
       const host = $('#edPages'); if (!host) return;
       const S = src();
-      if (!S) { host.classList.remove('ft10'); return orig.apply(this, arguments); }
-      host.classList.add('ft10');
+      if (!S) { host.classList.remove('ft10'); delete host.dataset.kind; return orig.apply(this, arguments); }
+      host.classList.add('ft10'); host.dataset.kind = kindOf(ED.d);
       // the timeline stays mounted while the bottom area is redrawn (every mutate): its zoom and scroll survive an edit
-      if (tl && tlHost && tlHost.parentNode === host && host.querySelector('.ft-tp')) { refresh(); return; }
+      if (tl && tlHost && tlHost.parentNode === host && host.querySelector('.ft-tp')) {
+        refresh(); if (ready(S.player)) tick(S.player.time(), S.player.playing()); // an edit can change the length
+        return;
+      }
       host.innerHTML = transportHTML(S); mountTimeline(S, host);
     },
   });
@@ -216,6 +233,7 @@ K  pause
     const act = { ' ': () => p.toggle(), k: () => p.pause(), j: () => p.seek(Math.max(0, p.time() - 5000)), l: () => p.seek(p.time() + 5000),
       ArrowLeft: () => { p.pause(); p.seek(Math.max(0, p.time() - fr())); }, ArrowRight: () => { p.pause(); p.seek(p.time() + fr()); } }[k];
     if (!act || (k === ' ' && tag === 'button' && !['vsPlay', 'vsBack', 'vsFwd'].includes(t.dataset.act))) return;
+    if ((k === 'ArrowLeft' || k === 'ArrowRight') && (ED.sel || (ED.ms && ED.ms.length))) return; // a reel's selected layer: the arrows nudge it
     e.preventDefault(); e.stopImmediatePropagation(); act();
   }, true);
 

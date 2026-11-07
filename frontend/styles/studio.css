@@ -3254,3 +3254,16 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-lkr.on{border-color:var(--accent)}
 .ft-lkr img,.ft-lkr .ft-th{width:40px;height:40px;flex-shrink:0;border-radius:6px;object-fit:cover;background:var(--pill)}
 .ft-ln{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--text-1)}
+
+/* Video Studio, reels (studio/reel-source.js): today's scene blocks, audio clips and layer lanes in the shared timeline */
+.ed-pages.ft10[data-kind=reel]{max-height:clamp(240px,48vh,480px);overflow-y:auto}
+.vs-tl-row .au-clip,.vs-tl-row .au-add{top:calc(50% - 9px)}
+.vs-tl-row .mo-lane{height:100%}
+.vs-tl-cap{position:absolute;top:4px;bottom:4px;min-width:6px;display:flex;align-items:center;padding:0 9px;color:var(--text-1);font-size:12px;font-weight:500;overflow:hidden;cursor:pointer}
+.vs-tl-cap::before{content:"";position:absolute;inset:0 1px;border-radius:7px;background:rgba(253,14,53,.16);box-shadow:inset 0 0 0 1px rgba(253,14,53,.38)}
+.vs-tl-cap span{position:relative;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.vs-tl-fold svg{transition:transform .12s}
+.vs-tl-fold[aria-expanded=false] svg{transform:rotate(-90deg)}
+.vs-tl-hd.t-layers{border-top:1px solid var(--border-soft,var(--border))}
+.ft-ib.on{background:rgba(253,14,53,.12);color:var(--accent)}
+.ft-tp .mo-pv[hidden]{display:none}

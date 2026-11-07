@@ -22,6 +22,7 @@ import * as AUD from './audio';
 import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
 import { installVideoStudio } from './video-studio.js';
+import { installReelSource } from './reel-source.js';
 
 let mounted = null; // destroy() of the running instance
 
@@ -10129,30 +10130,41 @@ function clipCss(l, frames) {
   function head(t) {
     const ph = $('#mo37Ph'); if (ph) ph.style.transform = `translateX(${t * K}px)`;
     const tt = $('#mo37T'); if (tt) tt.textContent = MO.fmtTime(t);
+    if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(t, PL.on); // the Video Studio shell's transport and playhead
   }
   function controls() {
     const b = $('#mo37Play'); if (b) { b.innerHTML = ic(PL.on ? 'pause37' : 'play37', 16); b.title = (PL.on ? 'Pause' : 'Play') + ' (K)'; b.setAttribute('aria-label', PL.on ? 'Pause' : 'Play'); }
     const pv = $('#mo37Pv'); if (pv) pv.hidden = !PL.view || PL.on;
+    if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(PL.t, PL.on);
   }
   const trIcon = (k) => ({ cut: '│', fade: '◐', slide: '→', push: '↑', zoom: '⤢', wipe: '▸' }[k] || '◐');
+  /** The scene blocks with their + buttons. pos(ms): a CSS length (px in the strip below, % in the shell's timeline), px(ms): its width on screen */
+  function sceneBlocks(pos, px) {
+    const d = ED.d, tl = TL();
+    return tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
+      return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${px(s.dur) < 130 ? ' sm' : ''}" style="left:${pos(s.start)};width:${pos(s.dur)}">
+        <button class="mo-sc-b" data-act="mo37Scene" data-i="${s.i}" title="${esc(lab)} · ${secs(s.dur)}" aria-label="${esc(lab)}, ${secs(s.dur)}" aria-current="${s.i === ED.pi}">${thumb(d.pages[s.i], d.ratio, 34, 44)}<span class="mo-sc-l"><b>${esc(lab)}</b><small>${secs(s.dur)}${s.i && s.tr !== 'cut' ? ` · ${trIcon(s.tr)} ${MO.TRANSITIONS[s.tr]}` : ''}</small></span></button>
+        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${pos(s.start)}" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('');
+  }
+  /** The layers of the open scene, top first, with their animation lane (same units as sceneBlocks; html(px) may give another px) */
+  function layerLanes(pos, px0) {
+    const cur = TL().scenes[ED.pi], sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
+    return curP().layers.filter((l) => l.type !== 'group' && !isBg(l)).reverse().map((l) => ({ l, html: (px = px0) => { const a = MO.anim(l), on = a.in !== 'none';
+      return `<div class="mo-lane${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}"><span class="mo-life" style="left:${pos(cur.start)};width:${pos(cur.dur)}"></span>
+        ${on ? `<span class="mo-bar" data-bar="${l.id}" style="left:${pos(cur.start + a.d)};width:max(6px,${pos(a.t)})" title="${MO.ENTER[a.in][0]} · starts at ${secs(a.d)} · lasts ${secs(a.t)}. Drag to move, drag the end to change the length.">${px(a.t) >= 44 ? `<span>${MO.ENTER[a.in][0]}</span>` : ''}<i class="mo-bh"></i></span>` : ''}
+        ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${pos(cur.start + cur.dur - a.ot)};width:max(6px,${pos(a.ot)})" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
+        ${a.loop !== 'none' ? `<span class="mo-lp" style="left:calc(${pos(cur.start + cur.dur)} - 18px)" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; } }));
+  }
   function tlHTML() {
-    const d = ED.d, tl = TL(), host = $('#edPages'), LBL = lbl(), avail = Math.max(200, (host ? host.clientWidth : 900) - LBL - 150); // room for the + Scene button at the end
+    const tl = TL(), host = $('#edPages'), LBL = lbl(), avail = Math.max(200, (host ? host.clientWidth : 900) - LBL - 150); // room for the + Scene button at the end
     // fit the whole video, but never squeeze a scene under ~84 px: the timeline scrolls sideways instead
     K = clamp(Math.max(avail / Math.max(1000, tl.total), 84 / Math.max(500, Math.min(...tl.scenes.map((s) => s.dur)))), 0.02, 0.3);
     const span = tl.total * K, step = [1000, 2000, 5000, 10000].find((s) => s * K >= 40) || 10000;
     const ticks = Array.from({ length: Math.floor(tl.total / step) + 1 }, (_, i) => `<span style="left:${i * step * K}px">${MO.fmtTime(i * step, false)}</span>`).join('');
-    const scenes = tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
-      return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${s.dur * K < 130 ? ' sm' : ''}" style="left:${s.start * K}px;width:${s.dur * K}px">
-        <button class="mo-sc-b" data-act="mo37Scene" data-i="${s.i}" title="${esc(lab)} · ${secs(s.dur)}" aria-label="${esc(lab)}, ${secs(s.dur)}" aria-current="${s.i === ED.pi}">${thumb(d.pages[s.i], d.ratio, 34, 44)}<span class="mo-sc-l"><b>${esc(lab)}</b><small>${secs(s.dur)}${s.i && s.tr !== 'cut' ? ` · ${trIcon(s.tr)} ${MO.TRANSITIONS[s.tr]}` : ''}</small></span></button>
-        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${s.start * K}px" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('')
+    const PX = (ms) => ms * K + 'px', W = (ms) => ms * K;
+    const scenes = sceneBlocks(PX, W)
       + `<button class="mo-addend${insAt === tl.scenes.length && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${tl.scenes.length}" style="left:${span + 10}px" title="Add a scene at the end">${ic('plus', 16)}<span>Scene</span></button>`;
-    const cur = tl.scenes[ED.pi], pg = curP(), sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
-    const rows = pg.layers.filter((l) => l.type !== 'group' && !isBg(l)).reverse();
-    const lane = (l) => { const a = MO.anim(l), on = a.in !== 'none';
-      return `<div class="mo-lane${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}"><span class="mo-life" style="left:${cur.start * K}px;width:${cur.dur * K}px"></span>
-        ${on ? `<span class="mo-bar" data-bar="${l.id}" style="left:${(cur.start + a.d) * K}px;width:${Math.max(6, a.t * K)}px" title="${MO.ENTER[a.in][0]} · starts at ${secs(a.d)} · lasts ${secs(a.t)}. Drag to move, drag the end to change the length.">${a.t * K >= 44 ? `<span>${MO.ENTER[a.in][0]}</span>` : ''}<i class="mo-bh"></i></span>` : ''}
-        ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${(cur.start + cur.dur - a.ot) * K}px;width:${Math.max(6, a.ot * K)}px" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
-        ${a.loop !== 'none' ? `<span class="mo-lp" style="left:${(cur.start + cur.dur) * K - 18}px" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; };
+    const sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []), lanes = layerLanes(PX, W), rows = lanes.map((x) => x.l);
     return `<div class="pgs-head mo-head">
         <span class="mo-ctl"><button class="tb" data-act="mo37Rew" title="Back to the start" aria-label="Back to the start">${ic('rew37', 15)}</button><button class="mo-play" id="mo37Play" data-act="mo37Play"></button><button class="tb ${PL.loop ? 'on' : ''}" data-act="mo37Loop" title="Loop playback" aria-label="Loop playback" aria-pressed="${PL.loop}">${ic('loop37', 15)}</button></span>
         <span class="mo-time"><b id="mo37T">${MO.fmtTime(PL.t)}</b><span> / ${MO.fmtTime(tl.total)}</span></span>
@@ -10168,7 +10180,7 @@ function clipCss(l, frames) {
         <div class="mo-gr" id="mo37Lanes" style="width:${span + 130}px">
           <div class="mo-ruler" data-scrub>${ticks}</div>
           <div class="mo-scrow">${scenes}</div>${AU.lanes(K, tl)}
-          ${rows.map(lane).join('')}${rows.length ? '' : '<div class="mo-lane"></div>'}
+          ${lanes.map((x) => x.html()).join('')}${rows.length ? '' : '<div class="mo-lane"></div>'}
           <div class="mo-ph" id="mo37Ph" style="transform:translateX(${PL.t * K}px)"><i data-scrub></i></div>
         </div></div></div>`;
   }
@@ -10182,10 +10194,22 @@ function clipCss(l, frames) {
     const tl = $('.mo-tl', host); if (tl && sl) { tl.scrollLeft = sl[0]; tl.scrollTop = sl[1]; }
   };
 
+  /* the shell's timeline (reel-source.js): a scene's length and the animation bars drag here, the + / scene / clip buttons
+     act on click; its own lane seeks on everything else. Capture phase: ahead of the lane. */
+  document.addEventListener('pointerdown', (e) => {
+    if (!ED.d || !isMo(ED.d) || e.button !== 0) return;
+    const tr = e.target.closest && e.target.closest('.vs-tl-track'); if (!tr) return;
+    if (e.target.closest('[data-rs], [data-bar]')) { e.stopPropagation(); const w = tr.getBoundingClientRect().width, total = TL().total; if (w && total) tlDrag(e, tr, w / total); }
+    else if (e.target.closest('.vs-tl-row button')) e.stopPropagation();
+  }, true);
   /* drags in the timeline: scrub the playhead, change a scene's length, move or stretch an animation */
   document.addEventListener('pointerdown', (e) => {
     if (!ED.d || !isMo(ED.d) || e.button !== 0) return;
     const lanes = $('#mo37Lanes'); if (!lanes || !lanes.contains(e.target)) return;
+    tlDrag(e, lanes, K);
+  });
+  /** A drag in the lanes `lanes` drawn at `K` px per ms */
+  function tlDrag(e, lanes, K) {
     const x0 = lanes.getBoundingClientRect().left, at = (ev) => (ev.clientX - x0) / K, tl = TL();
     const rs = e.target.closest('[data-rs]'), bar = e.target.closest('[data-bar]'), scrub = e.target.closest('[data-scrub]') || (!e.target.closest('button') && !rs && !bar);
     let move = null, done = null;
@@ -10211,7 +10235,7 @@ function clipCss(l, frames) {
     e.preventDefault(); let moved = false;
     const mv = (ev) => { moved = true; move(ev); }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); done(moved); };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
-  });
+  }
 
   const isEmpty = (pg) => pg.layers.every((l) => isBg(l) || l.hidden);
   const KIND_GROUPS = { intro: 'Intros', body: 'Scenes', outro: 'Outros' };
@@ -10576,6 +10600,30 @@ function clipCss(l, frames) {
     });
   };
   RT.motion = { play, pause, exitPreview, record }; // for the agent and tests
+  /* the Video Studio shell (reel-source.js) drives reels: the player under its transport, the scene blocks and the
+     layer lanes in its timeline (in % of the video, the timeline zooms them), and onTime, set by the source */
+  const pct = (ms) => { const t = TL().total; return (t ? Math.max(0, (ms / t) * 100) : 0).toFixed(3) + '%'; };
+  function seek(ms) {
+    if (!ED.d || !isMo(ED.d)) return; const total = TL().total;
+    PL.t = clamp(+ms || 0, 0, Math.max(0, total - 1)); if (PL.on) PL.at = performance.now() - PL.t;
+    draw(PL.t); controls();
+  }
+  RT.moReel = {
+    player: {
+      toggle: () => (PL.on ? pause() : play()), play: () => play(), pause, seek,
+      time: () => PL.t, duration: () => (ED.d && isMo(ED.d) ? TL().total : 0), playing: () => PL.on,
+      frameMs: () => 1000 / ((ED.d && ED.d.motion && ED.d.motion.fps) || 30),
+    },
+    loop: () => PL.loop,
+    scenesHTML: (pps) => (ED.d && isMo(ED.d) ? sceneBlocks(pct, (ms) => (ms / 1000) * pps) : ''),
+    /** Opens the scene library aimed at the end of the video (the transport's + Scene) */
+    addAtEnd: () => { if (ED.d && isMo(ED.d)) openLibrary(ED.d.pages.length); },
+    clipsHTML: () => (ED.d && isMo(ED.d) ? AU.clipsHTML(TL(), pct) : { music: '', voice: '' }),
+    layers: () => (ED.d && isMo(ED.d) ? layerLanes(pct, () => 0)
+      .map(({ l, html }) => ({ id: l.id, name: l.name, type: l.type, html: (pps) => html((ms) => (ms / 1000) * pps) })) : []),
+    fit: () => { if (ED.fit) requestAnimationFrame(fitZoom); },
+    onTime: null,
+  };
 })();
 
 /* ============ v38 · audio in videos: music, a voice-over per scene (script by Claude, voice by AI or recorded), captions ============ */
@@ -10655,16 +10703,18 @@ function clipCss(l, frames) {
 
   /* ---------- timeline: a Music and a Voice lane under the scenes ---------- */
   AU.labels = () => (ED.d && isMo(ED.d) ? `<div class="mo-gl-r au-lbl">${ic('music38', 13, 'faint')}<span>Music</span></div><div class="mo-gl-r au-lbl">${ic('mic38', 13, 'faint')}<span>Voice</span></div>` : '');
-  AU.lanes = (K, tl) => {
-    const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track);
-    const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${tl.total * K}px" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
+  /** The music clip and the voice clips; pos(ms) is a CSS length (px in the strip, % in the shell's timeline) */
+  AU.clipsHTML = (tl, pos) => {
+    const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track), w = (ms) => `max(8px,${pos(ms)})`;
+    const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${pos(tl.total)}" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
     const lines = tl.scenes.map((s) => { const vo = AUD.voOf(d.pages[s.i]), c = cl.find((x) => x.i === s.i), text = vo && String(vo.text || '').trim(); if (!c && !text) return '';
       const name = text || vo.name || 'Voice';
-      return c ? `<button class="au-clip au-v${c.over ? ' over' : ''}" data-act="au38Open" style="left:${c.start * K}px;width:${Math.max(8, c.dur * K)}px" title="${esc(label(s.i))}: ${text ? `“${esc(text)}”` : esc(name)}${c.over ? ' · runs past the scene' : ''}">${ic('wave38', 11)}<span>${esc(name)}</span></button>`
-        : `<button class="au-clip au-s" data-act="au38Open" style="left:${(s.start + AUD.LEAD) * K}px;width:${Math.max(8, s.dur * K - AUD.LEAD * K - 4)}px" title="Script only: no voice yet">${esc(text)}</button>`; }).join('');
-    const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${tr.start * K}px;width:${Math.max(8, tr.dur * K)}px" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
-    return `<div class="mo-lane au-lane">${music}</div><div class="mo-lane au-lane">${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}</div>`;
+      return c ? `<button class="au-clip au-v${c.over ? ' over' : ''}" data-act="au38Open" style="left:${pos(c.start)};width:${w(c.dur)}" title="${esc(label(s.i))}: ${text ? `“${esc(text)}”` : esc(name)}${c.over ? ' · runs past the scene' : ''}">${ic('wave38', 11)}<span>${esc(name)}</span></button>`
+        : `<button class="au-clip au-s" data-act="au38Open" style="left:${pos(s.start + AUD.LEAD)};width:max(8px,calc(${pos(s.dur - AUD.LEAD)} - 4px))" title="Script only: no voice yet">${esc(text)}</button>`; }).join('');
+    const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${pos(tr.start)};width:${w(tr.dur)}" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
+    return { music, voice: `${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}` };
   };
+  AU.lanes = (K, tl) => { const h = AU.clipsHTML(tl, (ms) => ms * K + 'px'); return `<div class="mo-lane au-lane">${h.music}</div><div class="mo-lane au-lane">${h.voice}</div>`; };
 
   /* ---------- left rail: Audio, for videos ---------- */
   const ri = RAIL.findIndex((r) => r[0] === 'motion'); RAIL.splice(ri + 1, 0, ['audio', 'Audio', 'music38']);
@@ -11048,6 +11098,8 @@ const wrapEd = (w) => {
 const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() };
 /* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
 const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
+/* reels: the motion editor (v37 / v38) is the shell's `reel` source */
+installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
   wrapEd, ed: edApi, VS });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */

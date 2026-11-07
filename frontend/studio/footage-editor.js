@@ -251,7 +251,6 @@ export function installFootageEditor(ctx, FT) {
   const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, ed, brand, VS } = ctx;
   Object.assign(IC, {
     ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>',
-    ftFilm: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
     ftVoice: '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
   });
   const $ = (s, r = document) => r.querySelector(s);
@@ -432,7 +431,7 @@ export function installFootageEditor(ctx, FT) {
     const clip = poster ? `<div class="vs-tl-clip has-poster" style="${esc(`background-image:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url("${poster}")`)}"><span dir="auto">${esc(name)}</span></div>`
       : `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>`;
     return [
-      { id: 'video', icon: ic('ftFilm', 14), label: 'Video', html: () => clip },
+      { id: 'video', icon: ic('vsFilm', 14), label: 'Video', html: () => clip },
       { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
     ];

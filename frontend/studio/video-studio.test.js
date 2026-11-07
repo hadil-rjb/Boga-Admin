@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { railFor, inspectorRoute, railTab, SOON, takesOver } from './video-studio.js';
+import { kindOf } from './caption-store.js';
+import { installReelSource, captionBlocks } from './reel-source.js';
 
 const keys = (kind) => railFor(kind).map((r) => r[0]);
 
@@ -71,10 +73,81 @@ describe('panels without content yet', () => {
 });
 
 describe('takesOver', () => {
-  it('only videos open in the shell for now', () => {
+  it('videos and reels open in the shell, stills keep the editor', () => {
     expect(takesOver({ footage: { src: 'a' } })).toBe(true);
-    expect(takesOver({ motion: {} })).toBe(false);
+    expect(takesOver({ motion: {} })).toBe(true);
     expect(takesOver({ pages: [] })).toBe(false);
     expect(takesOver(null)).toBe(false);
+  });
+});
+
+describe('the styles rail item', () => {
+  it('has its own icon (Brand keeps the palette)', () => {
+    for (const kind of ['video', 'reel']) {
+      const r = Object.fromEntries(railFor(kind).map(([k, , i]) => [k, i]));
+      expect(r.styles).not.toBe('palette');
+    }
+  });
+});
+
+/* ---------- the reel source ---------- */
+const scene = (dur, vo) => ({ id: 'p' + dur, layers: [], scene: { k: 'body', dur, tr: 'cut', trd: 400, ...(vo ? { vo } : {}) } });
+const reel = (extra = {}) => ({ motion: { fmt: 'reel', fps: 30 }, ratio: '9:16', pages: [scene(3000), scene(2000)], ...extra });
+/** A fake shell and motion editor: the source registers on VS, the motion closure gives the scene and audio html */
+function fakeReel(d, layers = []) {
+  const reg = {};
+  const VS = { register: (k, s) => { reg[k] = s; }, reset() {}, refresh() {}, tick() {}, select() {} };
+  const M = {
+    player: { toggle() {}, play() {}, pause() {}, seek() {}, time: () => 0, duration: () => 5000, playing: () => false },
+    scenesHTML: () => '<i>scenes</i>', clipsHTML: () => ({ music: '<i>music</i>', voice: '<i>voice</i>' }),
+    layers: () => layers, loop: () => false, fit() {},
+  };
+  const src = installReelSource({ ED: { d }, ACT: {}, VS, M, ic: (n) => `<${n}>`, esc: (x) => String(x), canEdit: () => true, mutate: (f) => f(), save() {} });
+  return { reg, src };
+}
+
+describe('reel source', () => {
+  it('a motion design with 2 scenes is a reel, and its tracks are scenes, captions, voice, music in that order', () => {
+    const d = reel();
+    expect(kindOf(d)).toBe('reel');
+    const { reg, src } = fakeReel(d);
+    expect(reg.reel).toBe(src);
+    expect(src.tracks().map((t) => t.id)).toEqual(['scenes', 'captions', 'voice', 'music']);
+  });
+  it('draws the scenes and the audio clips from the motion editor', () => {
+    const { src } = fakeReel(reel());
+    const html = Object.fromEntries(src.tracks().map((t) => [t.id, t.html(40)]));
+    expect(html).toMatchObject({ scenes: '<i>scenes</i>', voice: '<i>voice</i>', music: '<i>music</i>' });
+  });
+  it('the player is the motion editor\'s', () => {
+    const { src } = fakeReel(reel());
+    for (const k of ['toggle', 'play', 'pause', 'seek', 'time', 'duration', 'playing']) expect(typeof src.player[k]).toBe('function');
+  });
+  it('layer lanes come below the scenes behind a Layers row, collapsed by default', () => {
+    const ly = [{ id: 'a', name: 'Title', type: 'text', html: () => '<i>a</i>' }];
+    const { src } = fakeReel(reel(), ly);
+    const ids = src.tracks().map((t) => t.id);
+    expect(ids).toEqual(['scenes', 'captions', 'voice', 'music', 'layers']);
+    const L = src.tracks()[4];
+    expect(L.toggle).toBe('fold'); expect(L.open).toBe(false);
+  });
+  it('captions, styles and script are the shell\'s; the reel\'s own panels stay the editor\'s', () => {
+    const { src } = fakeReel(reel());
+    for (const k of ['captions', 'styles', 'script']) expect(src.nativePanel(k)).toBe(false);
+    for (const k of ['templates', 'motion', 'audio', 'elements', 'text', 'uploads', 'figma', 'brand', 'data', 'comps', 'agent']) expect(src.nativePanel(k)).toBe(true);
+  });
+  it('the captions track follows the audio captions switch', () => {
+    expect(fakeReel(reel()).src.tracks()[1].hidden).toBe(true);
+    expect(fakeReel(reel({ audio: { captions: true } })).src.tracks()[1].hidden).toBe(false);
+  });
+});
+
+describe('captionBlocks', () => {
+  it('one block per scene with a voice-over line: the clip (plus its tail) inside its scene, or the whole scene without a clip', () => {
+    const d = reel(); d.pages[0].scene.vo = { text: 'Hello there', src: 'a.mp3', dur: 1000 }; d.pages[1].scene.vo = { text: ' Bye ' };
+    expect(captionBlocks(d)).toEqual([{ i: 0, start: 150, end: 1550, text: 'Hello there' }, { i: 1, start: 3000, end: 5000, text: 'Bye' }]);
+  });
+  it('no line, no block', () => {
+    expect(captionBlocks(reel())).toEqual([]);
   });
 });
