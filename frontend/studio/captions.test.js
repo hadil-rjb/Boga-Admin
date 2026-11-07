@@ -27,7 +27,7 @@ describe('captions', () => {
   it('style.family overrides ahead of the stack', () => { const { c, fonts } = recCtx(); draw(c, one, { ...DEFAULT_STYLE, family: '"MyFont"' }, 50, 1080, 1920); expect(fonts.every((f) => f.includes('px "MyFont", "Cairo"'))).toBe(true); });
   it('every stack starts with an Arabic-capable family', () => { expect(Object.keys(FONT_STACKS).sort()).toEqual(['display', 'sans', 'sans-bold', 'serif']); for (const v of Object.values(FONT_STACKS)) expect(v).toMatch(/^"(Cairo|Noto Sans Arabic|Amiri|Lalezar)"/); });
   it('pop scales the active word briefly', () => { const l = one[0]; const st = { ...DEFAULT_STYLE, anim: 'pop' }; expect(animAt(st, l, 0, 66).scale).toBeGreaterThan(1); expect(animAt(st, l, 0, 200).scale).toBe(1); });
-  it('fade ramps alpha over 133 ms', () => { const l = one[0]; const st = { ...DEFAULT_STYLE, anim: 'fade' }; expect(animAt(st, l, 0, 0).alpha).toBe(0); expect(animAt(st, l, 0, 133).alpha).toBe(1); expect(animAt(DEFAULT_STYLE, l, 0, 0)).toEqual({ alpha: 1, scale: 1 }); });
+  it('fade ramps alpha over 133 ms', () => { const l = one[0]; const st = { ...DEFAULT_STYLE, anim: 'fade' }; expect(animAt(st, l, 0, 0).alpha).toBe(0); expect(animAt(st, l, 0, 133).alpha).toBe(1); expect(animAt(DEFAULT_STYLE, l, 0, 0)).toEqual({ alpha: 1, scale: 1, dy: 0, visible: true, highlight: false }); });
   it('lines=2 wraps a long line, lines=1 does not', () => {
     const line = { words: ['alpha', 'bravo', 'charlie', 'delta'].map((t, i) => W(t, i, i + 1)) };
     const ys = (st) => new Set(layout(fakeCtx, line, st, 200, 1000).words.map((x) => x.y)).size;
@@ -251,5 +251,97 @@ describe('style fields', () => {
     const alphaAtBox = (st) => { const c = rec(l1, st, 50, 1000, 1000); return c.slice(0, c.findIndex((x) => x[0] === 'fill')).filter((x) => x[1] === 'globalAlpha').pop()[2]; };
     expect(alphaAtBox({ ...BOX, boxOpacity: 0.4 })).toBeCloseTo(0.4);
     expect(alphaAtBox(BOX)).toBe(1);
+  });
+});
+
+describe('animations', () => {
+  const ln = { id: 'x', start: 100, end: 2000, words: [W('a', 200, 600), W('b', 600, 1000), W('c', 1000, 1400)] };
+  const st = (anim, extra) => ({ ...DEFAULT_STYLE, anim, ...extra });
+  const D = 133;
+  it('karaoke: every word visible, highlight fills as words start', () => {
+    const f = (ms) => [0, 1, 2].map((i) => animAt(st('karaoke'), ln, i, ms));
+    expect(f(599).map((a) => a.highlight)).toEqual([true, false, false]);
+    expect(f(600 + D / 2).map((a) => a.highlight)).toEqual([true, true, false]);
+    expect(f(1000 + 3 * D).map((a) => a.highlight)).toEqual([true, true, true]);
+    expect(f(199).map((a) => a.highlight)).toEqual([false, false, false]);
+    expect(f(199).every((a) => a.visible && a.alpha === 1 && a.dy === 0)).toBe(true);
+  });
+  it('word: visible only from w.s', () => {
+    const v = (ms) => animAt(st('word'), ln, 1, ms).visible;
+    expect([v(599), v(600 + D / 2), v(600 + 3 * D)]).toEqual([false, true, true]);
+  });
+  it('typewriter: visible from w.s, alpha ramps 0 to 1', () => {
+    const a = (ms) => animAt(st('typewriter'), ln, 1, ms);
+    expect(a(599).visible).toBe(false);
+    expect(a(600).visible).toBe(true);
+    expect(a(600).alpha).toBe(0);
+    expect(a(600 + D / 2).alpha).toBeCloseTo(0.5);
+    expect(a(600 + 3 * D).alpha).toBe(1);
+  });
+  it('bounce: dy -0.25 before, overshoots, settles to 0 after 2 ramps', () => {
+    const a = (ms) => animAt(st('bounce'), ln, 1, ms);
+    expect(a(599).dy).toBeCloseTo(-0.25);
+    expect(a(600 + D / 2).dy).toBeLessThan(0);
+    expect(a(600 + D / 2).dy).toBeGreaterThan(-0.25);
+    expect(a(600 + 3 * D).dy).toBe(0);
+    const peak = Math.max(...Array.from({ length: 27 }, (_, k) => a(600 + k * 10).dy));
+    expect(peak).toBeGreaterThan(0);
+    expect(a(599).visible && a(599).alpha === 1).toBe(true);
+  });
+  it('slide: line level dy 0.6 to 0 and alpha 0 to 1 after line.start', () => {
+    const a = (ms, i = 0) => animAt(st('slide'), ln, i, ms);
+    expect(a(99)).toMatchObject({ dy: 0.6, alpha: 0, visible: true });
+    expect(a(100 + D / 2).dy).toBeCloseTo(0.3);
+    expect(a(100 + D / 2).alpha).toBeCloseTo(0.5);
+    expect(a(100 + 3 * D)).toMatchObject({ dy: 0, alpha: 1 });
+    expect(a(100 + D / 2, 2).dy).toBeCloseTo(a(100 + D / 2, 0).dy);
+  });
+  it('animSpeed scales the ramp and is clamped to 0.5-2', () => {
+    expect(animAt(st('typewriter', { animSpeed: 2 }), ln, 1, 600 + D / 4).alpha).toBeCloseTo(0.5);
+    expect(animAt(st('typewriter', { animSpeed: 100 }), ln, 1, 600 + D / 4).alpha).toBeCloseTo(0.5);
+    expect(animAt(st('typewriter', { animSpeed: 0.5 }), ln, 1, 600 + D).alpha).toBeCloseTo(0.5);
+    expect(animAt(st('typewriter', { animSpeed: 0.01 }), ln, 1, 600 + D).alpha).toBeCloseTo(0.5);
+  });
+  const one1 = { id: 'o', start: 100, end: 900, words: [W('a', 300, 900)] };
+  it('changeTimes: 4 ramp steps after each word start for typewriter and bounce', () => {
+    for (const a of ['typewriter', 'bounce']) {
+      const t = changeTimes([one1], st(a), 2000);
+      for (const v of [333, 367, 400, 433]) expect(t).toContain(v);
+    }
+    expect(changeTimes([one1], st('typewriter'), 2000)).toEqual([0, 100, 300, 333, 367, 400, 433, 900]);
+  });
+  it('changeTimes: slide steps after line.start, karaoke and word add none', () => {
+    expect(changeTimes([one1], st('slide'), 2000)).toEqual([0, 100, 133, 167, 200, 233, 300, 900]);
+    expect(changeTimes([one1], st('karaoke'), 2000)).toEqual([0, 100, 300, 900]);
+    expect(changeTimes([one1], st('word'), 2000)).toEqual([0, 100, 300, 900]);
+  });
+  it('changeTimes: animSpeed 2 halves the ramp', () => {
+    expect(changeTimes([one1], st('typewriter', { animSpeed: 2 }), 2000)).toEqual([0, 100, 300, 317, 333, 350, 367, 900]);
+  });
+  it('changeTimes honours style.offset (clamped, integer, sorted)', () => {
+    const t = changeTimes([one1], st('none', { offset: 500 }), 1200);
+    expect(t).toEqual([0, 600, 800]);
+    expect(changeTimes([one1], st('none', { offset: -150 }), 2000)).toEqual([0, 150, 750]);
+    expect(changeTimes([one1], DEFAULT_STYLE, 2000)).toEqual([0, 100, 300, 900]);
+  });
+  const calls = (style, ms) => { const out = []; const c = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
+    get: (o, k) => (k in o ? o[k] : (...a) => { out.push([k, ...a]); }),
+    set: (o, k, v) => { out.push(['set', k, v]); o[k] = v; return true; },
+  }); draw(c, [ln], style, ms, 1000, 1000); return out; };
+  const texts = (c) => c.filter((x) => x[0] === 'fillText').map((x) => x[1]);
+  it('draw skips invisible words for word and typewriter', () => {
+    expect(texts(calls(st('word'), 650))).toEqual(['a', 'b']);
+    expect(texts(calls(st('typewriter'), 650))).toEqual(['a', 'b']);
+    expect(texts(calls(st('none'), 650))).toEqual(['a', 'b', 'c']);
+  });
+  it('draw fills karaoke words progressively with highlight colours', () => {
+    const fills = (ms) => calls(st('karaoke'), ms).filter((x) => x[0] === 'set' && x[1] === 'fillStyle').map((x) => x[2]);
+    const hl = DEFAULT_STYLE.highlight;
+    expect(fills(650).filter((c) => c === hl.text)).toHaveLength(2);
+    expect(fills(1100).filter((c) => c === hl.text)).toHaveLength(3);
+  });
+  it('draw applies dy for bounce', () => {
+    const y = (ms) => calls(st('bounce'), ms).filter((x) => x[0] === 'translate')[2][2];
+    expect(y(599)).toBeLessThan(y(1000 + 3 * D));
   });
 });

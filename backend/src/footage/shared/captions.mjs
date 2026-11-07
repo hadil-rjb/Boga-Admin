@@ -152,34 +152,64 @@ export const fontOf = (style, px) => {
 };
 
 const ANIM_MS = 133;
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+// Ramp duration (ms) of a style: ANIM_MS / animSpeed, speed clamped to 0.5-2.
+const animDur = (style) => ANIM_MS / Math.min(2, Math.max(0.5, Number(style.animSpeed) || 1));
+const OVERSHOOT = 1.70158;
 // Deterministic per-word animation state from time alone.
+// dy is a fraction of the font px (positive = down); visible:false words are not drawn;
+// highlight:true marks a word as active (karaoke fills every word whose start has passed).
 export function animAt(style, line, wordIndex, ms) {
-  let alpha = 1;
-  let scale = 1;
-  if (style.anim === 'fade') alpha = Math.min(1, Math.max(0, (ms - line.start) / ANIM_MS));
-  if (style.anim === 'pop') {
-    const d = ms - line.words[wordIndex].s;
-    if (d >= 0 && d < ANIM_MS) scale = 1 + 0.12 * (1 - Math.abs((2 * d) / ANIM_MS - 1));
+  const st = withDefaults(style);
+  const dur = animDur(st);
+  const w = line.words[wordIndex];
+  let alpha = 1, scale = 1, dy = 0, visible = true, highlight = false;
+  switch (st.anim) {
+    case 'fade': alpha = clamp01((ms - line.start) / dur); break;
+    case 'pop': {
+      const d = ms - w.s;
+      if (d >= 0 && d < dur) scale = 1 + 0.12 * (1 - Math.abs((2 * d) / dur - 1));
+      break;
+    }
+    case 'karaoke': highlight = w.s <= ms; break;
+    case 'word': visible = w.s <= ms; break;
+    case 'typewriter': visible = w.s <= ms; alpha = clamp01((ms - w.s) / dur); break;
+    case 'bounce': {
+      const q = clamp01((ms - w.s) / (2 * dur)) - 1;
+      const e = 1 + (OVERSHOOT + 1) * q * q * q + OVERSHOOT * q * q; // ease-out-back: 0 -> overshoot -> 1
+      dy = 0.25 * (e - 1) + 0;
+      break;
+    }
+    case 'slide': {
+      const p = clamp01((ms - line.start) / dur);
+      alpha = p; dy = 0.6 * (1 - p);
+      break;
+    }
+    default:
   }
-  return { alpha, scale };
+  return { alpha, scale, dy, visible, highlight };
 }
 
 // Every ms in [0, durMs) at which draw() output changes: 0, each line's start and end, each word's start and end, and,
-// when the style animates, 4 steps across the 133 ms after each word start (the export samples the ramp there), and for
-// fade the same 4 steps after the line's start (its alpha ramp starts there).
+// when the style animates, 4 steps across the ramp (133 ms / animSpeed) after each word start for pop, fade, typewriter
+// and bounce (bounce also steps through its second half, 8 steps over 2 ramps), and for fade and slide the same 4
+// steps after the line's start (their ramps start there). Every time is shifted by style.offset (draw runs at ms - offset).
 // Lines without words are skipped (lineAt never shows them). Sorted, deduplicated, integers.
 export function changeTimes(lines, style, durMs) {
+  const st = withDefaults(style);
   const set = new Set([0]);
-  const add = (t) => { const v = Math.round(t); if (v >= 0 && v < durMs) set.add(v); };
-  const anim = style && style.anim && style.anim !== 'none';
+  const add = (t) => { const v = Math.round(t + st.offset); if (v >= 0 && v < durMs) set.add(v); };
+  const dur = animDur(st);
+  const wordRamp = { fade: 4, pop: 4, typewriter: 4, bounce: 8 }[st.anim] || 0;
+  const lineRamp = st.anim === 'fade' || st.anim === 'slide';
   for (const l of lines || []) {
     if (!l || !l.words || !l.words.length) continue;
     add(l.start); add(l.end);
-    // fade ramps alpha from the line's start, which can come before its first word
-    if (style && style.anim === 'fade') for (let k = 1; k <= 4; k++) add(l.start + (k * ANIM_MS) / 4);
+    // fade and slide ramp from the line's start, which can come before its first word
+    if (lineRamp) for (let k = 1; k <= 4; k++) add(l.start + (k * dur) / 4);
     for (const w of l.words) {
       add(w.s); add(w.e);
-      if (anim) for (let k = 1; k <= 4; k++) add(w.s + (k * ANIM_MS) / 4);
+      for (let k = 1; k <= wordRamp; k++) add(w.s + (k * dur) / 4);
     }
   }
   return [...set].sort((a, b) => a - b);
@@ -263,11 +293,13 @@ export function draw(ctx, lines, style, ms, w, h) {
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.globalAlpha = animAt(style, line, 0, ms).alpha;
+  // typewriter fades per word below; every other animation fades the whole line (and its box) together
+  ctx.globalAlpha = style.anim === 'typewriter' ? 1 : animAt(style, line, 0, ms).alpha;
+  const boxDy = style.anim === 'slide' ? animAt(style, line, 0, ms).dy * style.size * h : 0;
   if (style.box) {
     const pad = (style.box.pad || 0.012) * h;
     ctx.fillStyle = style.box.color;
-    roundRect(ctx, L.x - pad * 2, L.y - pad, L.w + pad * 4, L.h + pad * 2, (style.box.radius || 0.18) * L.h);
+    roundRect(ctx, L.x - pad * 2, L.y - pad + boxDy, L.w + pad * 4, L.h + pad * 2, (style.box.radius || 0.18) * L.h);
     if (style.boxOpacity !== 1) {
       const a = ctx.globalAlpha;
       ctx.globalAlpha = a * style.boxOpacity; ctx.fill(); ctx.globalAlpha = a;
@@ -276,8 +308,12 @@ export function draw(ctx, lines, style, ms, w, h) {
   if (style.shadow) {
     ctx.shadowColor = style.shadow.color; ctx.shadowBlur = style.shadow.blur * h; ctx.shadowOffsetY = style.shadow.y * h;
   }
-  for (const b of L.words) {
-    const on = b.i === act && hl;
+  for (const b0 of L.words) {
+    const a = animAt(style, line, b0.i, ms);
+    if (!a.visible) continue;
+    const b = a.dy ? { ...b0, y: b0.y + a.dy * b0.h } : b0;
+    const on = (style.anim === 'karaoke' ? a.highlight : b.i === act) && hl;
+    if (style.anim === 'typewriter') ctx.globalAlpha = a.alpha;
     if (on && hl.mode === 'box') {
       const pad = b.h * 0.12;
       ctx.fillStyle = hl.color;
@@ -285,7 +321,7 @@ export function draw(ctx, lines, style, ms, w, h) {
       ctx.fill();
     }
     const fill = on && hl.mode === 'box' ? hl.text : on && hl.mode === 'color' ? hl.color : style.color;
-    const k = (on && hl.mode === 'scale' ? 1.12 : 1) * animAt(style, line, b.i, ms).scale;
+    const k = (on && hl.mode === 'scale' ? 1.12 : 1) * a.scale;
     drawWord(ctx, shown(line.words[b.i].t, style), b, style, fill, k, h);
   }
   ctx.restore();
