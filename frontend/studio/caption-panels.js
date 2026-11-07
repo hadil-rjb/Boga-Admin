@@ -16,7 +16,7 @@
    ============================================================ */
 import { group, retext, split, merge, addLine, lineAt, withDefaults, draw, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
 import { CATEGORIES, PRESETS, presetById, applyPreset, sampleLine } from './caption-presets.js';
-import { capsOf, kindOf, styleOf, migrateCaptions, CAPTIONS_DEFAULT } from './caption-store.js';
+import { capsOf, kindOf, styleOf, migrateCaptions, classicStyle, CAPTIONS_DEFAULT } from './caption-store.js';
 import { voiceoverWords, spreadScript, needsRebuild, voSig, linesFromScript, parseSubtitles, toSrt } from './caption-sources.js';
 import { timeline } from './motion.js';
 import { audioOf, voOf, LEAD } from './audio.js';
@@ -46,10 +46,15 @@ export function textCommit(lines, id, value) {
   return ls.map((l, k) => (k === i ? retext(l, value) : l));
 }
 
+/** The brand body font, for the classic style of saved reels (installCaptionPanels sets it from the brand) */
+let brandFont = () => null;
 /** A design's captions without writing anything: a reel never opened since keeps its switch in `d.audio.captions` */
 export function capsView(d) {
   if (d && d.captions) return d.captions;
-  if (kindOf(d) === 'reel') return { ...CAPTIONS_DEFAULT, lines: [], on: !!(d.audio && d.audio.captions), source: 'voiceover' };
+  if (kindOf(d) === 'reel') {
+    const on = !!(d.audio && d.audio.captions);
+    return { ...CAPTIONS_DEFAULT, lines: [], on, source: 'voiceover', ...(on ? { style: classicStyle(d, brandFont()), styleFrom: 'classic' } : {}) };
+  }
   return { ...CAPTIONS_DEFAULT, lines: [] };
 }
 /**
@@ -136,7 +141,7 @@ export const linesOf = (d) => (kindOf(d) === 'reel' ? reelCaptions(d) : capsView
 /** A reel's captions on the design (the legacy switch moved over): off and from the voice-over when it never had any */
 export function prepareReel(d) {
   if (kindOf(d) !== 'reel') return false;
-  let changed = migrateCaptions(d);
+  let changed = migrateCaptions(d, { font: brandFont() });
   if (!d.captions) { d.captions = { ...CAPTIONS_DEFAULT, lines: [], on: false, source: 'voiceover' }; changed = true; }
   return changed;
 }
@@ -250,8 +255,11 @@ export function captionLang(d) {
 export function styleLabel(c, nameOf) {
   if (c && c.preset != null) { const p = presetById(c.preset); if (p) return p.name; const n = nameOf && nameOf(c.preset); if (n) return n; }
   const f = c && c.styleFrom;
-  return f === 'reference' ? 'Reference' : f === 'look' ? 'Brand look' : (f === 'custom' || (c && c.style && !f)) ? 'Custom' : 'Default';
+  return f === 'reference' ? 'Reference' : f === 'look' ? 'Brand look' : f === 'classic' ? 'Classic' : (f === 'custom' || (c && c.style && !f)) ? 'Custom' : 'Default';
 }
+/** A sentence on where the style came from, when the label alone does not say it (the classic look of saved reels) */
+export const ORIGIN_NOTES = { classic: 'Captions use the classic style.' };
+export const originNote = (c) => (c && c.preset == null && c.styleFrom && ORIGIN_NOTES[c.styleFrom]) || null;
 export const pushRecent = (ids, id) => [id, ...(ids || []).filter((x) => x !== id)].slice(0, RECENT_MAX);
 
 /* the style writers change `d` in place: call them inside mutate() */
@@ -438,6 +446,7 @@ export function installCaptionPanels(ctx, VS) {
   const recents = () => (recent || (recent = readRecent()));
   const pushRecentId = (id) => { recent = pushRecent(recents(), id); try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); } catch (e) { /* private mode: kept for this session */ } };
   const getBrand = () => { try { return (brand && brand()) || null; } catch (e) { return null; } };
+  brandFont = () => { const b = getBrand(); return (b && b.fonts && b.fonts.body) || null; };
   /** The brand's saved caption styles, then its looks that carry one (read-only here) */
   function brandItems() {
     const b = getBrand(); if (!b) return [];
@@ -483,7 +492,8 @@ export function installCaptionPanels(ctx, VS) {
     const c = capsView(d), ro = !can(), label = styleLabel(c, (id) => { const it = brandItems().find((x) => x.id === id); return it && it.name; });
     if (VS.captions && VS.captions.loadFonts) VS.captions.loadFonts();
     const chips = chipsFor(d).map(([k, n, ct]) => `<button class="chip${cat === k ? ' on' : ''}" data-act="stCat" data-k="${k}" aria-pressed="${cat === k}">${esc(n)} <span class="st-ct">${ct}</span></button>`).join('');
-    return `<div class="st"><div class="cp-head"><h3>Styles</h3><span class="xs-t muted st-cur">${esc(label)}</span></div>
+    const note = originNote(c);
+    return `<div class="st"><div class="cp-head"><h3>Styles</h3><span class="xs-t muted st-cur"${note ? ` title="${esc(note)}"` : ''}>${esc(label)}</span></div>${note ? `<p class="xs-t muted st-origin">${esc(note)}</p>` : ''}
       <label class="cp-search">${ic('search', 15)}<input class="field" type="search" data-st-q value="${esc(sq)}" placeholder="Search styles" aria-label="Search styles"></label>
       <div class="chips st-chips">${chips}</div><div id="stGrid">${gridHTML(d)}</div>
       ${ro ? '' : `<div class="ft-foot"><button class="btn secondary sm" data-act="stSave">${ic('plus', 15)}Save as brand style</button></div>`}</div>`;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterRows, fold, rebuildOffer, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, PENDING_NOTE, applySrt, decodeSubtitleBytes, fileBase } from './caption-panels.js';
+import { filterRows, fold, rebuildOffer, reelCaptions, linesOf, capsView, toggleCaptions, editCaptions, rebuildFromVoiceover, prepareReel, hasVoiceover, captionsOn, captionFrame, presetsFor, addBrandStyle, pushRecent, applyPresetTo, applyBrandStyle, editStyle, removeBrandStyle, langFromLines, captionLang, styleLabel, originNote, BRAND_STYLE_MAX, scriptAction, srtAction, setLines, SPREAD_NOTE, PENDING_NOTE, applySrt, decodeSubtitleBytes, fileBase } from './caption-panels.js';
 import { needsRebuild, voSig } from './caption-sources.js';
 import { capsOf as capsOf15 } from './caption-store.js';
 
@@ -118,6 +118,22 @@ describe('editCaptions', () => {
     expect(d.captions.source).toBe('voiceover');
     expect(words(reelCaptions(d))).toEqual(['Hello', 'there', 'friends', 'Bye', 'now']);
     expect(needsRebuild(d.captions, d.pages)).toBe(false);
+  });
+});
+
+describe('classic style of saved reels', () => {
+  it('a reel never opened since, captions on: the view and prepareReel both use the classic style', () => {
+    const d = reel({ audio: { captions: true } });
+    expect(capsView(d).styleFrom).toBe('classic');
+    expect(capsView(d).style.lines).toBe(2);
+    prepareReel(d);
+    expect(d.captions.styleFrom).toBe('classic');
+    expect(d.captions.on).toBe(true);
+  });
+  it('a reel never captioned keeps the default style', () => {
+    const d = reel(); prepareReel(d);
+    expect(d.captions.style).toBe(null);
+    expect(capsView(reel()).style).toBe(null);
   });
 });
 
@@ -266,6 +282,9 @@ describe('Styles panel: language, removal, label', () => {
     expect(styleLabel({ styleFrom: 'reference', style: {} })).toBe('Reference');
     expect(styleLabel({ styleFrom: 'look', style: {} })).toBe('Brand look');
     expect(styleLabel({ style: null })).toBe('Default');
+    expect(styleLabel({ styleFrom: 'classic', style: {} })).toBe('Classic');
+    expect(originNote({ styleFrom: 'classic', preset: null })).toBe('Captions use the classic style.');
+    expect(originNote({ styleFrom: 'look', preset: null })).toBe(null);
   });
   it('applyBrandStyle marks the applied card', () => {
     const d = { footage: {}, captions: { lines: [] } }; applyBrandStyle(d, { size: 0.05 }, 'custom', 'bs:1');

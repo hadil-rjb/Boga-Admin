@@ -15,7 +15,7 @@
    ============================================================ */
 import { group, layout, lineAt, withDefaults, DEFAULT_STYLE, FONT_STACKS } from './captions.js';
 import { capsOf, kindOf } from './caption-store.js';
-import { capsView, linesOf, editStyle, applyBrandStyle, styleLabel, captionsOn } from './caption-panels.js';
+import { capsView, linesOf, editStyle, applyBrandStyle, styleLabel, originNote, captionsOn } from './caption-panels.js';
 import { presetById } from './caption-presets.js';
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 
@@ -290,7 +290,7 @@ export function installCaptionInspector(ctx, VS) {
     const label = styleLabel(c, (id) => { const b = getBrand(); const lk = b && Array.isArray(b.looks) && String(id).startsWith('bl:') ? b.looks.find((l) => 'bl:' + l.id === id) : null; const bs = b && Array.isArray(b.captionStyles) && String(id).startsWith('bs:') ? b.captionStyles.find((x) => 'bs:' + x.id === id) : null; return (lk && lk.name) || (bs && bs.name) || null; });
     const grid = INSPECTOR_TABS.map(([k, l, i]) => `<button type="button" role="tab" class="cs-tab${tab === k ? ' on' : ''}" aria-selected="${tab === k}" data-act="csTab" data-k="${k}">${ic(i, 18)}<span>${esc(l)}</span></button>`).join('');
     const off = captionsOn(d) ? '' : '<p class="xs-t muted cs-off">Captions are off. Turn them on in the Captions panel to see this style.</p>';
-    return `<div class="cs" data-cs-root><div class="cs-head"><h3>Caption style</h3><span class="xs-t muted" title="${esc(presetById(c.preset) ? 'Preset' : 'Style')}">${esc(label)}</span></div>
+    return `<div class="cs" data-cs-root><div class="cs-head"><h3>Caption style</h3><span class="xs-t muted" title="${esc(originNote(c) || (presetById(c.preset) ? 'Preset' : 'Style'))}">${esc(label)}</span></div>
       <div class="cs-tabs" role="tablist" aria-label="Caption style">${grid}</div>
       <div class="cs-body" role="tabpanel" aria-label="${esc((INSPECTOR_TABS.find((t) => t[0] === tab) || [])[1] || '')}">${off}${TABS[tab](st, d)}</div></div>`;
   }

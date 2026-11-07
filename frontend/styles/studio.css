@@ -3206,7 +3206,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .cp-rebuild{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}.cp-rebuild span{flex:1;min-width:160px}
 .cp-rebuild-link{margin:0 0 8px}.cp-rebuild-link .btn.link{height:auto;padding:0 2px}
 /* the Styles panel (caption-panels.js) */
-.st-cur{white-space:nowrap}
+.st-cur{white-space:nowrap}.st-origin{margin:-4px 0 10px}
 .st-chips{margin-bottom:10px}.st-chips .chip{cursor:pointer}.st-ct{color:var(--text-3);font-size:11px;margin-left:2px}
 .st-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .st-wrap{position:relative;min-width:0}.st-del{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.55);color:#fff}.st-del:hover{background:rgba(0,0,0,.75)}
