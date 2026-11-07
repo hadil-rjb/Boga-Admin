@@ -80,11 +80,13 @@ export function installVideoStudio(ctx) {
   let sel = null, tl = null, tlHost = null, peaks = null, mounted = null;
   /** The source of the open design, or null when the shell does not take it over */
   const src = () => (ED.d && takesOver(ED.d) && SRC[kindOf(ED.d)]) || null;
-  const ready = (P) => !!P && (!P.ready || P.ready());
+  const ready = (P) => !!P && (!P.ready || !!P.ready());
 
   /* ---- transport ---- */
+  let ctlOk = null; // whether the drawn [data-vs-ctl] buttons are enabled: tick() touches them only when the player's ready state changes
   function transportHTML(S) {
     const P = S.player, ok = ready(P), ms = ok ? P.time() : 0, dur = ok ? P.duration() : 0, playing = ok && !!P.playing(), off = ok ? '' : 'disabled';
+    ctlOk = ok;
     const extra = S.transportExtra ? S.transportExtra() : '';
     return `<div class="ft-tp">
       <div class="ft-tp-g">
@@ -108,7 +110,7 @@ K  pause
     const t = $('#vsT'); if (t) t.textContent = fmtMs(ms);
     const td = $('#vsDur'); if (td) td.textContent = fmtMs(ok ? P.duration() : 0);
     // the transport is drawn before the player exists: enable it as soon as the player is there
-    document.querySelectorAll('[data-vs-ctl]').forEach((b) => { b.disabled = !ok; });
+    if (ok !== ctlOk) { ctlOk = ok; document.querySelectorAll('[data-vs-ctl]').forEach((b) => { b.disabled = !ok; }); }
     const pb = $('#vsPlay');
     if (pb && pb.dataset.on !== String(!!playing)) {
       const l = playing ? 'Pause (Space)' : 'Play (Space)';

@@ -91,7 +91,7 @@ export function createTimeline(host, opts = {}) {
   const val = (x, d) => (typeof x === 'function' ? x() : x === undefined ? d : x);
   const dur = () => +val(opts.dur, 0) || 0, now = () => +val(opts.time, 0) || 0, tracks = () => val(opts.tracks, []) || [];
   const can = () => val(opts.canEdit, true) !== false;
-  const st = { zoom: undefined, peaks: null, drag: null, scrubbing: false, last: undefined, ro: null, off: [] };
+  const st = { zoom: undefined, peaks: null, drag: null, scrubbing: false, last: undefined, caps: null, ro: null, off: [] };
 
   host.innerHTML = `<div class="vs-tl" role="group" aria-label="Timeline">
     <div class="vs-tl-side"><div class="vs-tl-zoom" role="group" aria-label="Timeline zoom" style="height:${RULER}px">
@@ -139,6 +139,8 @@ export function createTimeline(host, opts = {}) {
 
   /* ---- rows ---- */
   const captionsOf = () => (tracks().find((t) => t.id === 'captions') || {}).blocks || [];
+  /** The caption blocks as last drawn: redraw() reads the tracks again, setTime (every frame) only looks them up */
+  const drawnCaptions = () => st.caps || (st.caps = captionsOf());
   function blockHTML(b, i, d, ro) {
     return `<div class="vs-tl-blk${ro ? ' ro' : ''}" data-i="${i | 0}" data-id="${esc(b.id)}" style="left:${pc((b.start / d) * 100)}%;width:${pc(((b.end - b.start) / d) * 100)}%" title="${esc(`${fmt(b.start)} – ${fmt(b.end)}`)}">${ro ? '' : '<i class="vs-tl-h s" data-edge="start"></i>'}<span dir="auto">${esc(b.text)}</span>${ro ? '' : '<i class="vs-tl-h e" data-edge="end"></i>'}</div>`;
   }
@@ -160,6 +162,7 @@ export function createTimeline(host, opts = {}) {
   function redraw() {
     if (st.stopDrag) st.stopDrag(true); // the rows are about to be replaced: a drag in progress is cancelled, its preview restored
     const ts = tracks(), d = dur();
+    st.caps = (ts.find((t) => t.id === 'captions') || {}).blocks || [];
     hds.innerHTML = ts.map(headerHTML).join('');
     size();
     const pps = d ? trackWidth() / (d / 1000) : 0;
@@ -206,7 +209,7 @@ export function createTimeline(host, opts = {}) {
     const d = dur();
     head.style.left = d ? Math.min(100, Math.max(0, (ms / d) * 100)) + '%' : '0%';
     if (playing && d) follow(ms / d);
-    const b = captionsOf().find((x) => ms >= x.start && ms < x.end), id = b ? b.id : null;
+    const b = drawnCaptions().find((x) => ms >= x.start && ms < x.end), id = b ? b.id : null;
     if (id === st.last) return; st.last = id;
     rows.querySelectorAll('.vs-tl-blk.on').forEach((x) => x.classList.remove('on'));
     if (id) { const el = rows.querySelector(`.vs-tl-blk[data-id="${CSS.escape(id)}"]`); if (el) el.classList.add('on'); }
