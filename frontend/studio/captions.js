@@ -89,7 +89,7 @@ export function group(words, style) {
 }
 
 // Token-level LCS: returns [oldIdx, newIdx] pairs of kept tokens, in order.
-function lcsPairs(a, b) {
+export function lcsPairs(a, b) {
   const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
   for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
     dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
