@@ -19,6 +19,8 @@ app.enableCors({
   // plus any origins listed in CORS_ORIGIN (comma-separated), e.g. a preview deployment
   origin: [
     "https://boga-workspace.vercel.app",
+    "https://www.boga.agency",
+    "https://boga.agency",
     "http://localhost:3000",
     ...(process.env.CORS_ORIGIN || "").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean),
   ],
