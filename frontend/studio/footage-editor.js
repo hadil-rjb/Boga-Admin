@@ -11,7 +11,7 @@
    ============================================================ */
 import { apiUrl } from '../lib/api';
 import { group, retime, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
-import { lineText, captionsOn, langFromLines, editStyle } from './caption-panels.js';
+import { lineText, captionsOn, langFromLines, editStyle, fileBase } from './caption-panels.js';
 import { dragCaption } from './caption-inspector.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
@@ -182,7 +182,7 @@ export function exportPayload(d, size) {
   return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: on ? styleOf(d) : null, lines: on ? caps.lines || [] : [] }, out: ft.out }, w: size.w, h: size.h, fps };
 }
 /** The download's file name: the design name, the size, .mp4 */
-export const exportName = (d, size) => `${(String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video')}-${size.w}x${size.h}.mp4`;
+export const exportName = (d, size) => `${fileBase(d)}-${size.w}x${size.h}.mp4`;
 /** Export is offered once the original is ready and the analysis has settled without a failure */
 export const canExport = (rec, ref) => { const A = analysis(rec, ref); return !!rec && rec.status === 'ready' && A.settled && !A.failed; };
 

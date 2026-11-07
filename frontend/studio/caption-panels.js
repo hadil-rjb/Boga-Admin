@@ -15,8 +15,8 @@
    ============================================================ */
 import { group, retext, split, merge, addLine, lineAt, withDefaults, draw, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
 import { CATEGORIES, PRESETS, presetById, applyPreset, sampleLine } from './caption-presets.js';
-import { capsOf, kindOf, migrateCaptions, CAPTIONS_DEFAULT } from './caption-store.js';
-import { voiceoverWords, spreadScript, needsRebuild, voSig } from './caption-sources.js';
+import { capsOf, kindOf, styleOf, migrateCaptions, CAPTIONS_DEFAULT } from './caption-store.js';
+import { voiceoverWords, spreadScript, needsRebuild, voSig, linesFromScript, parseSubtitles, toSrt } from './caption-sources.js';
 import { timeline } from './motion.js';
 import { audioOf, voOf, LEAD } from './audio.js';
 import { fmtMs } from './footage-player.js';
@@ -158,6 +158,27 @@ export function editCaptions(d, fn) {
 export function rebuildFromVoiceover(d) {
   prepareReel(d);
   const c = capsOf(d); c.source = 'voiceover'; c.voSig = null; c.lines = [];
+}
+
+/* ---------- Script panel: pure helpers ---------- */
+export const SPREAD_NOTE = 'Not enough of the script matched the speech, so the lines are spread over the video.';
+/** The base of a download's file name: the design name made safe, 60 characters at most */
+export const fileBase = (d) => String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video';
+/**
+ * Captions made from a pasted script: { lines, note }. `speech` are the speech words (video: the transcript, reel: the voice-over);
+ * `dur` is the length the lines are spread over when they do not match. `note` only when speech existed but did not match.
+ */
+export function scriptAction(d, text, speech, dur = 0) {
+  const sp = Array.isArray(speech) ? speech : [];
+  const r = linesFromScript(text, { speechWords: sp, start: 0, end: dur, style: styleOf(d) });
+  return { lines: r.lines, note: r.spread && sp.length ? SPREAD_NOTE : null };
+}
+/** The lines of an SRT or VTT file; throws Error('This file has no readable captions') and touches nothing when there are none */
+export const srtAction = (d, text) => ({ lines: parseSubtitles(text) });
+/** Lines from a script or a subtitle file stored as the design's captions (call inside mutate()); source is 'script' or 'srt' */
+export function setLines(d, lines, source) {
+  editCaptions(d, () => lines);
+  capsOf(d).source = source;
 }
 
 /* ---------- Styles panel: pure helpers ---------- */
@@ -485,6 +506,73 @@ export function installCaptionPanels(ctx, VS) {
     if (document.querySelector('link[data-ft-fonts]')) return;
     const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = FONTS_CSS; l.dataset.ftFonts = '1'; document.head.append(l);
   }
+
+  /* ---- Script panel ---- */
+  let scriptText = '', busy = false;
+  const apiFn = ctx.api;
+  function scriptRender(d) {
+    const ro = !can(), has = linesOf(d).length > 0;
+    return `<div class="cp sc"><div class="cp-head"><h3>Script</h3></div>
+      <label class="label" for="scText">Paste your script</label>
+      <textarea class="inp" id="scText" data-sc-text dir="auto" rows="8" spellcheck="false" ${ro ? 'readonly' : ''}>${esc(scriptText)}</textarea>
+      ${ro ? '' : `<div class="ft-foot"><button class="btn primary sm" data-act="scMake" ${busy ? 'disabled' : ''}>${ic('type', 15)}Make captions</button></div>`}
+      <div class="ft-foot">${ro ? '' : `<button class="btn secondary sm" data-act="scOpen">${ic('upload', 15)}Open SRT or VTT</button>`}<button class="btn secondary sm" data-act="scSave" ${has ? '' : 'disabled'}>${ic('download', 15)}Download SRT</button></div>
+      <input type="file" accept=".srt,.vtt" data-sc-file hidden></div>`;
+  }
+  VS.panel('script', scriptRender);
+  function ask(title, text, okLabel, onOk) {
+    if (!modal) { onOk(); return; }
+    modal(`<div class="mh"><h2>${esc(title)}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">${esc(text)}</p></div>
+      <div class="mf"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" data-sc-ok>${esc(okLabel)}</button></div>`,
+    { onMount: (bg, close) => { const b = bg.querySelector('[data-sc-ok]'); b.addEventListener('click', () => { close(); onOk(); }); b.focus(); } });
+  }
+  /** Replaces the lines (asks first when there are some): one undoable edit */
+  function putLines(d, lines, source, note) {
+    const go = () => {
+      if (ED.d !== d || !can()) return;
+      mutate(() => setLines(d, lines, source), panelToo); save();
+      if (note) toast(note);
+    };
+    if (linesOf(d).length) ask('Replace the captions?', 'This replaces the caption lines you have now.', 'Replace', go); else go();
+  }
+  async function makeCaptions() {
+    const d = ED.d, ta = $('#edPanel [data-sc-text]'); if (!d || !can() || busy) return;
+    scriptText = ta ? ta.value : scriptText;
+    if (!scriptText.trim()) { toast('Paste your script first.'); return; }
+    const S = src(), P = S && S.player;
+    let speech = [], dur = 0;
+    if (kindOf(d) === 'reel') { const tl = timeline(d.pages); speech = voiceoverWords(d.pages, tl, LEAD); dur = tl.total; }
+    else {
+      dur = P && P.duration ? P.duration() : 0;
+      const id = d.footage && d.footage.src;
+      if (id && apiFn) { busy = true; try { const w = await apiFn(`/footage/${id}/words`); if (Array.isArray(w)) speech = w; } catch (e) { speech = []; } busy = false; }
+      if (ED.d !== d) return;
+    }
+    const r = scriptAction(d, scriptText, speech, dur);
+    if (!r.lines.length) { toast('The script has no words.'); return; }
+    putLines(d, r.lines, 'script', r.note);
+  }
+  function openFile(file) {
+    const d = ED.d; if (!d || !can() || !file) return;
+    file.text().then((t) => {
+      let r; try { r = srtAction(d, t); } catch (e) { toast((e && e.message) || 'This file has no readable captions'); return; }
+      putLines(d, r.lines, 'srt');
+    }, () => toast('This file has no readable captions'));
+  }
+  function downloadSrt() {
+    const d = ED.d; if (!d) return; const lines = linesOf(d); if (!lines.length) return;
+    const url = URL.createObjectURL(new Blob([toSrt(lines)], { type: 'application/x-subrip' }));
+    const a = document.createElement('a'); a.href = url; a.download = fileBase(d) + '.srt'; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  Object.assign(ACT, {
+    scMake: () => makeCaptions(),
+    scOpen: () => { const f = $('#edPanel [data-sc-file]'); if (f) f.click(); },
+    scSave: () => downloadSrt(),
+  });
+  document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-text]')) scriptText = t.value; });
+  document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-sc-file]')) { const f = t.files && t.files[0]; t.value = ''; openFile(f); } });
 
   /** What sources use: one undoable edit of the lines, the on / off switch, a row brought into view, the fonts */
   VS.captions = { edit: (fn) => edit(fn), toggle: setOn, reveal, loadFonts, light };
