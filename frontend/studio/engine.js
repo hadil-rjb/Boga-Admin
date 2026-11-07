@@ -10056,7 +10056,8 @@ function clipCss(l, frames) {
     if (PL.view && PL.view.isConnected) return PL.view;
     const sc = $('#scaler'); if (!sc) return null; const [w, h] = dim();
     const v = document.createElement('div'); v.className = 'mo-view'; v.style.cssText = `width:${w}px;height:${h}px`;
-    v.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); exitPreview(); });
+    // a press on the caption drags it (the Video Studio, reel-source.js); anywhere else goes back to editing
+    v.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); if (RT.moReel.viewDown && RT.moReel.viewDown(e, v)) return; exitPreview(); });
     sc.append(v); PL.view = v; PL.cache.clear();
     const ed = $('.ed'); ed && ed.classList.add('mo-live');
     return v;
@@ -10642,6 +10643,8 @@ function clipCss(l, frames) {
     /** "Mute preview" of the voice or the music: session only, the export keeps the sound */
     setMuted: (id, on) => { AU.muted = { ...AU.muted, [id]: !!on }; if (PL.on) AU.tick(PL.t); },
     onTime: null,
+    /** (e, view) -> true when the press was taken (a caption drag); set by reel-source.js */
+    viewDown: null,
   };
 })();
 
@@ -11118,7 +11121,7 @@ installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, mo
 /* the caption style tabs on the right (a caption line selected, or Captions / Styles open), for videos and reels */
 installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi, api }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
-installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save });
+installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save, ed: edApi });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
   wrapEd, ed: edApi, VS });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */

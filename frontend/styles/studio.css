@@ -3268,7 +3268,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-rg.ft-sw input{width:16px;height:16px;accent-color:var(--accent)}
 .ft-rg input:disabled,.ft-rg select:disabled{opacity:.5;cursor:not-allowed}
 .ft-reset{align-self:flex-start}
-.ft-frame.drag{cursor:ns-resize}
+.ft-frame.cs-drag,.mo-view.cs-drag{cursor:ns-resize}
 .ft-lks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .ft-lkr{display:flex;align-items:center;gap:8px;padding:6px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 .ft-lkr.on{border-color:var(--accent)}

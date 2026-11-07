@@ -247,7 +247,7 @@ describe('Styles panel: language, removal, label', () => {
 });
 
 /* ---------- caption inspector (caption-inspector.js) ---------- */
-import { setStyleField, INSPECTOR_TABS, regroupFrom, wordsOfLines } from './caption-inspector.js';
+import { setStyleField, INSPECTOR_TABS, regroupFrom, wordsOfLines, pollFailure, REF_GONE, REF_FAILED, hex6, alphaOf, captionHit } from './caption-inspector.js';
 import { DEFAULT_STYLE as DS } from './captions.js';
 
 describe('caption inspector', () => {
@@ -283,6 +283,41 @@ describe('caption inspector', () => {
     expect(setStyleField(DS, 'maxWords', 20).maxWords).toBe(8);
     expect(setStyleField(DS, 'case', 'upper').case).toBe('upper');
     expect(setStyleField(DS, 'align', 'left').align).toBe('left');
+  });
+  it('stroke and shadow switch on with defaults and keep their values while on (moved from styleEdit)', () => {
+    const on = setStyleField(DS, 'stroke', true); expect(on.stroke).toEqual({ color: '#000000', width: 0.004 });
+    const w = setStyleField(on, 'stroke.width', 0.012); expect(w.stroke).toEqual({ color: '#000000', width: 0.012 });
+    expect(setStyleField(w, 'stroke.width', 1).stroke.width).toBe(0.02);
+    expect(setStyleField(w, 'stroke', true).stroke).toEqual(w.stroke);
+    expect(setStyleField(w, 'stroke', false).stroke).toBeNull();
+    expect(setStyleField(DS, 'shadow', false).shadow).toBeNull(); expect(setStyleField(setStyleField(DS, 'shadow', false), 'shadow', true).shadow).toEqual(DS.shadow);
+  });
+  it('highlight: mode and colours; none keeps the colours for later (moved from styleEdit)', () => {
+    const a = setStyleField(DS, 'highlight.color', '#00ff00'); expect(a.highlight).toEqual({ ...DS.highlight, color: '#00ff00' });
+    const b = setStyleField(a, 'highlight.mode', 'none'); expect(b.highlight.mode).toBe('none'); expect(b.highlight.color).toBe('#00ff00');
+    expect(setStyleField(b, 'highlight.mode', 'glow').highlight.mode).toBe('none');
+    expect(setStyleField({ ...DS, highlight: null }, 'highlight.mode', 'scale').highlight).toEqual({ ...DS.highlight, mode: 'scale' });
+    expect(setStyleField(DS, 'weight', '700').weight).toBe(700); expect(setStyleField(DS, 'weight', 50).weight).toBe(DS.weight);
+  });
+  it('a translucent colour keeps its opacity when its colour is edited', () => {
+    expect(DS.shadow.color).toBe('rgba(0,0,0,.55)');
+    expect(setStyleField(DS, 'shadow.color', '#ff0000').shadow.color).toBe('rgba(255,0,0,0.55)');
+    expect(setStyleField(DS, 'color', '#abcdef').color).toBe('#abcdef'); // an opaque colour stays hex
+    expect(alphaOf('rgba(0,0,0,.55)')).toBe(0.55); expect(alphaOf('#000')).toBe(1);
+    expect(hex6('rgba(0,0,0,.55)')).toBe('#000000'); expect(hex6('rgb(255, 16, 1)')).toBe('#ff1001'); expect(hex6('#ABC')).toBe('#aabbcc'); expect(hex6('red', '#123456')).toBe('#123456');
+  });
+  it('pollFailure: a 404 stops at once, other errors after 3 in a row', () => {
+    expect(pollFailure(0, { status: 404 })).toEqual({ stop: true, fails: 1, msg: REF_GONE });
+    expect(pollFailure(0, { status: 500 })).toEqual({ stop: false, fails: 1 });
+    expect(pollFailure(1, new Error('net'))).toEqual({ stop: false, fails: 2 });
+    expect(pollFailure(2, { status: 502 })).toEqual({ stop: true, fails: 3, msg: REF_FAILED });
+  });
+  it('captionHit: on the caption block, with a margin', () => {
+    const L = { x: 300, y: 600, w: 400, h: 50 };
+    expect(captionHit(L, 1000, 1000, 0.5, 0.62)).toBe(true);
+    expect(captionHit(L, 1000, 1000, 0.29, 0.6)).toBe(true); // inside the 2.5 % margin
+    expect(captionHit(L, 1000, 1000, 0.5, 0.3)).toBe(false);
+    expect(captionHit(null, 1000, 1000, 0.5, 0.62)).toBe(false);
   });
   it('regroupFrom picks where the words come from', () => {
     expect(regroupFrom('video', { source: 'speech' })).toBe('speech');

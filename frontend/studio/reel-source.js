@@ -8,11 +8,13 @@
      then a Layers row that folds the open scene's layer lanes (folded by default, remembered in boga.mo37Folded);
    - panels: Captions, Styles and Script are the shell's; every other rail item keeps the editor's own panel;
    - the inspector stays the editor's (Scene / Animation properties), except the shell's caption style tabs (caption-inspector.js);
-   - transport extras: "back to editing" while the canvas shows a preview, loop, and + Scene (the library, aimed at the end).
+   - transport extras: "back to editing" while the canvas shows a preview, loop, and + Scene (the library, aimed at the end);
+   - on the preview, a press on the caption drags it up or down (dragCaption, as on a video): one mutate() on release.
    installReelSource touches no DOM until the shell draws.
    ============================================================ */
-import { retime } from './captions.js';
-import { captionsOn, linesOf, lineText, prepareReel, previewStyle } from './caption-panels.js';
+import { retime, DEFAULT_STYLE } from './captions.js';
+import { captionsOn, linesOf, lineText, prepareReel, previewStyle, captionFrame, capsView, editStyle } from './caption-panels.js';
+import { dragCaption } from './caption-inspector.js';
 
 /** Rail items whose panel belongs to the shell (the caption panels); the rest are the motion editor's */
 const SHELL_PANELS = new Set(['captions', 'styles', 'script']);
@@ -21,7 +23,7 @@ const FOLD_KEY = 'boga.mo37Folded';
 export { captionBlocks } from './caption-panels.js';
 
 export function installReelSource(ctx) {
-  const { ED, ACT, VS, M, ic, canEdit, save } = ctx;
+  const { ED, ACT, VS, M, ic, canEdit, save, mutate, ed } = ctx;
   let folded = true; try { folded = localStorage.getItem(FOLD_KEY) !== '0'; } catch (e) { /* no storage: folded */ }
   const isReel = () => !!(ED.d && ED.d.motion && !ED.d.footage);
   /** "Mute preview" on the Voice and Music rows: session state, the export keeps the sound */
@@ -74,14 +76,30 @@ export function installReelSource(ctx) {
     return r;
   };
 
+  /** The preview's caption, dragged to set its height (style y): the preview follows, one mutate() on release */
+  M.viewDown = (e, view) => {
+    if (!isReel() || !canEdit() || !mutate || !captionsOn(ED.d)) return false;
+    const d = ED.d, t = M.player.time(), cap = captionFrame(d, t); if (!cap) return false;
+    return dragCaption(e, {
+      frame: view, canvas: view.querySelector('canvas.mo-capc'), lines: cap.lines, style: capsView(d).style || DEFAULT_STYLE, ms: t,
+      onMove: (style) => { previewStyle(d, style); if (M.redraw) M.redraw(); },
+      onEnd: (y) => {
+        previewStyle(d, null);
+        const done = () => { if (M.redraw) M.redraw(); if (ed) ed.props(); };
+        if (y == null || ED.d !== d) { done(); return; }
+        mutate(() => editStyle(ED.d, { y }), done); if (save) save(); // the preview stays open: no full redraw
+      },
+    });
+  };
+
   let shown = null; // the design the timeline was drawn for: another reel starts a fresh timeline (zoom, scroll)
   const source = {
     mount() {
-      if (shown !== ED.d) { if (shown) VS.reset(); shown = ED.d; setMuted('voice', false); setMuted('music', false); }
+      if (shown !== ED.d) { if (shown) VS.reset(); shown = ED.d; setMuted('voice', false); setMuted('music', false); if (VS.captionInspector) VS.captionInspector.stopRef(ED.d); }
       if (prepareReel(ED.d) && save) save(); // the captions move to d.captions once (not an undo step)
       if (VS.captions) VS.captions.loadFonts();
     },
-    unmount() { M.player.pause(); shown = null; setMuted('voice', false); setMuted('music', false); },
+    unmount() { M.player.pause(); shown = null; setMuted('voice', false); setMuted('music', false); if (VS.captionInspector) VS.captionInspector.stopRef(); },
     player: M.player,
     tracks,
     panel: () => null,

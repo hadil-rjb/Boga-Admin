@@ -10,9 +10,9 @@
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, retime, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
+import { group, retime, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
 import { lineText, captionsOn, langFromLines, editStyle } from './caption-panels.js';
-import { presetById } from './caption-presets.js';
+import { dragCaption } from './caption-inspector.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
@@ -121,7 +121,7 @@ export function fitPeaks(peaks, w) {
 /* the caption rows' helpers live in caption-panels.js (the shared Captions panel) */
 export { textCommit, rangeLabel, lineText } from './caption-panels.js';
 
-/* ---- Look panel: grade sliders and brand looks (the caption style edits are caption-inspector.js's; styleEdit stays for its tests and callers) ---- */
+/* ---- Look panel: grade sliders and brand looks (the caption style edits are caption-inspector.js's setStyleField) ---- */
 const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
 /** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
 export const GRADE_KEYS = { strength: [0, 100], exposure: [-100, 100], temp: [-100, 100], sat: [-100, 100] };
@@ -138,70 +138,8 @@ export function sliderToGrade(key, n) {
 }
 /** The look object with one slider applied (never mutates) */
 export const gradePatch = (look, key, n) => ({ ...look, [key]: sliderToGrade(key, n) });
-export const FONT_LABELS = { 'sans-bold': 'Bold sans', sans: 'Sans', serif: 'Serif', display: 'Display' };
-export const FONT_KEYS = Object.keys(FONT_STACKS);
-export const HL_MODES = [['box', 'Box'], ['color', 'Color'], ['scale', 'Scale'], ['none', 'None']];
-export const ANIMS = [['none', 'None'], ['pop', 'Pop'], ['fade', 'Fade']];
-export const WEIGHTS = [[400, 'Regular'], [600, 'Semibold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']];
-export const Y_MIN = 0.05, Y_MAX = 0.95;
-export const clampY = (y) => Math.round(clampN2(+y || 0, Y_MIN, Y_MAX) * 1000) / 1000;
-/** A value for <input type=color> (#rrggbb), or the fallback when the style holds anything else (rgba, names) */
-export function colorHex(v, fallback = '#ffffff') {
-  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(v || '').trim());
-  if (!m) return fallback;
-  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
-  return '#' + h.toLowerCase();
-}
 /** Words per line of a style (1..8; the default when unset) */
 export const maxWordsOf = (style) => clampN2(Math.round(+(style && style.maxWords) || DEFAULT_STYLE.maxWords), 1, 8);
-/**
- * One edit of the caption style, as a new style (a missing style starts from the default). Units are the controls':
- * size and y in percent of the video height (size 2..10, y 5..95), strokeWidth in thousandths of the height (1..20),
- * strokeOn / shadowOn booleans, colors as #rrggbb. Unknown keys and unusable values change nothing.
- */
-export function styleEdit(style, key, v) {
-  const s = JSON.parse(JSON.stringify(style || DEFAULT_STYLE)), num = +v;
-  const hl = () => (s.highlight = { ...DEFAULT_STYLE.highlight, ...(s.highlight || {}) });
-  const hex = (x) => /^#[0-9a-f]{6}$/i.test(String(x));
-  switch (key) {
-    case 'font': if (FONT_STACKS[v]) s.font = v; break;
-    case 'size': if (isFinite(num)) s.size = Math.round(clampN2(num, 2, 10) * 10) / 1000; break;
-    case 'weight': if (isFinite(num) && num >= 100 && num <= 900) s.weight = Math.round(num / 100) * 100; break;
-    case 'color': if (hex(v)) s.color = v; break;
-    case 'strokeOn': s.stroke = v ? (s.stroke || { color: '#000000', width: 0.004 }) : null; break;
-    case 'strokeColor': if (hex(v)) s.stroke = { width: 0.004, ...(s.stroke || {}), color: v }; break;
-    case 'strokeWidth': if (isFinite(num)) s.stroke = { color: '#000000', ...(s.stroke || {}), width: clampN2(num, 1, 20) / 1000 }; break;
-    case 'shadowOn': s.shadow = v ? (s.shadow || { ...DEFAULT_STYLE.shadow }) : null; break;
-    case 'hlMode': if (['box', 'color', 'scale', 'none'].includes(v)) hl().mode = v; break;
-    case 'hlColor': if (hex(v)) hl().color = v; break;
-    case 'hlText': if (hex(v)) hl().text = v; break;
-    case 'y': if (isFinite(num)) s.y = clampY(num / 100); break;
-    case 'anim': if (['none', 'pop', 'fade'].includes(v)) s.anim = v; break;
-    default: break;
-  }
-  return s;
-}
-/** Where the caption style came from: the stored origin, else guessed (a preset is the user's pick, a style came from the reference or the look) */
-export function styleOrigin(captions, hasRef) {
-  const c = captions || {};
-  if (c.preset != null) return String(c.preset).startsWith('bl:') ? 'look' : String(c.preset).startsWith('bs:') ? 'brand' : 'preset';
-  if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
-  return c.style ? (hasRef ? 'reference' : 'look') : 'default';
-}
-/** The panel's sentence about the style's origin */
-export const ORIGIN_COPY = {
-  reference: 'Captions use the style read from the reference.',
-  look: 'Captions use the brand look’s style.',
-  default: 'Captions use the default style.',
-  custom: 'Captions use your own style.',
-  brand: 'Captions use a saved brand style.',
-  preset: 'Captions use a preset style.',
-};
-/** The sentence about the origin: names the preset when one is applied */
-export function originCopy(captions, hasRef) {
-  const o = styleOrigin(captions, hasRef), p = o === 'preset' && presetById(captions.preset);
-  return p ? `Captions use the ${p.name} style.` : ORIGIN_COPY[o];
-}
 /** Seconds into a video of `dur` seconds at which the reference thumbnail is taken: frame 30 of the 60 sampled frames */
 export const thumbTime = (dur) => Math.max(0, (29.5 / 60) * (+dur || 0));
 /** Thumbnail size: 160 px wide */
@@ -268,6 +206,7 @@ export function installFootageEditor(ctx, FT) {
   /* ---------- 2. session ---------- */
   function start(d) {
     stop();
+    if (VS.captionInspector) VS.captionInspector.stopRef(d); // a reference read for another design stops
     if (prepareOpen(d)) save();
     F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false };
     loadFonts();
@@ -565,7 +504,7 @@ export function installFootageEditor(ctx, FT) {
       drawStage(); sync(); exportButton();
     },
     unmount() {
-      if (F) stop(); const st = $('#ftStage'); st && st.remove();
+      if (F) stop(); if (VS.captionInspector) VS.captionInspector.stopRef(); const st = $('#ftStage'); st && st.remove();
       $('.ed-stage') && $('.ed-stage').classList.remove('ft10'); $('.ed') && $('.ed').classList.remove('ft10'); exportButton();
     },
     player,
@@ -575,8 +514,6 @@ export function installFootageEditor(ctx, FT) {
       body: noLinesHTML, foot: retxHTML, light: () => sync(),
       /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
       preview: (style) => { if (!F || !F.player) return; if (style) F.player.setCaptions({ ...capsOf(ED.d), style }); else sync(); },
-      /** the inspector paired the video with a new reference: follow it (its progress, then the grade matched to it) */
-      paired: (refId) => { if (!F) return; F.ref = refId; F.refRec = null; F.applied = false; F.err = null; F.sig = ''; F.gen++; poll(); },
     },
     inspector: () => (F ? lookHTML() : null),
     transportExtra: baHTML,
@@ -642,29 +579,15 @@ export function installFootageEditor(ctx, FT) {
     const fr = $('#ftFrame'), ov = fr && fr.querySelector('.ftp-o'); if (!fr || !ov || !fr.contains(e.target) || !ov.width) return;
     commitFocus(); // a caption being typed is committed before the line under the playhead is read
     if (!F || !F.player) return;
-    const caps = capsOf(ED.d), st = caps.style || DEFAULT_STYLE, line = lineAt(caps.lines || [], F.player.time()); if (!line) return;
-    const r = fr.getBoundingClientRect(), W = ov.width, H = ov.height, L = layout(ov.getContext('2d'), line, st, W, H);
-    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height, pad = 0.025;
-    if (px < L.x / W - pad || px > (L.x + L.w) / W + pad || py < L.y / H - pad || py > (L.y + L.h) / H + pad) return;
-    e.preventDefault();
-    const S = F, off = py - st.y, d = S.cdrag = { y: st.y, y0: st.y };
-    try { fr.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-    fr.classList.add('drag');
-    const at = (ev) => {
-      d.y = clampY((ev.clientY - r.top) / r.height - off);
-      const c = capsOf(ED.d); S.player && S.player.setCaptions({ ...c, style: { ...(c.style || DEFAULT_STYLE), y: d.y } });
-      const sl = $('#edProps [data-cs="y"]'); if (sl) { sl.value = String(Math.round(d.y * 100)); sl.dispatchEvent(new Event('cs:out', { bubbles: true })); } // the caption inspector's Vertical slider
-    };
-    const done = (commit) => {
-      fr.removeEventListener('pointermove', at); fr.removeEventListener('pointerup', up); fr.removeEventListener('pointercancel', cancel); fr.removeEventListener('lostpointercapture', cancel);
-      fr.classList.remove('drag'); S.cdrag = null;
-      if (!alive(S)) return;
-      if (commit && d.y !== d.y0) {
-        mutate(() => editStyle(ED.d, { y: d.y }), () => { sync(); ed.props(); }); save();
-      } else { sync(); ed.props(); }
-    };
-    const up = () => done(true), cancel = () => done(false);
-    fr.addEventListener('pointermove', at); fr.addEventListener('pointerup', up); fr.addEventListener('pointercancel', cancel); fr.addEventListener('lostpointercapture', cancel);
+    const S = F, caps = capsOf(ED.d);
+    S.cdrag = dragCaption(e, {
+      frame: fr, canvas: ov, lines: caps.lines || [], style: caps.style || DEFAULT_STYLE, ms: S.player.time(),
+      onMove: (style) => { if (S.player) S.player.setCaptions({ ...capsOf(ED.d), style }); },
+      onEnd: (y) => {
+        S.cdrag = false; if (!alive(S)) return;
+        if (y != null) { mutate(() => editStyle(ED.d, { y }), () => { sync(); ed.props(); }); save(); } else { sync(); ed.props(); }
+      },
+    });
   }
   document.addEventListener('pointerdown', captionDrag);
 

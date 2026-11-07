@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
-  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, originCopy, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
+  gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
   canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
@@ -138,38 +138,8 @@ describe('grade sliders', () => {
   });
 });
 
-describe('subtitle style edits', () => {
-  it('start from the default style when there is none, and never mutate', () => {
-    const before = JSON.stringify(DEFAULT_STYLE), s = styleEdit(null, 'font', 'serif');
-    expect(s.font).toBe('serif'); expect(s.color).toBe(DEFAULT_STYLE.color); expect(JSON.stringify(DEFAULT_STYLE)).toBe(before);
-    const own = { ...DEFAULT_STYLE, color: '#111111' }; styleEdit(own, 'color', '#222222'); expect(own.color).toBe('#111111');
-  });
-  it('font accepts only the four stacks; size, weight, y and colors are validated and clamped', () => {
-    expect(styleEdit(null, 'font', 'comic').font).toBe('sans-bold');
-    expect(styleEdit(null, 'size', 6).size).toBe(0.06); expect(styleEdit(null, 'size', 99).size).toBe(0.1); expect(styleEdit(null, 'size', 0).size).toBe(0.02); expect(styleEdit(null, 'size', 'x').size).toBe(DEFAULT_STYLE.size);
-    expect(styleEdit(null, 'weight', '700').weight).toBe(700);
-    expect(styleEdit(null, 'y', 80).y).toBe(0.8); expect(styleEdit(null, 'y', 1).y).toBe(0.05); expect(styleEdit(null, 'y', 100).y).toBe(0.95);
-    expect(styleEdit(null, 'color', '#abcdef').color).toBe('#abcdef'); expect(styleEdit(null, 'color', 'red').color).toBe('#FFFFFF');
-    expect(styleEdit(null, 'nope', 1)).toEqual(DEFAULT_STYLE);
-  });
-  it('stroke and shadow switch on with defaults and keep their values while on', () => {
-    const on = styleEdit(null, 'strokeOn', true); expect(on.stroke).toEqual({ color: '#000000', width: 0.004 });
-    const w = styleEdit(on, 'strokeWidth', 12); expect(w.stroke).toEqual({ color: '#000000', width: 0.012 });
-    expect(styleEdit(w, 'strokeColor', '#ff0000').stroke).toEqual({ color: '#ff0000', width: 0.012 });
-    expect(styleEdit(w, 'strokeOn', false).stroke).toBeNull();
-    expect(styleEdit(null, 'shadowOn', false).shadow).toBeNull(); expect(styleEdit(styleEdit(null, 'shadowOn', false), 'shadowOn', true).shadow).toEqual(DEFAULT_STYLE.shadow);
-  });
-  it('highlight: mode, colors; none keeps the colors for later', () => {
-    const a = styleEdit(null, 'hlColor', '#00ff00'); expect(a.highlight).toEqual({ ...DEFAULT_STYLE.highlight, color: '#00ff00' });
-    const b = styleEdit(a, 'hlMode', 'none'); expect(b.highlight.mode).toBe('none'); expect(b.highlight.color).toBe('#00ff00');
-    expect(styleEdit(b, 'hlMode', 'glow').highlight.mode).toBe('none');
-    expect(styleEdit(null, 'hlText', '#000000').highlight.text).toBe('#000000');
-    expect(styleEdit({ ...DEFAULT_STYLE, highlight: null }, 'hlMode', 'scale').highlight).toEqual({ ...DEFAULT_STYLE.highlight, mode: 'scale' });
-    expect(styleEdit(null, 'anim', 'pop').anim).toBe('pop'); expect(styleEdit(null, 'anim', 'spin').anim).toBe('none');
-  });
-  it('clampY, colorHex, maxWordsOf', () => {
-    expect(clampY(0)).toBe(0.05); expect(clampY(2)).toBe(0.95); expect(clampY(0.6504)).toBe(0.65);
-    expect(colorHex('#ABC')).toBe('#aabbcc'); expect(colorHex('rgba(0,0,0,.5)', '#123456')).toBe('#123456'); expect(colorHex(null)).toBe('#ffffff');
+describe('maxWordsOf', () => {
+  it('words per line of a style, 1..8, the default when unset', () => {
     expect(maxWordsOf(null)).toBe(DEFAULT_STYLE.maxWords); expect(maxWordsOf({ maxWords: 20 })).toBe(8); expect(maxWordsOf({ maxWords: 2 })).toBe(2);
   });
 });
@@ -180,22 +150,21 @@ describe('where the subtitle style came from', () => {
     expect(analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: false }).style).toBe(refStyle);
     const c = cp(); applyPatch(c, ft(), analysisPatch(c, ft(), { id, words, refStyle, hasCube: false })); expect(c.style).toBe(refStyle);
   });
-  it('styleFrom: reference, or default when the reference fell back (captionNote); styleOrigin reads it', () => {
+  it('styleFrom: reference, or default when the reference fell back (captionNote)', () => {
     expect(analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: false }).styleFrom).toBe('reference');
     expect(analysisPatch(cp(), ft(), { id, words, refStyle, refNote: 'x', hasCube: false }).styleFrom).toBe('default');
     const c = cp(); applyPatch(c, ft(), analysisPatch(c, ft(), { id, words, refStyle, hasCube: false })); expect(c.styleFrom).toBe('reference');
-    expect(styleOrigin({ style: DEFAULT_STYLE, styleFrom: 'custom' }, true)).toBe('custom');
+  });
+  it('a style copied in the inspector (Reference tab) is never replaced by the import\'s reference', () => {
+    const copied = { ...DEFAULT_STYLE, color: '#00ff00' }, c = cp({ style: copied, styleFrom: 'reference' });
+    const p = analysisPatch(c, ft(), { id, words, refStyle, hasCube: false }); expect(p.style).toBeUndefined();
+    applyPatch(c, ft(), p); expect(c.style).toBe(copied); expect(c.lines[0].words.length).toBe(2); // grouped with the copied style
   });
   it('a style or a preset the user owns is never replaced', () => {
     const c = cp({ style: { ...DEFAULT_STYLE, maxWords: 4 } });
     const p = analysisPatch(c, ft(), { id, words, refStyle, hasCube: false });
     expect(p.style).toBeUndefined(); applyPatch(c, ft(), p); expect(c.style.maxWords).toBe(4);
     expect(analysisPatch(cp({ preset: 'neon' }), ft(), { id, words, refStyle, hasCube: false }).style).toBeUndefined();
-  });
-  it('styleOrigin: a preset is custom, else guessed from the style and the reference', () => {
-    expect(styleOrigin({ style: null }, true)).toBe('default'); expect(styleOrigin({ style: DEFAULT_STYLE }, true)).toBe('reference'); expect(styleOrigin({ style: DEFAULT_STYLE }, false)).toBe('look');
-    expect(styleOrigin({ style: null, preset: 'neon' }, true)).toBe('preset'); expect(styleOrigin(undefined, false)).toBe('default');
-    expect(ORIGIN_COPY.custom).toBe('Captions use your own style.');
   });
 });
 
@@ -307,15 +276,7 @@ describe('textCommit (a field committed before a drag)', () => {
   });
 });
 
-describe('style origin after a preset, and the caption language', () => {
-  it('a preset wins over a stale look origin and the sentence names it', () => {
-    const c = { style: {}, preset: 'viral-impact', styleFrom: 'look' };
-    expect(styleOrigin(c, false)).toBe('preset');
-    expect(originCopy(c, false)).toBe('Captions use the Impact style.');
-    expect(originCopy({ style: {}, styleFrom: 'look' }, false)).toBe(ORIGIN_COPY.look);
-    expect(styleOrigin({ style: {}, preset: 'bl:x' }, false)).toBe('look');
-    expect(styleOrigin({ style: {}, preset: 'bs:x' }, false)).toBe('brand');
-  });
+describe('the caption language', () => {
   it('applyPatch stores the language read from the lines when none is set, and clears the preset on a new style', () => {
     const ar = [{ id: 'a', start: 0, end: 1, words: [{ t: 'مرحبا', s: 0, e: 1 }] }];
     const c = { lines: [], style: null, preset: 'x', lang: null }; applyPatch(c, { look: {} }, { lines: ar, style: { size: 0.05 } });

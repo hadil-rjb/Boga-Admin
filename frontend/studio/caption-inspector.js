@@ -7,12 +7,13 @@
    Words per line, max characters, minimum duration and gap regroup the lines (group() in captions.js reads them):
    a video's untouched speech lines from the transcript words (GET /footage/:id/words), hand-edited / script / SRT lines from
    their own words (after a confirmation), a reel's voice-over lines by themselves (they are built from the style).
-   Reference: "Copy from a video" uploads a reference (upload.js, role 'reference'; the server reads its caption style by
-   itself: probe, proxy, frames, caption-style). A video is also paired with it (POST /footage/:id/pair, so its grade is
-   matched to it too); a reel only reads the record. The style is applied when it lands. Then the brand looks with a caption style.
+   Reference: "Copy from a video" uploads a reference as its own record (upload.js, role 'reference'; the server reads its
+   caption style by itself: probe, proxy, frames, caption-style), for videos and reels alike: nothing is paired, the grade is
+   untouched. Only its caption style is applied, when it lands. Then the brand looks with a caption style.
+   dragCaption (shared by the video's frame and the reel's preview): drag the caption to set its height (style y).
    The pure helpers at the top are unit-tested; installCaptionInspector is a DOM module.
    ============================================================ */
-import { group, DEFAULT_STYLE, FONT_STACKS } from './captions.js';
+import { group, layout, lineAt, withDefaults, DEFAULT_STYLE, FONT_STACKS } from './captions.js';
 import { capsOf, kindOf } from './caption-store.js';
 import { capsView, linesOf, editStyle, applyBrandStyle, styleLabel, captionsOn } from './caption-panels.js';
 import { presetById } from './caption-presets.js';
@@ -45,6 +46,14 @@ const PARENTS = {
   highlight: () => ({ ...DEFAULT_STYLE.highlight }), box: () => ({ color: '#000000', pad: 0.012, radius: 0.18 }),
 };
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const get0 = (st, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), st);
+const RGBA = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([\d.]+)\s*)?\)$/i;
+/** The opacity of a CSS colour (1 for hex or anything unreadable) */
+export const alphaOf = (c) => { const m = RGBA.exec(String(c || '').trim()); return m && m[4] != null && isFinite(+m[4]) ? clamp(+m[4], 0, 1) : 1; };
+/** #rgb / #rrggbb with an opacity, as rgba() */
+function rgbaOf(hex, a) {
+  const h = hex6(hex); return `rgba(${parseInt(h.slice(1, 3), 16)},${parseInt(h.slice(3, 5), 16)},${parseInt(h.slice(5, 7), 16)},${Math.round(a * 1000) / 1000})`;
+}
 /**
  * One field of a caption style set, as a new style (a missing style starts from the default; the input is never changed).
  * `path` is a field ('size') or an object's field ('stroke.color'); 'stroke', 'shadow', 'box' take true / false (on / off).
@@ -61,7 +70,11 @@ export function setStyleField(style, path, value) {
   } else if (path === 'weight') {
     const n = +value; if (!isFinite(n) || n < 100 || n > 900) return s; v = Math.round(n / 100) * 100;
   } else if (ENUM[path]) { if (!ENUM[path].includes(value)) return s; v = value; }
-  else if (COLORS.has(path)) { if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || ''))) return s; v = String(value); }
+  else if (COLORS.has(path)) {
+    if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || ''))) return s;
+    const a = alphaOf(get0(s, path)); // a translucent colour (the default shadow's rgba) keeps its opacity
+    v = a < 1 ? rgbaOf(String(value), a) : String(value);
+  }
   else return s;
   const [p, k] = path.split('.');
   if (k) s[p] = { ...(s[p] || PARENTS[p]()), [k]: v }; else s[p] = v;
@@ -82,6 +95,8 @@ export function regroupFrom(kind, caps) {
 export const wordsOfLines = (lines) => (lines || []).flatMap((l) => (l && l.words) || []).slice().sort((a, b) => a.s - b.s);
 /** A colour for <input type=color> */
 export const hex6 = (v, fb = '#000000') => {
+  const r = RGBA.exec(String(v || '').trim());
+  if (r) return '#' + [r[1], r[2], r[3]].map((x) => clamp(+x, 0, 255).toString(16).padStart(2, '0')).join('');
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(v || '').trim()); if (!m) return fb;
   return '#' + (m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]).toLowerCase();
 };
@@ -93,6 +108,56 @@ export function refStyleState(rec) {
   if (j.state === 'failed' || j.state === 'skipped' || rec.status === 'failed') return 'failed';
   if (rec.status === 'ready' && !['queued', 'running'].includes(j.state)) return rec.captionStyle ? 'done' : 'failed';
   return null;
+}
+
+export const REF_GONE = 'That video is no longer available. Upload it again.';
+export const REF_FAILED = 'Couldn’t read the caption style. Try again.';
+/**
+ * A poll of the reference failed (`err` from api()): { stop, fails, msg }. A 404 stops at once; any other error stops after
+ * 3 failures in a row (`fails` is the count before this one; a successful poll starts it again from 0).
+ */
+export function pollFailure(fails, err) {
+  const n = (fails || 0) + 1;
+  if (err && err.status === 404) return { stop: true, fails: n, msg: REF_GONE };
+  return n >= 3 ? { stop: true, fails: n, msg: REF_FAILED } : { stop: false, fails: n };
+}
+/** The pointer at (px, py) (fractions of the frame) is on the caption block L (px of a W × H frame), `pad` around it */
+export function captionHit(L, W, H, px, py, pad = 0.025) {
+  if (!L || !W || !H) return false;
+  return px >= L.x / W - pad && px <= (L.x + L.w) / W + pad && py >= L.y / H - pad && py <= (L.y + L.h) / H + pad;
+}
+
+/**
+ * Starts dragging the caption shown on `frame` (`canvas` is the caption layer drawn over it, at its own pixel size) when the
+ * pointer is on it: returns false otherwise. While dragging, onMove(style) previews and the inspector's Vertical slider follows;
+ * onEnd(y) on release (y null: nothing changed or cancelled), for one mutate() by the caller.
+ */
+export function dragCaption(e, { frame, canvas, lines, style, ms, onMove, onEnd }) {
+  if (!frame || !canvas || !canvas.width || !canvas.height || (e.button || 0) > 0) return false;
+  const st = style || DEFAULT_STYLE, line = lineAt(lines || [], ms - (+withDefaults(st).offset || 0)); if (!line) return false;
+  const g = canvas.getContext && canvas.getContext('2d'); if (!g) return false;
+  const W = canvas.width, H = canvas.height, L = layout(g, line, st, W, H), r = frame.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+  if (!captionHit(L, W, H, px, py)) return false;
+  e.preventDefault();
+  const y0 = st.y, off = py - y0; let y = y0;
+  try { frame.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+  frame.classList.add('cs-drag');
+  const at = (ev) => {
+    y = setStyleField(st, 'y', (ev.clientY - r.top) / r.height - off).y;
+    onMove({ ...st, y });
+    const sl = document.querySelector('#edProps [data-cs="y"]');
+    if (sl) { sl.value = String(Math.round(y * 100)); sl.dispatchEvent(new Event('cs:out', { bubbles: true })); }
+  };
+  const done = (commit) => {
+    frame.removeEventListener('pointermove', at); frame.removeEventListener('pointerup', up); frame.removeEventListener('pointercancel', cancel); frame.removeEventListener('lostpointercapture', cancel);
+    frame.classList.remove('cs-drag');
+    onEnd(commit && y !== y0 ? y : null);
+  };
+  const up = () => done(true), cancel = () => done(false);
+  frame.addEventListener('pointermove', at); frame.addEventListener('pointerup', up); frame.addEventListener('pointercancel', cancel); frame.addEventListener('lostpointercapture', cancel);
+  return true;
 }
 
 /* ---------- DOM ---------- */
@@ -174,7 +239,7 @@ export function installCaptionInspector(ctx, VS) {
       ${range(st, 'x', 'Horizontal', 0, 100, 1, 100, 'pct', 0.5)}
       ${seg(st, 'align', 'Alignment', [['left', 'Align left', 'csAlL'], ['center', 'Align centre', 'csAlC'], ['right', 'Align right', 'csAlR']], st.align || 'center')}
       <label class="ft-rg ft-sw"><span>Safe-zone guide</span><input type="checkbox" data-cs-guide ${on ? 'checked' : ''}></label>
-      ${video && can() ? '<p class="xs-t muted">You can also drag the caption on the video to move it.</p>' : ''}`;
+      ${can() ? `<p class="xs-t muted">You can also drag the caption on the ${video ? 'video' : 'preview'} to move it.</p>` : ''}`;
   }
   function boxTab(st) {
     return `${sw('box', 'Background box', !!st.box)}
@@ -196,7 +261,7 @@ export function installCaptionInspector(ctx, VS) {
       <p class="xs-t muted">Offset moves every caption earlier or later. ${vo ? 'The voice-over lines follow the other two.' : 'The other two regroup the lines.'}</p>`;
   }
   function referenceTab(st, d) {
-    const video = kindOf(d) === 'video', mine = ref && ref.d === d ? ref : null, ro = !can();
+    const mine = ref && ref.d === d ? ref : null, ro = !can();
     let status = '';
     if (mine && mine.state === 'upload') status = `<div class="prog-w"><div class="prog"><i style="width:${Math.round(mine.pct * 100)}%"></i></div><span class="prog-pct">${Math.round(mine.pct * 100)}%</span></div><p class="xs-t muted" role="status">Uploading the reference…</p>`;
     else if (mine && mine.state === 'reading') status = `<p class="xs-t muted cs-busy" role="status"><span class="ft-dot"></span>Reading the caption style…</p>`;
@@ -211,7 +276,7 @@ export function installCaptionInspector(ctx, VS) {
       ${ro ? '' : `<button class="btn secondary sm" data-act="csLook" data-id="${esc(l.id)}" ${on ? 'disabled' : ''}>${on ? 'In use' : 'Apply'}</button>`}</li>`; }).join('')}</ul>`
       : '<p class="xs-t muted">No brand look has a caption style yet.</p>';
     return `<span class="label cs-sub">Reference video</span>
-      <p class="xs-t muted">Upload a video with burned-in captions to copy their style${video ? ', and match your video’s colours to it' : ''}.</p>
+      <p class="xs-t muted">Upload a video with burned-in captions to copy their style. Only the caption style changes.</p>
       <div class="cs-ref-act">${copy}</div>${status}
       <span class="label cs-sub">Brand looks</span>${rows}`;
   }
@@ -323,7 +388,7 @@ export function installCaptionInspector(ctx, VS) {
     if (!isVideoFile(file)) { toast('Choose a video file'); return; }
     const b = getBrand(); if (!b || !b.id) { toast('Pick a brand first.'); return; }
     refStop();
-    const d = ED.d, kind = kindOf(d), me = ref = { d, id: null, state: 'upload', pct: 0, msg: '', ac: new AbortController(), timer: 0 };
+    const d = ED.d, me = ref = { d, id: null, state: 'upload', pct: 0, msg: '', ac: new AbortController(), timer: 0 };
     const live = () => ref === me && ED.d === d;
     refDraw();
     let rec;
@@ -340,20 +405,16 @@ export function installCaptionInspector(ctx, VS) {
     }
     if (!live()) { if (ref === me) ref = null; return; }
     me.id = rec.id; me.state = 'reading'; refDraw();
-    if (kind === 'video' && d.footage && d.footage.src) {
-      // the video is paired with the new reference: its grade is matched to it as well, and the editor follows that reference
-      try {
-        await api(`/footage/${d.footage.src}/pair`, { method: 'POST', body: { ref: rec.id } });
-        if (!live()) return;
-        d.footage.ref = rec.id; save(); // the server's pairing, not an edit: kept out of the undo history like the import is
-        const h = hooks(); if (h.paired) h.paired(rec.id);
-      } catch (e) { if (!live()) return; me.state = 'failed'; me.msg = (e && e.message) || 'Could not use this reference.'; refDraw(); return; }
-    }
-    let tries = 0;
+    let tries = 0, fails = 0;
     const poll = async () => {
       if (!live()) return;
       let r = null;
-      try { r = await api('/footage/' + rec.id, { signal: me.ac.signal }); } catch (e) { if (isAbort(e) || !live()) return; }
+      try { r = await api('/footage/' + rec.id, { signal: me.ac.signal }); fails = 0; } catch (e) {
+        if (isAbort(e) || !live()) return;
+        const f = pollFailure(fails, e); fails = f.fails;
+        if (f.stop) { me.state = 'failed'; me.msg = f.msg; refDraw(); return; }
+        me.timer = setTimeout(poll, 2000); return;
+      }
       if (!live()) return;
       const s = refStyleState(r);
       // a reference that finished without reading its captions (an older server, a lost job): ask for the step once
@@ -402,6 +463,9 @@ export function installCaptionInspector(ctx, VS) {
   });
   /* another design: the reference read for the last one stops */
   addEventListener('hashchange', () => setTimeout(() => { if (ref && ref.d !== ED.d) refStop(); }));
+  /** The sources call this when a session starts (for `d`) or ends (no `d`): a reference read for another design stops */
+  const stopRef = (d) => { if (ref && (!d || ref.d !== d)) refStop(); };
 
-  return { redraw: redrawInspector, applyGuide };
+  VS.captionInspector = { redraw: redrawInspector, applyGuide, stopRef };
+  return VS.captionInspector;
 }
