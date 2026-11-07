@@ -16,7 +16,11 @@ describe('caption presets', () => {
   });
   it('styles are valid', () => {
     for (const p of PRESETS) {
-      expect(Object.keys(withDefaults(p.style)).every((k) => ALLOWED.has(k))).toBe(true);
+      expect(Object.keys(p.style).every((k) => ALLOWED.has(k))).toBe(true);
+      expect(Object.keys(p.style.box || {}).every((k) => ['color', 'radius', 'pad'].includes(k))).toBe(true);
+      expect(Object.keys(p.style.stroke || {}).every((k) => ['color', 'width'].includes(k))).toBe(true);
+      expect(Object.keys(p.style.shadow || {}).every((k) => ['color', 'blur', 'y'].includes(k))).toBe(true);
+      expect(Object.keys(p.style.highlight || {}).every((k) => ['mode', 'color', 'text', 'radius'].includes(k))).toBe(true);
       expect(ANIMS).toContain(p.style.anim);
       expect(JSON.stringify(p.style).length).toBeLessThan(2000);
       expect(FONT_STACKS[p.style.font]).toBeTruthy();
@@ -32,6 +36,22 @@ describe('caption presets', () => {
     expect(applyPreset({ ...DEFAULT_STYLE, y: 0.8 }, 'clean-white').y).toBe(0.8);
     expect(presetById('clean-white').cat).toBe('clean');
     expect(applyPreset(DEFAULT_STYLE, 'nope')).toEqual(withDefaults(DEFAULT_STYLE));
+  });
+  it('applying any preset after any other leaks nothing', () => {
+    const CARRY = ['y', 'x', 'maxWords', 'offset', 'minDur', 'gap'];
+    for (const a of PRESETS) for (const b of PRESETS) {
+      const prev = applyPreset(DEFAULT_STYLE, a.id);
+      const got = applyPreset(prev, b.id);
+      const want = applyPreset(DEFAULT_STYLE, b.id);
+      for (const k of CARRY) { delete got[k]; delete want[k]; }
+      expect(got).toEqual(want);
+    }
+  });
+  it('carries position and timing unless the preset sets them', () => {
+    const cur = { ...DEFAULT_STYLE, y: 0.8, x: 0.3, maxWords: 5, offset: 120 };
+    const r = applyPreset(cur, 'clean-white');
+    expect([r.y, r.x, r.maxWords, r.offset]).toEqual([0.8, 0.3, 5, 120]);
+    expect(applyPreset(cur, 'cine-serif').y).toBe(0.86);
   });
   it('sampleLine', () => {
     const l = sampleLine('en');

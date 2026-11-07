@@ -1,6 +1,6 @@
 // Caption style presets, grouped by category. Pure ESM; each style is a partial CaptionStyle
 // (merged over the current style by applyPreset, then filled by withDefaults).
-import { withDefaults } from './captions.js';
+import { DEFAULT_STYLE, withDefaults } from './captions.js';
 
 export const CATEGORIES = [
   { id: 'viral', name: 'Bold and viral' },
@@ -37,7 +37,7 @@ export const PRESETS = [
   P('karaoke-scale', 'Scale up', 'karaoke', { font: 'sans-bold', size: 0.05, weight: 900, case: 'upper', color: '#FFFFFF', stroke: stroke('#000000', 0.012), shadow: shadow('rgba(0,0,0,.6)'), anim: 'karaoke', maxWords: 3, highlight: hl('scale', '#FFE600') }),
   // Clean
   P('clean-white', 'White', 'clean', { font: 'sans', size: 0.045, weight: 700, color: '#FFFFFF', stroke: null, shadow: SOFT, anim: 'fade' }),
-  P('clean-bold', 'Bold white', 'clean', { font: 'sans-bold', size: 0.048, weight: 800, color: '#FFFFFF', stroke: null, shadow: SOFT, anim: 'none' }),
+  P('clean-bold', 'Bold white', 'clean', { font: 'sans-bold', size: 0.048, weight: 800, color: '#FFFFFF', stroke: null, shadow: shadow('rgba(0,0,0,.75)', 0.008, 0.003), anim: 'none' }),
   P('clean-dark', 'Dark text', 'clean', { font: 'sans', size: 0.045, weight: 700, color: '#111111', stroke: null, shadow: shadow('rgba(255,255,255,.5)', 0.006, 0.001), anim: 'fade', highlight: hl('none', '#111111') }),
   P('clean-two-line', 'Two lines', 'clean', { font: 'sans', size: 0.042, weight: 600, color: '#FFFFFF', stroke: null, shadow: SOFT, anim: 'fade', maxWords: 6, maxChars: 34, lines: 2, lh: 1.2 }),
   P('clean-slide', 'Slide in', 'clean', { font: 'sans', size: 0.045, weight: 700, color: '#FFFFFF', stroke: null, shadow: SOFT, anim: 'slide' }),
@@ -52,10 +52,10 @@ export const PRESETS = [
   P('box-yellow', 'Yellow box', 'boxed', { font: 'sans-bold', size: 0.048, weight: 900, color: '#111111', stroke: null, shadow: null, box: box('#FFE600', 0.15), anim: 'pop', highlight: hl('none', '#111111') }),
   P('box-pill', 'Pill', 'boxed', { font: 'sans', size: 0.042, weight: 700, color: '#FFFFFF', stroke: null, shadow: null, box: box('#1F1F1F', 0.5, 0.4), boxOpacity: 0.85, anim: 'fade' }),
   // Neon
-  P('neon-cyan', 'Cyan glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#7DF9FF', stroke: null, shadow: shadow('#00E5FF', 0.02, 0), anim: 'fade', highlight: hl('color', '#FFFFFF') }),
-  P('neon-pink', 'Pink glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#FF8AD0', stroke: null, shadow: shadow('#FF2E88', 0.02, 0), anim: 'pop', highlight: hl('color', '#FFFFFF') }),
-  P('neon-green', 'Green glow', 'neon', { font: 'display', size: 0.054, weight: 800, color: '#B6FF9E', stroke: null, shadow: shadow('#39FF14', 0.02, 0), anim: 'bounce', highlight: hl('color', '#FFFFFF') }),
-  P('neon-purple', 'Purple glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#D9B8FF', stroke: null, shadow: shadow('#A855F7', 0.022, 0), anim: 'fade', highlight: hl('color', '#FFFFFF') }),
+  P('neon-cyan', 'Cyan glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#7DF9FF', stroke: stroke('#00E5FF', 0.003), shadow: shadow('#00E5FF', 0.035, 0), anim: 'fade', highlight: hl('color', '#FFFFFF') }),
+  P('neon-pink', 'Pink glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#FF8AD0', stroke: stroke('#FF2E88', 0.003), shadow: shadow('#FF2E88', 0.035, 0), anim: 'pop', highlight: hl('color', '#FFFFFF') }),
+  P('neon-green', 'Green glow', 'neon', { font: 'display', size: 0.054, weight: 800, color: '#B6FF9E', stroke: stroke('#39FF14', 0.003), shadow: shadow('#39FF14', 0.035, 0), anim: 'bounce', highlight: hl('color', '#FFFFFF') }),
+  P('neon-purple', 'Purple glow', 'neon', { font: 'sans-bold', size: 0.05, weight: 800, color: '#D9B8FF', stroke: stroke('#A855F7', 0.003), shadow: shadow('#A855F7', 0.035, 0), anim: 'fade', highlight: hl('color', '#FFFFFF') }),
   // Arabic
   P('ar-bold', 'Bold white', 'arabic', { ...AR, font: 'sans-bold', size: 0.05, weight: 800, color: '#FFFFFF', stroke: stroke('#000000', 0.010), shadow: SOFT, anim: 'pop', maxWords: 3 }),
   P('ar-clean', 'Clean', 'arabic', { ...AR, font: 'sans', size: 0.046, weight: 700, color: '#FFFFFF', stroke: null, shadow: SOFT, anim: 'fade', maxWords: 4 }),
@@ -66,19 +66,15 @@ export const PRESETS = [
 
 export const presetById = (id) => PRESETS.find((p) => p.id === id) || null;
 
-// Applies a preset over the current style; position (y, x) and maxWords survive unless the preset sets them.
+// Applies a preset over the neutral DEFAULT_STYLE so nothing leaks from the previously applied preset.
+// Position and timing (y, x, maxWords, offset, minDur, gap) carry over from the current style unless the preset sets them.
+const CARRIED = ['y', 'x', 'maxWords', 'offset', 'minDur', 'gap'];
 export function applyPreset(style, id) {
   const p = presetById(id);
   if (!p) return withDefaults(style);
-  const keep = {};
-  for (const k of ['y', 'x', 'maxWords']) if (style && style[k] !== undefined) keep[k] = style[k];
-  return withDefaults({ ...style, ...p.style, ...keep, ...pick(p.style, ['y', 'x', 'maxWords']) });
-}
-
-function pick(o, keys) {
-  const r = {};
-  for (const k of keys) if (o[k] !== undefined) r[k] = o[k];
-  return r;
+  const out = { ...DEFAULT_STYLE, ...p.style };
+  for (const k of CARRIED) if (p.style[k] === undefined && style && style[k] !== undefined) out[k] = style[k];
+  return withDefaults(out);
 }
 
 const w = (t, s, e) => ({ t, s, e });
