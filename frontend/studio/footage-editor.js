@@ -16,6 +16,7 @@ import { dragCaption } from './caption-inspector.js';
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
+import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 
 /* ---------- 1. pure helpers ---------- */
 const BUSY = ['queued', 'running'];
@@ -80,6 +81,14 @@ export function useMatchedGrade(d, id) {
   return true;
 }
 export const LOOK_DELETED = 'This brand look was deleted. Use the matched grade instead.';
+/** Media → Replace video asks this first */
+export const REPLACE_ASK = 'Replace this video? Captions will be made again from the new video.';
+/** The Look when the grade step was skipped (a video imported without a reference or a brand look) */
+export const NO_GRADE_YET = 'No colour grade yet. Match a reference or apply a brand look.';
+/** "24 MB" / "1.2 GB" */
+export const fmtBytes = (n) => { n = +n || 0; return n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1e6)) + ' MB'; };
+/** Whether the footage record was paired with a reference video (Look offers "Change the reference" instead of "Match a reference") */
+export const hasRefPair = (rec) => !!(rec && rec.pair && rec.pair.ref);
 /** Seconds since epoch at which a signed `?t=<exp>.<mac>` URL expires, or null */
 export const urlExpiry = (url) => { const m = /[?&]t=(\d+)\./.exec(String(url || '')); return m ? +m[1] : null; };
 /**
@@ -208,6 +217,8 @@ export function installFootageEditor(ctx, FT) {
     stop();
     if (VS.captionInspector) VS.captionInspector.stopRef(d); // a reference read for another design stops
     if (prepareOpen(d)) save();
+    const old = $('#ftStage'); if (old) old.remove(); // a new video in the same design: the stage is made again (its size observer too)
+    if (!d.footage.src && !FT.upload(d)) ED.tab = 'media'; // an empty video opens on Media (the stage shows the drop zone)
     F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false };
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -225,6 +236,7 @@ export function installFootageEditor(ctx, FT) {
 
   async function poll() {
     const S = F; if (!S) return; const gen = S.gen; clearTimeout(S.timer);
+    if (!S.id) { redraw(); return; } // no video yet: nothing to poll until one is added
     try {
       const [rec, refRec] = await Promise.all([api('/footage/' + S.id), S.ref ? api('/footage/' + S.ref).catch(() => null) : null]);
       if (!alive(S) || gen !== S.gen) return;
@@ -321,7 +333,8 @@ export function installFootageEditor(ctx, FT) {
   function redraw() {
     if (!F) return;
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage;
-    const sig = JSON.stringify([F.err, F.note, F.rec && F.rec.status, F.rec && F.rec.jobs, F.refRec && F.refRec.status, F.refRec && F.refRec.jobs && F.refRec.jobs['caption-style'], A.settled, capsOf(ED.d).lines.length, !!F.cube]);
+    const up = FT.upload(ED.d);
+    const sig = JSON.stringify([F.id, up && up.phase, up && up.err, F.refUp ? 1 : 0, F.err, F.note, F.rec && F.rec.status, F.rec && F.rec.jobs, F.refRec && F.refRec.status, F.refRec && F.refRec.jobs && F.refRec.jobs['caption-style'], A.settled, capsOf(ED.d).lines.length, !!F.cube]);
     if (sig === F.sig) return; F.sig = sig;
     drawStage(); ed.panel(); ed.props(); exportButton();
   }
@@ -341,10 +354,11 @@ export function installFootageEditor(ctx, FT) {
     if (!F.player && F.rec && F.rec.proxyUrl) mountPlayer();
     const A = analysis(F.rec, F.refRec), msg = $('#ftMsg'), prog = $('#ftProg');
     let m = '';
-    if (F.err && (!F.rec || !F.player || /played/.test(F.err))) m = `<p>${esc(F.err)}</p>`;
+    if (!F.id) m = addHTML(true);
+    else if (F.err && (!F.rec || !F.player || /played/.test(F.err))) m = `<p>${esc(F.err)}</p>`;
     else if (A.failed) m = failBox(A.error || 'This video could not be processed.', F.id, firstFailed(F.rec) || 'probe');
     else if (!F.player) m = `<div class="ft-wait">${skel(2)}<p>Preparing your video…${pct(A.proxy)}</p></div>`;
-    msg.innerHTML = m; msg.hidden = !m;
+    msg.innerHTML = m; msg.hidden = !m; msg.classList.toggle('ft-empty', !F.id);
     const work = [[A.transcribe, 'Transcribing'], [A.grade, 'Matching the grade'], [A.style, 'Reading the caption style']].filter(([s]) => BUSY.includes(s.state)).map(([s, l]) => l + pct(s));
     prog.innerHTML = work.length ? `<span class="ft-dot"></span>${esc(work.join(' · '))}…` : ''; prog.hidden = !work.length || A.failed;
     $('#ftSplit').hidden = F.split == null;
@@ -438,11 +452,67 @@ export function installFootageEditor(ctx, FT) {
   /** The Captions panel's body while there are no lines: transcribing, failed, no sound or no speech */
   function noLinesHTML() {
     if (!F) return null;
+    if (!F.id) return stepsHTML();
     const A = analysis(F.rec, F.refRec);
-    if (A.transcribe.state === 'failed') return failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe');
+    if (A.transcribe.state === 'failed') return failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe') + altHTML();
     if (A.busy(A.transcribe) || !F.rec) return `<p class="xs-t muted">Listening to your video…${pct(A.transcribe)}</p>${skel(6)}`;
-    if (A.transcribe.state === 'skipped') return '<p class="sm-t muted">This video has no sound, so there is nothing to caption.</p>';
-    return '<p class="sm-t muted">No speech was found in this video.</p>';
+    if (A.transcribe.state === 'skipped') return '<p class="sm-t muted">This video has no sound, so there is nothing to caption.</p>' + altHTML();
+    return '<p class="sm-t muted">No speech was found in this video.</p>' + altHTML();
+  }
+  /** Captions without speech to listen to: paste the script or open a subtitle file instead (both in the Script panel) */
+  const altHTML = () => (can() ? `<div class="ft-alt"><button class="btn secondary sm" data-act="ftScript">${ic('type', 15)}Paste script</button><button class="btn secondary sm" data-act="ftSrt">${ic('upload', 15)}Open SRT or VTT</button></div>` : '');
+  /** An empty video's Captions panel: 1. Add your video, 2. Add captions */
+  function stepsHTML() {
+    const up = FT.upload(ED.d), busy = !!(up && !up.err);
+    return `<ol class="ft-steps"><li class="${busy ? '' : 'on'}"><b>Add your video</b><span class="xs-t muted">${busy ? esc(up.phase === 'uploading' ? 'Uploading your video…' : upText(up)) : 'MP4 or MOV, up to 10 min'}</span>${busy || !can() ? '' : `<button class="btn primary sm" data-act="ftPick">${ic('upload', 15)}Choose a file</button>`}</li>
+      <li><b>Add captions</b><span class="xs-t muted">Auto from speech once your video is in, or paste a script, or open an SRT or VTT file.</span>${altHTML()}</li></ol>`;
+  }
+
+  /* ---------- the empty video: "Add your video" (stage and Media), the upload's progress ---------- */
+  const upText = (up) => (up.phase === 'reading' ? 'Reading your video…' : up.phase === 'checking' ? 'Checking your video…' : `Uploading ${up.name}… ${Math.round(up.p * 100)}%`);
+  const ACCEPT = 'video/mp4,video/quicktime,video/*,.mp4,.mov,.m4v';
+  /** The drop zone (no video yet), or the upload's progress with Stop. `big`: the stage's version */
+  function addHTML(big) {
+    const up = FT.upload(ED.d), ro = !can();
+    if (up && !up.err) {
+      const p = Math.round(up.p * 100);
+      return `<div class="ft-up${big ? ' big' : ''}" role="status" aria-live="polite"><b>${up.phase === 'uploading' ? 'Uploading your video' : esc(upText(up))}</b>
+        <div class="prog-w"><div class="prog"><i data-ft-upbar style="width:${p}%"></i></div><span class="prog-pct" data-ft-uppct>${p}%</span></div>
+        <small class="xs-t muted" dir="auto">${esc(up.name)}</small><button class="btn ghost sm" data-act="ftStopUp">Stop</button></div>`;
+    }
+    if (ro) return '<p class="sm-t muted">This video has no file yet.</p>';
+    return `<label class="ft-add${big ? ' big' : ''}" data-ft-add tabindex="0"><input type="file" accept="${ACCEPT}" hidden data-ft-add-file>
+      <span class="ft-di">${ic('upload', big ? 28 : 22)}</span><b>Add your video</b><span class="xs-t muted">MP4 or MOV, up to 10 min</span>
+      <span class="btn secondary sm ft-choose">or choose a file</span>${up && up.err ? `<span class="ft-err" role="alert">${esc(up.err)}</span>` : ''}</label>`;
+  }
+  /** Media: the video's name, length, size and poster, and Replace video (an empty video: the drop zone) */
+  function mediaHTML() {
+    const d = ED.d, up = FT.upload(d);
+    if (!F.id || (up && !up.err && !F.rec)) return `<div class="body ft-media"><h3>Media</h3>${addHTML(false)}</div>`;
+    const rec = F.rec, poster = posterUrl(d), ms = F.dur || (rec && rec.meta && rec.meta.dur ? rec.meta.dur * 1000 : 0) || d.footage.dur || 0;
+    const name = (rec && rec.name) || 'Video', busy = !!(up && !up.err);
+    return `<div class="body ft-media"><h3>Media</h3>
+      <div class="ft-mv">${poster ? `<img src="${esc(poster)}" alt="">` : `<span class="ft-mp">${ic('vsFilm', 22)}</span>`}
+        <div class="ft-mi"><b dir="auto" title="${esc(name)}">${esc(name)}</b><span class="xs-t muted">${ms ? esc(fmtMs(ms)) : '–'}${rec && rec.size ? ' · ' + fmtBytes(rec.size) : ''}</span></div></div>
+      ${busy ? addHTML(false) : can() ? `<button class="btn secondary sm" data-act="ftReplace">${ic('refresh', 15)}Replace video</button><input type="file" accept="${ACCEPT}" hidden data-ft-replace-file>` : ''}
+      ${up && up.err ? `<p class="ft-err" role="alert">${esc(up.err)}</p>` : ''}</div>`;
+  }
+  /** Progress only: the bars move without redrawing the panels */
+  function upProgress() {
+    const up = FT.upload(ED.d); if (!up) return;
+    const p = Math.round(up.p * 100);
+    document.querySelectorAll('[data-ft-upbar]').forEach((i) => { i.style.width = p + '%'; });
+    document.querySelectorAll('[data-ft-uppct]').forEach((x) => { x.textContent = p + '%'; });
+  }
+  FT.onUpload = (d) => { if (!F || !ED.d || ED.d.id !== d.id) return; const before = F.sig; redraw(); if (F && F.sig === before) upProgress(); };
+  /** Commits the new video (footage.js FT.attach): one mutate() when the design is open, then the session starts again on it */
+  FT.commit = (d, fn) => {
+    if (ED.d && ED.d.id === d.id && document.body.classList.contains('in-editor')) { mutate(() => fn(ED.d)); save(); }
+    else { fn(d); save(); }
+  };
+  function addFile(file, replace) {
+    if (!F || !ED.d || !file) return;
+    FT.attach(ED.d, file, { replace }).then((ok) => { if (!ok) return; toast(replace ? 'Video replaced. Making the captions again…' : 'Video added. Making the captions…'); });
   }
   /** Re-transcribe, next to Add line */
   const retxHTML = () => { const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe); return `<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`; };
@@ -452,12 +522,13 @@ export function installFootageEditor(ctx, FT) {
   const brandLooks = () => (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
 
   function gradeHTML(ft, A, src, dis) {
+    if (!F.id) return '<p class="sm-t muted">Add your video to adjust its colours.</p>';
     if (A.grade.state === 'failed') return failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
     if (A.busy(A.grade) || !F.rec) return `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
     const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut), gone = !own && !!F.cubeGone[ft.look.lut];
     const msg = own && F.cube ? `The colours match ${src}. Use <b>Before / After</b> under the video to compare.`
       : gone ? esc(LOOK_DELETED)
-      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(F.note || 'No colour grade yet.');
+      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(!ft.look.lut && A.grade.state === 'skipped' ? NO_GRADE_YET : F.note || 'No colour grade yet.');
     const L = ft.look, g = (k) => gradeToSlider(k, L[k]);
     // a brand look is applied (or was, and is gone): the footage's own matched grade is one click away
     const back = !dis && canUseMatched(ft, A.grade, F.id) ? `<button class="btn ${gone ? 'primary' : 'secondary'} sm ft-matched" data-act="ftUseMatched">${ic('refresh', 14)}Use the matched grade</button>` : '';
@@ -477,6 +548,51 @@ export function installFootageEditor(ctx, FT) {
       <button class="btn ghost icon sm" data-act="ftDelLook" data-id="${esc(l.id)}" aria-label="Delete ${esc(l.name || l.id)}" title="Delete">${ic('trash', 15)}</button>`}</li>`).join('')}</ul>`
       : '<p class="xs-t muted">No brand looks yet. Save this grade and caption style to reuse them on other videos.</p>';
     return `${save}${rows}`;
+  }
+
+  /** The Look side panel (rail): the grade in one sentence, Match a reference, brand looks. The sliders stay in the inspector. */
+  function lookPanelHTML() {
+    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = !can();
+    let grade;
+    if (!F.id) grade = '<p class="sm-t muted">Add your video first.</p>';
+    else if (A.grade.state === 'failed') grade = failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
+    else if (A.busy(A.grade) || !F.rec) grade = `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(2)}`;
+    else {
+      const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut);
+      grade = `<p class="sm-t${ft.look.lut ? '' : ' muted'}">${own && F.cube ? `The colours match ${src}.` : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(!ft.look.lut && A.grade.state === 'skipped' ? NO_GRADE_YET : 'No colour grade yet.')}</p>
+        <p class="xs-t muted">Strength, exposure, temperature and saturation are in the panel on the right.</p>`;
+    }
+    const paired = hasRefPair(F.rec) || !!F.ref, R = F.refUp;
+    const ref = R ? `<div class="ft-up" role="status"><b>Uploading the reference</b><div class="prog-w"><div class="prog"><i data-ft-refbar style="width:${Math.round(R.p * 100)}%"></i></div><span class="prog-pct" data-ft-refpct>${Math.round(R.p * 100)}%</span></div></div>`
+      : dis ? '' : `<p class="xs-t muted">${paired ? 'The colours and caption style come from your reference video.' : 'Drop an edited video to copy its colours and caption style.'}</p>
+        <button class="btn ${paired ? 'secondary' : 'primary'} sm" data-act="ftMatchRef" ${F.id && F.rec && !A.failed ? '' : 'disabled'}>${ic('upload', 15)}${paired ? 'Change the reference' : 'Match a reference'}</button>
+        <input type="file" accept="${ACCEPT}" hidden data-ft-ref-file>`;
+    return `<div class="body ft-look-p"><h3>Look</h3>
+      <section class="ft-sec"><span class="label">Colour grade</span>${grade}</section>
+      <section class="ft-sec"><span class="label">Reference</span>${ref}</section>
+      <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, dis)}</section></div>`;
+  }
+  /** Look → Match a reference: uploads the reference, pairs it (the server matches the grade again and reads its caption style) */
+  async function matchRef(file) {
+    const S = F; if (!S || !S.id || !can() || S.refUp || !file) return;
+    if (!isVideoFile(file)) { toast('Choose a video file (MP4 or MOV)'); return; }
+    S.refUp = { p: 0, ac: new AbortController() }; S.sig = ''; redraw();
+    const bar = () => { const p = Math.round(S.refUp.p * 100); document.querySelectorAll('[data-ft-refbar]').forEach((i) => { i.style.width = p + '%'; }); document.querySelectorAll('[data-ft-refpct]').forEach((x) => { x.textContent = p + '%'; }); };
+    try {
+      const ref = await uploadFootage(file, { role: 'reference', brand: brand().id, api, signal: S.refUp.ac.signal, onProgress: (v) => { if (S.refUp) { S.refUp.p = v; bar(); } } });
+      const lang = S.rec && S.rec.pair && S.rec.pair.lang;
+      await api(`/footage/${S.id}/pair`, { method: 'POST', body: { ref: ref.id, ...(lang ? { lang } : {}) } });
+      S.refUp = null;
+      // the new reference's grade replaces the one in use (a brand look too: matching a reference is asking for its colours)
+      const set = (dd) => { const f = dd.footage; f.ref = ref.id; f.lookId = null; f.look.lut = null; };
+      if (!alive(S)) { set(S.d); save(); return; }
+      mutate(() => set(ED.d)); save();
+      S.ref = ref.id; S.refRec = null; S.cube = null; S.note = null; S.applied = false; S.err = null; S.sig = ''; S.gen++;
+      toast('Matching the reference…'); poll();
+    } catch (e) {
+      S.refUp = null; if (alive(S)) { S.sig = ''; redraw(); }
+      if (!isAbort(e)) toast((e && e.message) || 'The reference could not be uploaded. Try again.');
+    }
   }
 
   function lookHTML() {
@@ -500,7 +616,7 @@ export function installFootageEditor(ctx, FT) {
   };
   VS.register('video', {
     mount() {
-      if (!F || F.d !== ED.d || (F.player && !document.body.contains(F.player.video))) start(ED.d);
+      if (!F || F.d !== ED.d || F.id !== (ED.d.footage.src || null) || (F.player && !document.body.contains(F.player.video))) start(ED.d);
       drawStage(); sync(); exportButton();
     },
     unmount() {
@@ -509,7 +625,7 @@ export function installFootageEditor(ctx, FT) {
     },
     player,
     tracks: tlTracks,
-    panel: () => null,
+    panel: (k) => (!F || F.d !== ED.d ? null : k === 'media' ? mediaHTML() : k === 'look' ? lookPanelHTML() : null),
     captions: {
       body: noLinesHTML, foot: retxHTML, light: () => sync(),
       /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
@@ -532,6 +648,16 @@ export function installFootageEditor(ctx, FT) {
     ftSaveLook: () => saveLook(),
     ftApplyLook: (a) => applyLook(a.dataset.id),
     ftUseMatched: () => useMatched(),
+    ftPick: () => { const i = $('[data-ft-add-file]'); if (i) i.click(); else ACT.edTab({ dataset: { k: 'media' } }); },
+    ftStopUp: () => { if (ED.d) { FT.stopUpload(ED.d); toast('Upload stopped. Drop the same file again to pick up where it stopped.'); } },
+    ftReplace: () => {
+      if (!F || !can() || FT.upload(ED.d) && !FT.upload(ED.d).err) return;
+      // the file picker opens from the confirm button's click (a user gesture)
+      ask('Replace video', REPLACE_ASK, 'Replace', () => { const i = $('#edPanel [data-ft-replace-file]'); if (i) i.click(); });
+    },
+    ftMatchRef: () => { const i = $('#edPanel [data-ft-ref-file]'); if (i) i.click(); },
+    ftScript: () => { ACT.edTab({ dataset: { k: 'script' } }); const t = $('#edPanel [data-sc-text]'); if (t) t.focus(); },
+    ftSrt: () => { ACT.edTab({ dataset: { k: 'script' } }); const f = $('#edPanel [data-sc-file]'); if (f) f.click(); },
     ftDelLook: (a) => deleteLook(a.dataset.id),
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
@@ -570,6 +696,24 @@ export function installFootageEditor(ctx, FT) {
     if (!F || !can()) return;
     mutate(() => { Object.assign(ED.d.footage.look, GRADE_RESET); }, () => { sync(); ed.props(); }); save();
   }
+  /* ---- the empty video's drop zone (stage and Media), Replace video and Match a reference: delegated, installed once ---- */
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t || !t.matches) return;
+    const f = t.files && t.files[0];
+    if (t.matches('[data-ft-add-file]')) { t.value = ''; addFile(f, false); }
+    else if (t.matches('[data-ft-replace-file]')) { t.value = ''; addFile(f, true); }
+    else if (t.matches('[data-ft-ref-file]')) { t.value = ''; matchRef(f); }
+  });
+  /** The drop zone under the pointer (anywhere on the stage while the video is empty) */
+  const zoneOf = (e) => {
+    if (!F || !e.target || !e.target.closest) return null;
+    return e.target.closest('[data-ft-add]') || (!F.id && e.target.closest('#ftStage') ? $('#ftStage [data-ft-add]') : null);
+  };
+  // capture phase: ahead of the editor's own "drop an image on the canvas"
+  document.addEventListener('dragover', (e) => { const z = zoneOf(e); if (z) { e.preventDefault(); e.stopImmediatePropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; z.classList.add('over'); } }, true);
+  document.addEventListener('dragleave', (e) => { const z = zoneOf(e); if (z && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#ftStage, [data-ft-add]'))) z.classList.remove('over'); }, true);
+  document.addEventListener('drop', (e) => { const z = zoneOf(e); if (!z) return; e.preventDefault(); e.stopImmediatePropagation(); z.classList.remove('over'); addFile(e.dataTransfer && e.dataTransfer.files[0], false); }, true);
+  document.addEventListener('keydown', (e) => { const z = zoneOf(e); if (z && e.target === z && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); const i = z.querySelector('input'); if (i) i.click(); } });
   document.addEventListener('input', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradePreview(t); });
   document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradeCommit(t); });
 

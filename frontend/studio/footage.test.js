@@ -35,3 +35,34 @@ describe('upload modal Start', () => {
     expect(canStart({ busy: true, original: {} })).toBe(false);
   });
 });
+
+import { videoBlank, lengthError, TOO_LONG, MAX_SEC, REPLACE_ASK, NO_GRADE_YET } from './footage.js';
+import { kindOf } from './caption-store.js';
+
+describe('Caption a video: a blank video design', () => {
+  it('is a video with no footage yet and empty captions', () => {
+    const d = videoBlank();
+    expect(kindOf(d)).toBe('video');
+    expect(d.footage.src).toBe(null);
+    expect(d.footage.ref).toBe(null);
+    expect(d.footage.lookId).toBe(null);
+    expect(d.captions.lines).toEqual([]);
+    expect(videoBlank().footage).not.toBe(d.footage); // a fresh object each time
+  });
+});
+
+describe('the 10-minute limit', () => {
+  it('refuses a video over 10 minutes (probe seconds) with the exact message', () => {
+    expect(TOO_LONG).toBe('This video is longer than 10 minutes.');
+    expect(MAX_SEC).toBe(600);
+    expect(lengthError(601)).toBe('This video is longer than 10 minutes.');
+    expect(lengthError(600)).toBe(null);
+    expect(lengthError(12.5)).toBe(null);
+    expect(lengthError(null)).toBe(null); // unknown length: the upload goes on, the probe checks again
+    expect(lengthError(NaN)).toBe(null);
+  });
+  it('copy', () => {
+    expect(REPLACE_ASK).toBe('Replace this video? Captions will be made again from the new video.');
+    expect(NO_GRADE_YET).toBe('No colour grade yet. Match a reference or apply a brand look.');
+  });
+});

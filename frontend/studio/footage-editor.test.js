@@ -284,3 +284,19 @@ describe('the caption language', () => {
     const c2 = { lines: [], lang: 'en' }; applyPatch(c2, { look: {} }, { lines: ar }); expect(c2.lang).toBe('en');
   });
 });
+
+import { fmtBytes, hasRefPair, REPLACE_ASK as FE_REPLACE_ASK } from './footage-editor.js';
+describe('Media and Look helpers', () => {
+  it('formats a file size', () => {
+    expect(fmtBytes(24e6)).toBe('24 MB');
+    expect(fmtBytes(1.24e9)).toBe('1.2 GB');
+    expect(fmtBytes(10)).toBe('1 MB');
+  });
+  it('knows a record paired with a reference (Match a reference vs Change the reference)', () => {
+    expect(hasRefPair({ pair: { ref: 'r1' } })).toBe(true);
+    expect(hasRefPair({ pair: { lookId: 'l1' } })).toBe(false);
+    expect(hasRefPair({ pair: {} })).toBe(false);
+    expect(hasRefPair(null)).toBe(false);
+    expect(FE_REPLACE_ASK).toBe('Replace this video? Captions will be made again from the new video.');
+  });
+});

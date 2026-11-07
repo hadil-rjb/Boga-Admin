@@ -5,7 +5,8 @@
    The footage editor (player, panels, transport) lives in footage-editor.js. No DOM use at module level.
    ============================================================ */
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
-import { installFootageEditor } from './footage-editor.js';
+import { installFootageEditor, lookPath } from './footage-editor.js';
+export { REPLACE_ASK, NO_GRADE_YET } from './footage-editor.js';
 import { CAPTIONS_DEFAULT } from './caption-store.js';
 import { apiUrl } from '../lib/api';
 
@@ -88,6 +89,27 @@ export function footageCaptions({ lang = null, style = null } = {}) {
   const c = { ...CAPTIONS_DEFAULT, lines: [], style: style ? JSON.parse(JSON.stringify(style)) : null, lang };
   if (style) c.styleFrom = 'look';
   return c;
+}
+
+/** A blank video design's footage and captions ("Caption a video"): no file yet, the stage shows the drop zone until one is added */
+export function videoBlank() { return { footage: footageDoc({ src: null }), captions: footageCaptions() }; }
+/** The longest video the studio takes (seconds) */
+export const MAX_SEC = 600;
+export const TOO_LONG = 'This video is longer than 10 minutes.';
+/** The message refusing a video of `sec` seconds, or null (an unknown length is let through: the probe checks again) */
+export const lengthError = (sec) => (+sec > MAX_SEC ? TOO_LONG : null);
+/** A local video file's length in seconds, read by the browser before the upload (null when it cannot decode it in time) */
+export function fileDuration(file, { timeout = 8000 } = {}) {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return resolve(null);
+    const v = document.createElement('video'), url = URL.createObjectURL(file); let done = false;
+    const fin = (x) => { if (done) return; done = true; clearTimeout(t); v.removeAttribute('src'); try { v.load(); } catch (e) { /* ignore */ } URL.revokeObjectURL(url); resolve(x); };
+    const t = setTimeout(() => fin(null), timeout);
+    v.preload = 'metadata'; v.muted = true;
+    v.addEventListener('error', () => fin(null));
+    v.addEventListener('loadedmetadata', () => fin(v.duration > 0 && isFinite(v.duration) ? v.duration : null));
+    v.src = url;
+  });
 }
 
 export function installFootage(ctx) {
@@ -225,7 +247,73 @@ export function installFootage(ctx) {
   /** Opens a footage design in the editor; footage-editor.js takes the editor over for designs with d.footage */
   FT.open = (d) => { location.hash = '#/editor/' + d.id; };
   installFootageEditor(ctx, FT);
-  FT.newVideo = () => openNew('caption');
+  /** "Caption a video": an empty video design straight on the drop zone (the modal's 'caption' mode stays for callers that want it) */
+  FT.newVideo = () => FT.videoBlank();
   ACT.ftNew = () => openNew();
+  /* ---- Caption a video: a blank video design opens on the drop zone; a dropped file is uploaded into it (attach) ---- */
+  /** Creates the blank video design and opens it (the Studio → Videos tile "Caption a video") */
+  FT.videoBlank = () => {
+    if (canEdit && !canEdit()) return null;
+    const size = DEFAULT_SIZE, blank = videoBlank();
+    const d = createDesign({ name: 'Untitled video', ratio: ratioFor(size), mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = blank.footage; d.captions = blank.captions; } });
+    save(); FT.open(d);
+    return d;
+  };
+  ACT.ftBlank = () => FT.videoBlank();
+  /** Uploads in progress per design id: { p (0..1), phase ('reading' | 'uploading' | 'checking'), name, err, ac }. The editor draws them. */
+  const UP = new Map();
+  FT.upload = (d) => (d && UP.get(d.id)) || null;
+  const changed = (d) => { if (FT.onUpload) FT.onUpload(d); };
+  /**
+   * Adds `file` as the design's video (or replaces it): checks the length (in the browser, then the probe), uploads it,
+   * pairs it with the design's reference or brand look, then commits the new source in one step through FT.commit (the editor's
+   * mutate when the design is open). Replacing clears the caption lines (the style stays) so the new speech makes them again.
+   */
+  FT.attach = async (d, file, { replace = false } = {}) => {
+    if (!d || !d.footage || (canEdit && !canEdit())) return false;
+    const cur = UP.get(d.id); if (cur && !cur.err) return false; // one upload per design
+    const st = { p: 0, phase: 'reading', name: file ? file.name : '', err: null, ac: new AbortController() };
+    const fail = (m) => { st.err = m; st.phase = null; changed(d); return false; };
+    UP.set(d.id, st); changed(d);
+    if (!isVideoFile(file)) return fail('Choose a video file (MP4 or MOV)');
+    const local = lengthError(await fileDuration(file));
+    if (local) return fail(local); // refused before anything is sent
+    if (st.ac.signal.aborted || UP.get(d.id) !== st) return false; // stopped while the length was read
+    const signal = st.ac.signal, localUrl = URL.createObjectURL(file), posterP = grabPoster(localUrl, { timeout: 10000 }).finally(() => URL.revokeObjectURL(localUrl));
+    let id = null;
+    try {
+      st.phase = 'uploading'; changed(d);
+      const rec = await uploadFootage(file, { role: 'original', brand: brand().id, api, signal, onProgress: (v) => { st.p = v; changed(d); } });
+      id = rec.id;
+      st.phase = 'checking'; st.p = 1; changed(d);
+      const meta = await readProbe(api, id, { signal });
+      if (signal.aborted) throw new DOMException('Upload stopped', 'AbortError');
+      if (meta && lengthError(meta.dur)) { api('/footage/' + id, { method: 'DELETE' }).catch(() => {}); return fail(TOO_LONG); }
+      const ft = d.footage, pairBody = ft.ref ? { ref: ft.ref } : ft.lookId ? { lookId: ft.lookId } : {};
+      try { await api(`/footage/${id}/pair`, { method: 'POST', body: pairBody }); }
+      catch (e) { if (!ft.ref || (e && e.status !== 400)) throw e; await api(`/footage/${id}/pair`, { method: 'POST', body: {} }); } // the reference is gone: no grade
+      const shot = await posterP, first = !ft.src;
+      UP.delete(d.id);
+      (FT.commit || ((dd, fn) => { fn(dd); save(); }))(d, (dd) => {
+        const f = dd.footage, old = f.src;
+        f.src = id; f.export = null;
+        if (old && f.look.lut === lookPath(old)) f.look.lut = null; // the old video's matched grade: the new one's comes with the analysis
+        // a new video takes its own size (a landscape clip stays landscape); a replaced one keeps the design's
+        if (first && meta && meta.w) { const size = outSize(meta); f.out = { ...f.out, w: size.w, h: size.h }; dd.ratio = ratioFor(size); if (dd.pages && dd.pages[0]) dd.pages[0].layers = [BG(size.w, size.h, '#000000')]; }
+        if (replace && dd.captions) { dd.captions.lines = []; dd.captions.voSig = null; }
+        if (!dd.named) { dd.name = `${baseName(file.name)} · captioned`; dd.named = true; }
+        if (dd.pages && dd.pages[0]) { dd.pages[0].poster = shot ? shot.src : null; f.dur = shot ? shot.dur : (meta && meta.dur ? Math.round(meta.dur * 1000) : null); }
+      });
+      changed(d);
+      return true;
+    } catch (e) {
+      if (isAbort(e)) { UP.delete(d.id); changed(d); return false; }
+      return fail((e && e.message) || 'The upload failed. Drop the same file again to pick up where it stopped.');
+    }
+  };
+  /** Stops the design's upload (it resumes when the same file is dropped again) */
+  FT.stopUpload = (d) => { const st = d && UP.get(d.id); if (st && st.ac) st.ac.abort(); if (st) { UP.delete(d.id); changed(d); } };
+  /** Clears a refused or failed upload's message */
+  FT.clearUpload = (d) => { const st = d && UP.get(d.id); if (st && st.err) { UP.delete(d.id); changed(d); } };
   return FT;
 }
