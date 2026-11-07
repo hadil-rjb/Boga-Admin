@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { clampDrag, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, styleEdit, styleOrigin, ORIGIN_COPY, clampY, colorHex, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
-  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit } from './footage-editor.js';
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen } from './footage-editor.js';
+import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
 
+const cp = (o = {}) => ({ ...CAPTIONS_DEFAULT, lang: 'ar', ...o, lines: o.lines || [] });
 const W = (t, s, e) => ({ t, s, e, p: 1 });
-const ft = (o = {}) => ({ src: 'a'.repeat(24), ref: null, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions: { style: null, lines: [], lang: 'ar' }, out: { w: 1080, h: 1920, fps: 30 }, ...o });
+const ft = (o = {}) => ({ src: 'a'.repeat(24), ref: null, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, out: { w: 1080, h: 1920, fps: 30 }, ...o });
 
 describe('player geometry', () => {
   it('coverCrop keeps the centre: landscape into portrait crops the sides, portrait into landscape crops top and bottom', () => {
@@ -68,21 +70,21 @@ describe('analysisPatch (results the design still lacks)', () => {
   const words = [W('مرحبا', 0, 300), W('بكم', 300, 600), W('في', 600, 800), W('الفيديو', 800, 1200)];
   const id = 'a'.repeat(24), refStyle = { ...DEFAULT_STYLE, maxWords: 2, color: '#F3F4F6' };
   it('fills empty lines (grouped with the reference style), a missing style and the grade marker', () => {
-    const p = analysisPatch(ft(), { id, words, refStyle, hasCube: true });
+    const p = analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: true });
     expect(p.style).toBe(refStyle); expect(p.lut).toBe(lookPath(id)); expect(p.lut).toBe(`footage/${id}/look.cube`);
     expect(p.lines.map((l) => l.words.map((w) => w.t))).toEqual([['مرحبا', 'بكم'], ['في', 'الفيديو']]); // maxWords 2 from the reference
-    const d = applyPatch(ft(), p);
-    expect(d.captions.lines).toHaveLength(2); expect(d.captions.style).toBe(refStyle); expect(d.look.lut).toBe(lookPath(id));
+    const c = cp(), d = applyPatch(c, ft(), p);
+    expect(c.lines).toHaveLength(2); expect(c.style).toBe(refStyle); expect(d.look.lut).toBe(lookPath(id));
   });
   it('never replaces what the design already has', () => {
     const mine = { ...DEFAULT_STYLE, color: '#000000' }, line = { id: 'x', start: 0, end: 300, words: [W('hi', 0, 300)] };
-    const f = ft({ look: { lut: 'looks/brand.cube', strength: 1, exposure: 0, temp: 0, sat: 0 }, captions: { style: mine, lines: [line], lang: 'en' } });
-    expect(analysisPatch(f, { id, words, refStyle, hasCube: true })).toBeNull();
+    const f = ft({ look: { lut: 'looks/brand.cube', strength: 1, exposure: 0, temp: 0, sat: 0 } });
+    expect(analysisPatch(cp({ style: mine, lines: [line], lang: 'en' }), f, { id, words, refStyle, hasCube: true })).toBeNull();
   });
   it('groups with the default style when there is none, and returns null with nothing to add', () => {
-    const p = analysisPatch(ft(), { id, words, refStyle: null, hasCube: false });
+    const p = analysisPatch(cp(), ft(), { id, words, refStyle: null, hasCube: false });
     expect(p).toEqual({ lines: expect.any(Array) }); expect(p.lines[0].words).toHaveLength(3); // DEFAULT_STYLE.maxWords
-    expect(analysisPatch(ft(), { id, words: [], refStyle: null, hasCube: false })).toBeNull();
+    expect(analysisPatch(cp(), ft(), { id, words: [], refStyle: null, hasCube: false })).toBeNull();
   });
 });
 
@@ -189,24 +191,32 @@ describe('subtitle style edits', () => {
   });
 });
 
-describe('where the subtitle style came from (styleFrom)', () => {
+describe('where the subtitle style came from', () => {
   const words = [W('a', 0, 300), W('b', 300, 600)], id = 'a'.repeat(24), refStyle = { ...DEFAULT_STYLE, maxWords: 2 };
-  it('the reference style marks styleFrom reference, or default when the reference fell back (captionNote)', () => {
-    expect(analysisPatch(ft(), { id, words, refStyle, hasCube: false }).styleFrom).toBe('reference');
-    expect(analysisPatch(ft(), { id, words, refStyle, refNote: 'Could not read it', hasCube: false }).styleFrom).toBe('default');
-    expect(applyPatch(ft(), analysisPatch(ft(), { id, words, refStyle, hasCube: false })).captions.styleFrom).toBe('reference');
+  it('a reference style fills a style that is not the user\'s yet', () => {
+    expect(analysisPatch(cp(), ft(), { id, words, refStyle, hasCube: false }).style).toBe(refStyle);
+    const c = cp(); applyPatch(c, ft(), analysisPatch(c, ft(), { id, words, refStyle, hasCube: false })); expect(c.style).toBe(refStyle);
   });
-  it('a style the user owns is never replaced, so styleFrom stays custom (e.g. after a words-per-line edit materialised the default)', () => {
-    const f = ft({ captions: { style: { ...DEFAULT_STYLE, maxWords: 4 }, styleFrom: 'custom', lines: [], lang: 'ar' } });
-    const p = analysisPatch(f, { id, words, refStyle, hasCube: false });
-    expect(p.style).toBeUndefined(); expect(p.styleFrom).toBeUndefined();
-    expect(applyPatch(f, p).captions.styleFrom).toBe('custom'); expect(f.captions.style.maxWords).toBe(4);
+  it('a style or a preset the user owns is never replaced', () => {
+    const c = cp({ style: { ...DEFAULT_STYLE, maxWords: 4 } });
+    const p = analysisPatch(c, ft(), { id, words, refStyle, hasCube: false });
+    expect(p.style).toBeUndefined(); applyPatch(c, ft(), p); expect(c.style.maxWords).toBe(4);
+    expect(analysisPatch(cp({ preset: 'neon' }), ft(), { id, words, refStyle, hasCube: false }).style).toBeUndefined();
   });
-  it('styleOrigin: the stored origin, else guessed from the style and the reference', () => {
+  it('styleOrigin: a preset is custom, else guessed from the style and the reference', () => {
     expect(styleOrigin({ style: null }, true)).toBe('default'); expect(styleOrigin({ style: DEFAULT_STYLE }, true)).toBe('reference'); expect(styleOrigin({ style: DEFAULT_STYLE }, false)).toBe('look');
-    for (const k of ['reference', 'look', 'default', 'custom']) expect(styleOrigin({ style: DEFAULT_STYLE, styleFrom: k }, true)).toBe(k);
-    expect(styleOrigin({ style: DEFAULT_STYLE, styleFrom: 'bogus' }, false)).toBe('look'); expect(styleOrigin(undefined, false)).toBe('default');
+    expect(styleOrigin({ style: null, preset: 'neon' }, true)).toBe('custom'); expect(styleOrigin(undefined, false)).toBe('default');
     expect(ORIGIN_COPY.custom).toBe('Subtitles use your own style.');
+  });
+});
+
+describe('prepareOpen', () => {
+  it('moves legacy footage captions onto the design and says to save; a second call changes nothing', () => {
+    const lines = [{ id: 'l', start: 0, end: 1, words: [W('a', 0, 1)] }];
+    const d = { id: 'd1', footage: { ...ft(), captions: { style: null, lines, lang: 'ar' } } };
+    expect(prepareOpen(d)).toBe(true);
+    expect(d.captions.lines).toEqual(lines); expect(d.footage.captions).toBeUndefined();
+    expect(prepareOpen(d)).toBe(false);
   });
 });
 
@@ -223,15 +233,15 @@ describe('brand looks', () => {
   const look = { id: 'ab12', name: 'Warm', lut: 'looks/ab12.cube', captionStyle: { ...DEFAULT_STYLE, color: '#00ff00', maxWords: 2 } };
   it('applying sets the cube, lookId, the style (origin look) and reports when the words per line changed', () => {
     const f = ft({ look: { lut: lookPath('a'.repeat(24)), strength: 0.5, exposure: 0.2, temp: 0, sat: 0 } });
-    expect(applyLookTo(f, look)).toBe(true);
+    const c = cp(); expect(applyLookTo(c, f, look)).toBe(true);
     expect(f.look).toEqual({ lut: 'looks/ab12.cube', strength: 0.5, exposure: 0.2, temp: 0, sat: 0 }); expect(f.lookId).toBe('ab12');
-    expect(f.captions.style).toEqual(look.captionStyle); expect(f.captions.style).not.toBe(look.captionStyle); expect(f.captions.styleFrom).toBe('look');
+    expect(c.style).toEqual(look.captionStyle); expect(c.style).not.toBe(look.captionStyle);
   });
   it('same words per line: no regroup; given lines are stored; a look without a style keeps the current one', () => {
-    const f = ft({ captions: { style: { ...DEFAULT_STYLE, maxWords: 2 }, styleFrom: 'custom', lines: [], lang: 'ar' } }), lines = [{ id: 'l', start: 0, end: 1, words: [] }];
-    expect(applyLookTo(f, look, lines)).toBe(false); expect(f.captions.lines).toBe(lines);
-    const g = ft({ captions: { style: DEFAULT_STYLE, styleFrom: 'custom', lines: [], lang: 'ar' } });
-    expect(applyLookTo(g, { id: 'q', name: 'n', lut: 'looks/q.cube' })).toBe(false); expect(g.captions.styleFrom).toBe('custom'); expect(g.look.lut).toBe('looks/q.cube');
+    const f = ft(), c = cp({ style: { ...DEFAULT_STYLE, maxWords: 2 } }), lines = [{ id: 'l', start: 0, end: 1, words: [] }];
+    expect(applyLookTo(c, f, look, lines)).toBe(false); expect(c.lines).toBe(lines);
+    const g = ft(), c2 = cp({ style: DEFAULT_STYLE });
+    expect(applyLookTo(c2, g, { id: 'q', name: 'n', lut: 'looks/q.cube' })).toBe(false); expect(c2.style).toBe(DEFAULT_STYLE); expect(g.look.lut).toBe('looks/q.cube');
   });
 });
 
@@ -245,9 +255,11 @@ describe('export', () => {
     expect(exportSizes({ w: 1080, h: 3000 }).map((s) => s.label)).toEqual(['1080 × 3000 (reference)', '720 × 2000']); // 2160 × 6000 is too big
   });
   it('payload carries the footage, the size and the fps', () => {
-    const d = { id: 'd1', name: 'x', footage: ft({ captions: { style: null, lines: [{ id: 'l', start: 0, end: 1, words: [W('a', 0, 1)] }], lang: 'ar', styleFrom: 'default' } }) };
+    const d = { id: 'd1', name: 'x', footage: ft(), captions: cp({ lines: [{ id: 'l', start: 0, end: 1, words: [W('a', 0, 1)] }] }) };
     const p = exportPayload(d, { w: 720, h: 1280 });
-    expect(p).toEqual({ designId: 'd1', footage: { src: 'a'.repeat(24), look: d.footage.look, captions: { style: null, lines: d.footage.captions.lines }, out: d.footage.out }, w: 720, h: 1280, fps: 30 });
+    expect(p).toEqual({ designId: 'd1', footage: { src: 'a'.repeat(24), look: d.footage.look, captions: { style: styleOf(d), lines: d.captions.lines }, out: d.footage.out }, w: 720, h: 1280, fps: 30 });
+    const off = exportPayload({ ...d, captions: { ...d.captions, on: false } }, { w: 720, h: 1280 });
+    expect(off.footage.captions).toEqual({ style: null, lines: [] });
     expect(exportPayload({ ...d, footage: { ...d.footage, out: { w: 1, h: 1, fps: 29 } } }, { w: 720, h: 1280 }).fps).toBe(30);
   });
   it('file name and readiness', () => {
@@ -273,7 +285,7 @@ describe('back to the matched grade', () => {
     const f = ft({ lookId: 'l1', look: { lut: 'looks/l1.cube', strength: 0.5, exposure: 0.2, temp: 0, sat: 0 } });
     const p = matchedGradePatch(f, id);
     expect(p).toEqual({ lut: lookPath(id), lookId: null });
-    applyPatch(f, p);
+    applyPatch(cp(), f, p);
     expect(f.look).toEqual({ lut: lookPath(id), strength: 0.5, exposure: 0.2, temp: 0, sat: 0 }); expect(f.lookId).toBeNull();
     expect(matchedGradePatch(f, id)).toBeNull();
   });

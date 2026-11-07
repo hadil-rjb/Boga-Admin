@@ -6,6 +6,7 @@
    ============================================================ */
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 import { installFootageEditor } from './footage-editor.js';
+import { CAPTIONS_DEFAULT } from './caption-store.js';
 import { apiUrl } from '../lib/api';
 
 /* ---------- 1. helpers ---------- */
@@ -75,13 +76,14 @@ export const UPLOAD_STOPPED = 'Upload stopped. Drop the same files again to pick
  * 'finish': both uploads are complete, so the design is still created (without opening it). 'none': nothing was started.
  */
 export const closeAction = ({ busy, uploaded }) => (!busy ? 'none' : uploaded ? 'finish' : 'stop');
-/** The footage part of a new design */
-export function footageDoc({ src, ref = null, lookId = null, lang = null, size, style = null }) {
+/** The footage part of a new design (its captions live on `d.captions`, see footageCaptions) */
+export function footageDoc({ src, ref = null, lookId = null, size }) {
   const { w, h } = size || DEFAULT_SIZE;
-  // a design made from a brand look starts with that look's subtitle style (styleFrom: where the style came from, see footage-editor.js)
-  const captions = { style: style ? JSON.parse(JSON.stringify(style)) : null, lines: [], lang };
-  if (style) captions.styleFrom = 'look';
-  return { src, ref, lookId, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions, out: { w, h, fps: 30 }, export: null };
+  return { src, ref, lookId, look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, out: { w, h, fps: 30 }, export: null };
+}
+/** The captions of a new footage design: a design made from a brand look starts with that look's subtitle style */
+export function footageCaptions({ lang = null, style = null } = {}) {
+  return { ...CAPTIONS_DEFAULT, lines: [], style: style ? JSON.parse(JSON.stringify(style)) : null, lang };
 }
 
 export function installFootage(ctx) {
@@ -208,7 +210,7 @@ export function installFootage(ctx) {
     const saved = lookId && (Array.isArray(brand().looks) ? brand().looks : []).find((l) => l && l.id === lookId);
     const d = createDesign({
       name: `${baseName(original.name)} · matched`, ratio: r,
-      mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = footageDoc({ src, ref, lookId, lang, size, style: saved && saved.captionStyle }); d.named = true; },
+      mutate: (d) => { d.pages = [{ id: uid(), bg: '#000000', layers: [BG(size.w, size.h, '#000000')] }]; d.footage = footageDoc({ src, ref, lookId, size }); d.captions = footageCaptions({ lang, style: saved && saved.captionStyle }); d.named = true; },
     });
     save();
     return d;

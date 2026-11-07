@@ -9,6 +9,7 @@
 import { apiUrl } from '../lib/api';
 import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_STYLE, FONT_STACKS, FONTS_CSS } from './captions.js';
 import { parseCube } from './look.js';
+import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
 
 /* ---------- 1. pure helpers ---------- */
@@ -45,17 +46,17 @@ export function analysis(rec, ref) {
  * The server's results that the design still lacks: subtitles grouped from the words (only when there are no lines yet),
  * the reference's subtitle style (only when none is set) and the grade marker (only when no look is set). null when nothing changes.
  */
-export function analysisPatch(ft, { id, words, refStyle, refNote, hasCube }) {
+export function analysisPatch(caps, ft, { id, words, refStyle, hasCube }) {
   const out = {};
-  // styleFrom says where the style came from; a style the user already owns (or a look's) is never replaced
-  if (ft.captions.style == null && refStyle) { out.style = refStyle; out.styleFrom = refNote ? 'default' : 'reference'; }
-  if (!(ft.captions.lines || []).length && Array.isArray(words) && words.length) out.lines = group(words, out.style || ft.captions.style || DEFAULT_STYLE);
+  // a style the user already owns (a preset, or any style) is never replaced
+  if (caps.preset == null && caps.style == null && refStyle) out.style = refStyle;
+  if (!(caps.lines || []).length && Array.isArray(words) && words.length) out.lines = group(words, out.style || caps.style || DEFAULT_STYLE);
   if (hasCube && !ft.look.lut) out.lut = lookPath(id);
   return Object.keys(out).length ? out : null;
 }
-export function applyPatch(ft, p) {
-  if (p.style) { ft.captions.style = p.style; if (p.styleFrom) ft.captions.styleFrom = p.styleFrom; }
-  if (p.lines) ft.captions.lines = p.lines;
+export function applyPatch(caps, ft, p) {
+  if (p.style) caps.style = p.style;
+  if (p.lines) caps.lines = p.lines;
   if (p.lut) ft.look.lut = p.lut;
   if ('lookId' in p) ft.lookId = p.lookId;
   return ft;
@@ -193,10 +194,10 @@ export function styleEdit(style, key, v) {
   }
   return s;
 }
-/** Where the subtitle style came from: the stored origin, else guessed (a style without one came from the reference or the look) */
+/** Where the subtitle style came from, guessed from what is stored: a preset is the user's pick, a style came from the reference or the look */
 export function styleOrigin(captions, hasRef) {
   const c = captions || {};
-  if (['reference', 'look', 'default', 'custom'].includes(c.styleFrom)) return c.styleFrom;
+  if (c.preset != null) return 'custom';
   return c.style ? (hasRef ? 'reference' : 'look') : 'default';
 }
 /** The panel's sentence about the style's origin */
@@ -219,11 +220,11 @@ export function lookRecord({ id, name, lut, captionStyle, refThumb, now = new Da
  * Applies a brand look to a footage doc (in place): its cube, its subtitle style (origin 'look') and, when `lines` are given
  * (regrouped by the caller because the look's words per line differ), the new lines. Returns whether the lines need regrouping.
  */
-export function applyLookTo(ft, look, lines) {
-  const was = maxWordsOf(ft.captions.style);
+export function applyLookTo(caps, ft, look, lines) {
+  const was = maxWordsOf(caps.style);
   ft.look.lut = look.lut; ft.lookId = look.id;
-  if (look.captionStyle) { ft.captions.style = JSON.parse(JSON.stringify(look.captionStyle)); ft.captions.styleFrom = 'look'; }
-  if (lines) ft.captions.lines = lines;
+  if (look.captionStyle) caps.style = JSON.parse(JSON.stringify(look.captionStyle));
+  if (lines) caps.lines = lines;
   return !!look.captionStyle && maxWordsOf(look.captionStyle) !== was;
 }
 
@@ -244,8 +245,8 @@ export function exportSizes(out) {
 }
 /** POST /footage/export body: the server reads nothing from the design store, so everything the MP4 needs travels here */
 export function exportPayload(d, size) {
-  const ft = d.footage, out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
-  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: ft.captions.style || null, lines: ft.captions.lines || [] }, out: ft.out }, w: size.w, h: size.h, fps };
+  const ft = d.footage, caps = capsOf(d), out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
+  return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: caps.on ? styleOf(d) : null, lines: caps.on ? caps.lines || [] : [] }, out: ft.out }, w: size.w, h: size.h, fps };
 }
 /** The download's file name: the design name, the size, .mp4 */
 export const exportName = (d, size) => `${(String((d && d.name) || 'video').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'video')}-${size.w}x${size.h}.mp4`;
@@ -254,6 +255,9 @@ export const canExport = (rec, ref) => { const A = analysis(rec, ref); return !!
 
 const PEAK_BUCKETS = 2000;
 const GOOGLE_FONTS = FONTS_CSS;
+
+/** Before the editor's first history snapshot: moves legacy footage captions onto the design. true when the design changed (save it) */
+export function prepareOpen(d) { return migrateCaptions(d); }
 
 export function installFootageEditor(ctx, FT) {
   const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed, brand } = ctx;
@@ -274,6 +278,7 @@ export function installFootageEditor(ctx, FT) {
   /* ---------- 2. session ---------- */
   function start(d) {
     stop();
+    if (prepareOpen(d)) save();
     F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, drag: null };
     ED.tab = 'ftSubs';
     loadFonts();
@@ -310,25 +315,25 @@ export function installFootageEditor(ctx, FT) {
 
   /** Loads the words and the cube once the analysis is over, and commits what the design still lacks in one undoable step */
   async function results(S) {
-    const A = analysis(S.rec, S.refRec), ft = S.d.footage;
+    const A = analysis(S.rec, S.refRec), ft = S.d.footage, caps = capsOf(S.d);
     const redo = S.retx && A.transcribe.state === 'done';
-    const needWords = (redo || !(ft.captions.lines || []).length) && A.transcribe.state === 'done';
+    const needWords = (redo || !(caps.lines || []).length) && A.transcribe.state === 'done';
     const wantCube = A.grade.state === 'done' && (!ft.look.lut || ft.look.lut === lookPath(S.id));
     const [words, cubeText] = await Promise.all([
       needWords ? api(`/footage/${S.id}/words`).catch(() => []) : [],
       wantCube ? api(`/footage/${S.id}/look`, { text: true }).catch(() => null) : null,
     ]);
     if (!alive(S)) return;
-    const cur = ED.d.footage; // an undo during the requests replaces the object
+    const cur = ED.d.footage, curCaps = capsOf(ED.d); // an undo during the requests replaces the objects
     if (cubeText) { try { S.cube = parseCube(cubeText); } catch (e) { S.cube = null; S.note = 'The colour grade file could not be read.'; } }
     const refStyle = S.refRec && S.refRec.captionStyle ? S.refRec.captionStyle : null;
-    const patch = analysisPatch(cur, { id: S.id, words, refStyle, refNote: S.refRec && S.refRec.captionNote, hasCube: !!S.cube }) || {};
+    const patch = analysisPatch(curCaps, cur, { id: S.id, words, refStyle, hasCube: !!S.cube }) || {};
     if (redo) { // Re-transcribe: the new words replace the edited lines
       S.retx = false;
-      patch.lines = group(Array.isArray(words) ? words : [], patch.style || cur.captions.style || DEFAULT_STYLE);
+      patch.lines = group(Array.isArray(words) ? words : [], patch.style || curCaps.style || DEFAULT_STYLE);
       if (!patch.lines.length) toast('No speech was found in this video.');
     }
-    if (Object.keys(patch).length) { mutate(() => applyPatch(ED.d.footage, patch)); save(); }
+    if (Object.keys(patch).length) { mutate(() => applyPatch(capsOf(ED.d), ED.d.footage, patch)); save(); }
     sync();
   }
 
@@ -337,7 +342,7 @@ export function installFootageEditor(ctx, FT) {
     if (!F || !F.player) return;
     const ft = ED.d.footage;
     ensureCube(F, ft.look.lut);
-    F.player.setLook(ft.look); F.player.setCaptions(ft.captions); F.player.setSplit(F.split);
+    F.player.setLook(ft.look); F.player.setCaptions(capsOf(ED.d)); F.player.setSplit(F.split);
   }
   /** A brand look's cube ('looks/<id>.cube') is fetched once; the player picks it up when it arrives (a failure is remembered, not retried) */
   function ensureCube(S, lut) {
@@ -352,7 +357,7 @@ export function installFootageEditor(ctx, FT) {
     const S = F, box = $('#ftBox'); if (!box || !S.rec || !S.rec.proxyUrl) return;
     const ft = S.d.footage;
     S.player = createPlayer(box, {
-      proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: ft.captions,
+      proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: capsOf(S.d),
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
       onTime: (ms, playing) => transport(ms, playing),
       onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
@@ -386,7 +391,7 @@ export function installFootageEditor(ctx, FT) {
   function redraw() {
     if (!F) return;
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage;
-    const sig = JSON.stringify([F.err, F.note, F.rec && F.rec.status, F.rec && F.rec.jobs, F.refRec && F.refRec.status, F.refRec && F.refRec.jobs && F.refRec.jobs['caption-style'], A.settled, ft.captions.lines.length, !!F.cube]);
+    const sig = JSON.stringify([F.err, F.note, F.rec && F.rec.status, F.rec && F.rec.jobs, F.refRec && F.refRec.status, F.refRec && F.refRec.jobs && F.refRec.jobs['caption-style'], A.settled, capsOf(ED.d).lines.length, !!F.cube]);
     if (sig === F.sig) return; F.sig = sig;
     drawStage(); ed.panel(); ed.props(); exportButton();
   }
@@ -437,7 +442,7 @@ export function installFootageEditor(ctx, FT) {
   /** The subtitle row being spoken */
   let lastRow = null;
   function hilite(ms, playing) {
-    const lines = ED.d && ED.d.footage ? ED.d.footage.captions.lines : [];
+    const lines = ED.d && ED.d.footage ? capsOf(ED.d).lines : [];
     const i = lines.findIndex((l) => ms >= l.start && ms < l.end), id = i >= 0 ? lines[i].id : null;
     if (id === lastRow) return; lastRow = id;
     document.querySelectorAll('#edPanel .ft-row.on, #ftBlks .ft-blk.on').forEach((x) => x.classList.remove('on'));
@@ -453,7 +458,7 @@ export function installFootageEditor(ctx, FT) {
   }
   function blocksHTML() {
     const dur = F && F.dur; if (!dur || !ED.d || !isFt(ED.d)) return '';
-    return (ED.d.footage.captions.lines || []).map((l, i) => blockHTML(l, i, dur)).join('');
+    return (capsOf(ED.d).lines || []).map((l, i) => blockHTML(l, i, dur)).join('');
   }
   /* Zoom is in pixels per second; null fits the whole video in the lane. The default keeps subtitles readable on long clips. */
   const ZOOMS = [null, 10, 20, 40, 80, 160], RULER = 18, DEFAULT_PPS = 40;
@@ -557,19 +562,19 @@ export function installFootageEditor(ctx, FT) {
 
   /* ---------- editing: every change is one mutate() ---------- */
   const can = () => !canEdit || canEdit();
-  const lineIdx = (id) => ED.d.footage.captions.lines.findIndex((l) => l.id === id);
+  const lineIdx = (id) => capsOf(ED.d).lines.findIndex((l) => l.id === id);
   /** Applies fn(lines) -> new lines in one undoable step */
   function editLines(fn, redraw) {
     if (!F || !can()) return;
-    mutate(() => { const c = ED.d.footage.captions; c.lines = fn(c.lines || []); }, redraw); save();
+    mutate(() => { const c = capsOf(ED.d); c.lines = fn(c.lines || []); }, redraw); save();
   }
   /** After a text edit the rows keep focus: only the preview and the lane follow */
   const light = () => { sync(); lane(); };
   function commitText(inp) {
     if (!F || !can()) return;
     const id = inp.dataset.ftText, i = lineIdx(id); if (i < 0) return;
-    const next = textCommit(ED.d.footage.captions.lines, id, inp.value);
-    if (!next) { inp.value = lineText(ED.d.footage.captions.lines[i]); return; }
+    const next = textCommit(capsOf(ED.d).lines, id, inp.value);
+    if (!next) { inp.value = lineText(capsOf(ED.d).lines[i]); return; }
     editLines(() => next, light);
   }
   /** A drag starts: the focused field commits first (its focusout handler), so the drag's own commit keeps the typed text */
@@ -590,21 +595,21 @@ export function installFootageEditor(ctx, FT) {
   }
   function rowMenu(btn) {
     if (!F || !can()) return;
-    const id = btn.dataset.id, i = lineIdx(id), ls = ED.d.footage.captions.lines; if (i < 0) return;
+    const id = btn.dataset.id, i = lineIdx(id), ls = capsOf(ED.d).lines; if (i < 0) return;
     openMenu(btn, [
       ['Split at playhead', () => splitAt(id)],
-      ['Merge with next', () => { const k = lineIdx(id); if (k >= 0 && k < ED.d.footage.captions.lines.length - 1) editLines((a) => [...a.slice(0, k), merge(a[k], a[k + 1]), ...a.slice(k + 2)]); }, '', i >= ls.length - 1],
+      ['Merge with next', () => { const k = lineIdx(id); if (k >= 0 && k < capsOf(ED.d).lines.length - 1) editLines((a) => [...a.slice(0, k), merge(a[k], a[k + 1]), ...a.slice(k + 2)]); }, '', i >= ls.length - 1],
       ['Delete', () => editLines((a) => a.filter((l) => l.id !== id)), 'dl'],
     ]);
   }
   function splitAt(id) {
-    const t = F.player ? F.player.time() : 0, i = lineIdx(id), l = ED.d.footage.captions.lines[i];
+    const t = F.player ? F.player.time() : 0, i = lineIdx(id), l = capsOf(ED.d).lines[i];
     if (!l || !(t > l.start && t < l.end) || !l.words.some((w) => w.s >= t) || !l.words.some((w) => w.s < t)) { toast('Move the playhead inside the subtitle, between two words, to split it.'); return; }
     editLines((a) => [...a.slice(0, i), ...split(a[i], t), ...a.slice(i + 1)]);
   }
   function addAtPlayhead() {
     if (!F || !can()) return;
-    const before = ED.d.footage.captions.lines || [], after = addLine(before, F.player ? Math.round(F.player.time()) : 0);
+    const before = capsOf(ED.d).lines || [], after = addLine(before, F.player ? Math.round(F.player.time()) : 0);
     if (after === before) { toast('There is no room for a line here. Move the playhead to a gap.'); return; }
     const old = new Set(before.map((l) => l.id)), fresh = after.find((l) => !old.has(l.id));
     editLines(() => after);
@@ -621,14 +626,14 @@ export function installFootageEditor(ctx, FT) {
   }
   function regroup(inp) {
     if (!F || !can()) return;
-    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = maxWordsOf(ft.captions.style);
+    const S = F, n = Math.min(8, Math.max(1, Math.round(+inp.value) || 0)), ft = ED.d.footage, was = maxWordsOf(capsOf(ED.d).style);
     inp.value = n; if (n === was) return;
     ask('Change words per line?', 'This replaces your line breaks', 'Replace', async () => {
       try {
         const words = await api(`/footage/${S.id}/words`);
         if (!alive(S)) return;
         if (!Array.isArray(words) || !words.length) { inp.value = was; toast('There are no words to group yet.'); return; }
-        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.styleFrom = 'custom'; c.lines = group(words, c.style); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), maxWords: n }; c.lines = group(words, c.style); }); save();
       } catch (e) { inp.value = was; toast((e && e.message) || 'Could not load the words'); }
     }, () => { inp.value = was; });
   }
@@ -667,7 +672,7 @@ export function installFootageEditor(ctx, FT) {
     const h = e.target.closest('.ft-h'), edge = h ? h.dataset.edge : 'move', bid = blk.dataset.id;
     commitFocus(); // a text commit redraws the lane: pick up the block again
     if (!blk.isConnected) blk = document.querySelector(`#ftBlks .ft-blk[data-id="${CSS.escape(bid)}"]`);
-    const ls = ED.d.footage.captions.lines, i = lineIdx(bid); if (!F || !blk || i < 0) return;
+    const ls = capsOf(ED.d).lines, i = lineIdx(bid); if (!F || !blk || i < 0) return;
     const S = F, r = lnEl.getBoundingClientRect(), orig = ls[i];
     const d = S.drag = { i, id: orig.id, edge, x0: e.clientX, pid: e.pointerId, orig, to: { start: orig.start, end: orig.end }, moved: false, blk };
     blk.classList.add('drag');
@@ -676,7 +681,7 @@ export function installFootageEditor(ctx, FT) {
       const dx = ((ev.clientX - d.x0) / r.width) * S.dur;
       if (Math.abs(ev.clientX - d.x0) > 2) d.moved = true;
       d.to = clampDrag(ls, i, edge, edge === 'end' ? orig.end + dx : edge === 'start' ? orig.start + dx : orig.start + dx, S.dur);
-      const l = retime(orig, d.to.start, d.to.end), cap = ED.d.footage.captions;
+      const l = retime(orig, d.to.start, d.to.end), cap = capsOf(ED.d);
       blk.style.left = pc((d.to.start / S.dur) * 100) + '%'; blk.style.width = pc(((d.to.end - d.to.start) / S.dur) * 100) + '%';
       S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x, k) => (k === i ? l : x)) });
     };
@@ -725,7 +730,7 @@ J / L  5 s back / forward
   }
 
   function subsHTML() {
-    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, lines = ft.captions.lines || [];
+    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, caps = capsOf(ED.d), lines = caps.lines || [];
     let body;
     if (lines.length) body = `<div class="ft-rows">${lines.map((l) => rowHTML(l)).join('')}</div>`;
     else if (A.transcribe.state === 'failed') body = failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe');
@@ -773,14 +778,14 @@ J / L  5 s back / forward
   }
 
   function styleHTML(ft, A, dis) {
-    const st = ft.captions.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(ft.captions, !!F.ref);
-    if (F.ref && !ft.captions.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
+    const st = caps.style || DEFAULT_STYLE, hl = { ...DEFAULT_STYLE.highlight, ...(st.highlight || {}) }, origin = styleOrigin(caps, !!F.ref);
+    if (F.ref && !caps.style && (A.busy(A.style) || !F.refRec)) return `<p class="xs-t muted">Reading the subtitle style…</p>${skel(2)}`;
     let top = '';
-    if (F.ref && !ft.captions.style && A.style.state === 'failed') top = failBox(A.style.error || 'The subtitle style could not be read.', F.ref, 'caption-style');
+    if (F.ref && !caps.style && A.style.state === 'failed') top = failBox(A.style.error || 'The subtitle style could not be read.', F.ref, 'caption-style');
     else top = `<p class="sm-t">${ORIGIN_COPY[origin]}</p>`;
     const note = F.refRec && F.refRec.captionNote; if (note && (origin === 'default' || origin === 'reference')) top += `<div class="note">${ic('alert', 15)}<span>${esc(note)}</span></div>`;
     const wc = WEIGHTS.some(([w]) => w === st.weight) ? WEIGHTS : [...WEIGHTS, [st.weight, String(st.weight)]];
-    const has = (ft.captions.lines || []).length, size = Math.round(st.size * 1000) / 10, y = Math.round(st.y * 100);
+    const has = (caps.lines || []).length, size = Math.round(st.size * 1000) / 10, y = Math.round(st.y * 100);
     return `${top}${selHTML('font', 'Font', FONT_KEYS.map((k) => [k, FONT_LABELS[k]]), st.font, dis)}
       ${rgHTML('data-ft-s', 'size', 'Size', 2, 10, 0.5, clampN2(size, 2, 10), dis)}
       ${selHTML('weight', 'Weight', wc, st.weight, dis)}${colorHTML('color', 'Text color', st.color, dis)}
@@ -788,7 +793,7 @@ J / L  5 s back / forward
       ${swHTML('shadowOn', 'Shadow', !!st.shadow, dis)}
       ${selHTML('hlMode', 'Highlight', HL_MODES, hl.mode, dis)}${hl.mode !== 'none' ? colorHTML('hlColor', 'Highlight color', hl.color, dis) : ''}${hl.mode === 'box' ? colorHTML('hlText', 'Highlight text', hl.text, dis) : ''}
       ${rgHTML('data-ft-s', 'y', 'Position', 5, 95, 1, clampN2(y, 5, 95), dis)}
-      <label class="ft-rg ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${maxWordsOf(ft.captions.style)}" data-ft-wpl aria-label="Words per line" ${dis || !has ? 'disabled' : ''}></label>
+      <label class="ft-rg ft-wpl"><span>Words per line</span><input type="number" min="1" max="8" step="1" value="${maxWordsOf(caps.style)}" data-ft-wpl aria-label="Words per line" ${dis || !has ? 'disabled' : ''}></label>
       ${selHTML('anim', 'Animation', ANIMS, st.anim || 'none', dis)}
       ${dis ? '' : '<p class="xs-t muted">You can also drag the subtitle on the video to move it.</p>'}`;
   }
@@ -877,7 +882,7 @@ J / L  5 s back / forward
   document.addEventListener('change', (e) => { if (e.target && e.target.matches && e.target.matches('[data-ft-wpl]')) regroup(e.target); });
   document.addEventListener('keydown', (e) => {
     const t = e.target; if (!F || !t || !t.matches || !t.matches('[data-ft-text]')) return;
-    if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = ED.d.footage.captions.lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
+    if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = capsOf(ED.d).lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
   }, true);
   document.addEventListener('pointerdown', dragStart);
   /* the split line: drag anywhere on the frame while Before / After is on */
@@ -921,14 +926,14 @@ J / L  5 s back / forward
   }
   function stylePreview(el) {
     if (!F || !F.player || !can()) return; setOut(el);
-    const c = ED.d.footage.captions;
+    const c = capsOf(ED.d);
     F.player.setCaptions({ ...c, style: styleEdit(c.style, el.dataset.ftS, ctlValue(el)) });
   }
   function styleCommit(el) {
-    if (!F || !can()) return; const k = el.dataset.ftS, c0 = ED.d.footage.captions, wasCustom = c0.styleFrom === 'custom';
+    if (!F || !can()) return; const k = el.dataset.ftS, c0 = capsOf(ED.d);
     const next = styleEdit(c0.style, k, ctlValue(el));
     if (c0.style && JSON.stringify(next) === JSON.stringify(c0.style)) { sync(); return; }
-    mutate(() => { const c = ED.d.footage.captions; c.style = next; c.styleFrom = 'custom'; }, () => { sync(); if (STRUCT.has(k) || !wasCustom) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
+    mutate(() => { const c = capsOf(ED.d); c.style = next; }, () => { sync(); if (STRUCT.has(k)) { ed.props(); const n = document.querySelector(`#edProps [data-ft-s="${k}"]`); if (n) n.focus(); } });
     save();
   }
   document.addEventListener('input', (e) => { const t = e.target; if (!t || !t.matches) return; if (t.matches('[data-ft-g]')) gradePreview(t); else if (t.matches('[data-ft-s]')) stylePreview(t); });
@@ -940,7 +945,7 @@ J / L  5 s back / forward
     const fr = $('#ftFrame'), ov = fr && fr.querySelector('.ftp-o'); if (!fr || !ov || !fr.contains(e.target) || !ov.width) return;
     commitFocus(); // a subtitle being typed is committed before the line under the playhead is read
     if (!F || !F.player) return;
-    const ft = ED.d.footage, st = ft.captions.style || DEFAULT_STYLE, line = lineAt(ft.captions.lines || [], F.player.time()); if (!line) return;
+    const caps = capsOf(ED.d), st = caps.style || DEFAULT_STYLE, line = lineAt(caps.lines || [], F.player.time()); if (!line) return;
     const r = fr.getBoundingClientRect(), W = ov.width, H = ov.height, L = layout(ov.getContext('2d'), line, st, W, H);
     const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height, pad = 0.025;
     if (px < L.x / W - pad || px > (L.x + L.w) / W + pad || py < L.y / H - pad || py > (L.y + L.h) / H + pad) return;
@@ -950,7 +955,7 @@ J / L  5 s back / forward
     fr.classList.add('drag');
     const at = (ev) => {
       d.y = clampY((ev.clientY - r.top) / r.height - off);
-      const c = ED.d.footage.captions; S.player && S.player.setCaptions({ ...c, style: { ...(c.style || DEFAULT_STYLE), y: d.y } });
+      const c = capsOf(ED.d); S.player && S.player.setCaptions({ ...c, style: { ...(c.style || DEFAULT_STYLE), y: d.y } });
       const sl = $('#edProps [data-ft-s="y"]'); if (sl) { sl.value = String(Math.round(d.y * 100)); setOut(sl); }
     };
     const done = (commit) => {
@@ -958,7 +963,7 @@ J / L  5 s back / forward
       fr.classList.remove('drag'); S.cdrag = null;
       if (!alive(S)) return;
       if (commit && d.y !== d.y0) {
-        mutate(() => { const c = ED.d.footage.captions; c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; c.styleFrom = 'custom'; }, () => { sync(); ed.props(); }); save();
+        mutate(() => { const c = capsOf(ED.d); c.style = { ...(c.style || DEFAULT_STYLE), y: d.y }; }, () => { sync(); ed.props(); }); save();
       } else { sync(); ed.props(); }
     };
     const up = () => done(true), cancel = () => done(false);
@@ -1011,7 +1016,7 @@ J / L  5 s back / forward
         return url ? grabThumb(apiUrl(url)) : null;
       };
       const [saved, refThumb] = await Promise.all([api('/footage/looks', { method: 'POST', body: { footageId: S.id, name } }), thumb()]);
-      const rec = lookRecord({ id: saved.id, name, lut: saved.lut, captionStyle: ED.d.footage.captions.style || DEFAULT_STYLE, refThumb });
+      const rec = lookRecord({ id: saved.id, name, lut: saved.lut, captionStyle: capsOf(ED.d).style || DEFAULT_STYLE, refThumb });
       const b = brand(); b.looks = [...(Array.isArray(b.looks) ? b.looks : []), rec]; save();
       toast(`Saved “${rec.name}”`);
       if (alive(S)) ed.props();
@@ -1024,17 +1029,17 @@ J / L  5 s back / forward
     if (!alive(S)) return;
     S.cubes[look.lut] = cube; delete S.cubeBad[look.lut];
     const cur = ED.d.footage;
-    if (look.captionStyle && maxWordsOf(look.captionStyle) !== maxWordsOf(cur.captions.style) && (cur.captions.lines || []).length) {
+    if (look.captionStyle && maxWordsOf(look.captionStyle) !== maxWordsOf(capsOf(ED.d).style) && (capsOf(ED.d).lines || []).length) {
       ask('Apply this look?', `Its subtitles use ${maxWordsOf(look.captionStyle)} words per line. This replaces your line breaks.`, 'Apply', async () => {
         let words = [];
         try { words = await api(`/footage/${S.id}/words`); } catch (e) { toast((e && e.message) || 'Could not load the words'); return; }
         if (!alive(S)) return;
         const lines = Array.isArray(words) && words.length ? group(words, look.captionStyle) : null;
-        mutate(() => { applyLookTo(ED.d.footage, look, lines); }); save(); toast(`Applied “${look.name}”`);
+        mutate(() => { applyLookTo(capsOf(ED.d), ED.d.footage, look, lines); }); save(); toast(`Applied “${look.name}”`);
       });
       return;
     }
-    mutate(() => { applyLookTo(ED.d.footage, look); }); save(); toast(`Applied “${look.name}”`);
+    mutate(() => { applyLookTo(capsOf(ED.d), ED.d.footage, look); }); save(); toast(`Applied “${look.name}”`);
   }
   /** Back from a brand look to the footage's own matched grade: loads its cube, then one undoable step */
   async function useMatched() {
