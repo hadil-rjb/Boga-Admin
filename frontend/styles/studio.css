@@ -3191,6 +3191,9 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ft-wpl input{width:64px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text-1);font:inherit}
 .ft-wpl input:disabled{opacity:.5}
 .ed-pages.ft10{flex-direction:column;align-items:stretch;gap:8px;padding:8px 16px 12px}
+/* Video Studio shell (studio/video-studio.js): a rail item whose panel is not built yet says what it will hold */
+.vs-soon{display:flex;flex-direction:column;gap:6px}
+.vs-soon p{margin:0;max-width:34ch}
 /* timeline (studio/timeline.js): track headers on the left; the ruler and the waveform on a canvas that follows the scroll,
    one row per track on a zoomable track, the caption blocks draggable */
 .vs-tl{--vs-tl-wave:rgba(148,163,184,.32);--vs-tl-tick:rgba(148,163,184,.55);display:grid;grid-template-columns:140px minmax(0,1fr);flex-shrink:0;border:1px solid var(--border-soft,var(--border));border-radius:12px;background:var(--pill);overflow:hidden;user-select:none}

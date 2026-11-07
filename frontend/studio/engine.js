@@ -21,6 +21,7 @@ import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
+import { installVideoStudio } from './video-studio.js';
 
 let mounted = null; // destroy() of the running instance
 
@@ -11039,13 +11040,16 @@ function clipCss(l, frames) {
 })();
 
 /* ============ footage style match: Match a reference tile, upload modal, footage designs (see footage.js) ============ */
+/* the Video Studio shell and the footage editor wrap the editor's drawing like the blocks above do: wrapEd({ edStage: (orig) => fn, ... }) */
+const wrapEd = (w) => {
+  if (w.edStage) edStage = w.edStage(edStage); if (w.edPanel) edPanel = w.edPanel(edPanel); if (w.edProps) edProps = w.edProps(edProps);
+  if (w.edPages) edPages = w.edPages(edPages); if (w.edRail) edRail = w.edRail(edRail);
+};
+const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() };
+/* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
+const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
-  /* the footage editor wraps the editor's drawing like the blocks above do: wrapEd({ edStage: (orig) => fn, ... }) */
-  wrapEd: (w) => {
-    if (w.edStage) edStage = w.edStage(edStage); if (w.edPanel) edPanel = w.edPanel(edPanel); if (w.edProps) edProps = w.edProps(edProps);
-    if (w.edPages) edPages = w.edPages(edPages); if (w.edRail) edRail = w.edRail(edRail);
-  },
-  ed: { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() } });
+  wrapEd, ed: edApi, VS });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */
 {
   const _dcFt = designCard;

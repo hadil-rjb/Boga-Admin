@@ -1,7 +1,8 @@
 /* ============================================================
    Footage editor: a design with `d.footage` takes over the editor (as v37 does for `d.motion`).
-   Center: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split.
-   Bottom: the transport (play, time, Before/After) and the track timeline (timeline.js). Left: Subtitles. Right: Look.
+   It is the Video Studio's `video` source (video-studio.js draws the rail, the transport, the timeline and routes the inspector).
+   Stage: the player (footage-player.js) at the output aspect ratio, letterboxed, with a Before/After split (the transport's extra).
+   Tracks: Video, Captions and Voice. Panels: Subtitles (the Captions rail item, until shared panels replace it). Inspector: Look.
    While the server transcribes and grades, the panels show skeletons; a failed step shows its error and Retry.
    installFootageEditor(ctx, FT) is called by installFootage. The pure helpers at the top are unit-tested.
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
@@ -11,7 +12,6 @@ import { group, retext, retime, addLine, split, merge, lineAt, layout, DEFAULT_S
 import { parseCube } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
-import { createTimeline } from './timeline.js';
 
 /* ---------- 1. pure helpers ---------- */
 const BUSY = ['queued', 'running'];
@@ -248,14 +248,11 @@ const GOOGLE_FONTS = FONTS_CSS;
 export function prepareOpen(d) { return migrateCaptions(d); }
 
 export function installFootageEditor(ctx, FT) {
-  const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed, brand } = ctx;
+  const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, ed, brand, VS } = ctx;
   Object.assign(IC, {
     ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>',
-    ftBack5: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
-    ftFwd5: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
     ftFilm: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4"/>',
     ftVoice: '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
-    ftKbd: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   });
   const $ = (s, r = document) => r.querySelector(s);
   const isFt = (d) => !!(d && d.footage);
@@ -266,8 +263,7 @@ export function installFootageEditor(ctx, FT) {
   function start(d) {
     stop();
     if (prepareOpen(d)) save();
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, tl: null, tlHost: null, muted: false };
-    ED.tab = 'ftSubs';
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false };
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
     poll();
@@ -275,7 +271,7 @@ export function installFootageEditor(ctx, FT) {
   function stop() {
     if (!F) return;
     clearTimeout(F.timer); F.gen++;
-    if (F.tl) F.tl.destroy(); F.tlHost && F.tlHost.remove(); // before the player: a drag in progress is cancelled first
+    VS.reset(); // the timeline goes before the player: a drag in progress is cancelled first
     if (F.player) F.player.destroy();
     F.ro && F.ro.disconnect(); F.ac.abort();
     F = null;
@@ -347,8 +343,8 @@ export function installFootageEditor(ctx, FT) {
     S.player = createPlayer(box, {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: capsOf(S.d),
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
-      onTime: (ms, playing) => transport(ms, playing),
-      onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
+      onTime: (ms, playing) => { VS.tick(ms, playing); hilite(ms, playing); },
+      onReady: (dur) => { S.dur = dur; VS.tick(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
       onError: (err) => refreshProxy(S, err),
     });
     S.player.setSplit(S.split);
@@ -416,17 +412,6 @@ export function installFootageEditor(ctx, FT) {
     fr.style.width = b.w + 'px'; fr.style.height = b.h + 'px';
   }
 
-  function transport(ms, playing) {
-    if (!F) return;
-    const t = $('#ftT'), pb = $('#ftPlay'), dur = F.dur || (F.player && F.player.duration()) || 0;
-    if (t) t.textContent = fmtMs(ms);
-    const td = $('#ftDur'); if (td) td.textContent = fmtMs(dur);
-    // the transport is drawn before the player exists: enable it as soon as the player is there
-    document.querySelectorAll('[data-ft-ctl]').forEach((b) => { b.disabled = !F.player; });
-    if (pb && pb.dataset.on !== String(!!playing)) { pb.dataset.on = String(!!playing); pb.innerHTML = ic(playing ? 'pause37' : 'play37', 18); pb.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)'); pb.title = playing ? 'Pause (Space)' : 'Play (Space)'; }
-    if (F.tl) F.tl.setTime(ms, playing);
-    hilite(ms, playing);
-  }
   /** The subtitle row being spoken (the timeline highlights its own block) */
   let lastRow = null;
   function hilite(ms, playing) {
@@ -452,35 +437,21 @@ export function installFootageEditor(ctx, FT) {
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
     ];
   }
-  /** The timeline of the session, mounted once in `host` (and moved back there when the bottom bar is redrawn) */
-  function mountTimeline(host) {
-    const S = F; if (!S) return;
-    if (!S.tlHost) { S.tlHost = document.createElement('div'); S.tlHost.className = 'vs-tl-host'; }
-    host.append(S.tlHost);
-    if (S.tl) { S.tl.redraw(); return; }
-    S.tl = createTimeline(S.tlHost, {
-      dur: () => S.dur,
-      time: () => (S.player ? S.player.time() : 0),
-      seek: (ms) => { if (alive(S) && S.player) S.player.seek(ms); },
-      tracks: tlTracks,
-      canEdit: () => can(),
-      onRetime: (id, start, end, live) => {
-        if (!alive(S)) return;
-        if (live && start == null) { sync(); return; } // a drag ended without a change: the preview shows the design again
-        if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
-        editLines((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
-      },
-      onSelect: (id) => { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) r.scrollIntoView({ block: 'nearest' }); },
-      onToggle: (id) => {
-        if (!alive(S)) return;
-        if (id === 'captions') { if (!can()) return; mutate(() => { const c = capsOf(ED.d); c.on = c.on === false; }, () => { sync(); lane(); }); save(); }
-        else if (id === 'voice') { S.muted = !S.muted; if (S.player) S.player.video.muted = S.muted; lane(); } // preview only, the export keeps the sound
-      },
-    });
-    if (S.peaks) S.tl.setPeaks(S.peaks);
+  /** The timeline's callbacks (video-studio.js owns the timeline): retime a caption, show its row, hide captions or mute the preview */
+  function onRetime(id, start, end, live) {
+    const S = F; if (!S || !alive(S)) return;
+    if (live && start == null) { sync(); return; } // a drag ended without a change: the preview shows the design again
+    if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
+    editLines((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
+  }
+  function onSelect(id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) r.scrollIntoView({ block: 'nearest' }); }
+  function onToggle(id) {
+    const S = F; if (!S || !alive(S)) return;
+    if (id === 'captions') { if (!can()) return; mutate(() => { const c = capsOf(ED.d); c.on = c.on === false; }, () => { sync(); lane(); }); save(); }
+    else if (id === 'voice') { S.muted = !S.muted; if (S.player) S.player.video.muted = S.muted; lane(); } // preview only, the export keeps the sound
   }
   /** Redraws the timeline (after an edit, undo or redo) */
-  function lane() { if (F && F.tl) F.tl.redraw(); lastRow = null; if (F && F.player) hilite(F.player.time()); }
+  function lane() { VS.refresh(); lastRow = null; if (F && F.player) hilite(F.player.time()); }
   /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the Voice track has no waveform */
   async function loadPeaks(S) {
     if (S.peaks || S.peaksBusy || !S.rec || !S.rec.proxyUrl) return; S.peaksBusy = true;
@@ -496,7 +467,7 @@ export function installFootageEditor(ctx, FT) {
       if (!alive(S)) return;
       S.peaks = peakBuckets(audio.getChannelData(0), PEAK_BUCKETS);
       for (let ch = 1; ch < audio.numberOfChannels; ch++) { const o = peakBuckets(audio.getChannelData(ch), PEAK_BUCKETS); for (let k = 0; k < o.length; k++) if (o[k] > S.peaks[k]) S.peaks[k] = o[k]; }
-      if (S.tl) S.tl.setPeaks(S.peaks);
+      VS.setPeaks(S.peaks);
     } catch (e) { /* no audio track, no decoder or the request stopped: the Voice track stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
   }
 
@@ -588,24 +559,10 @@ export function installFootageEditor(ctx, FT) {
     });
   }
 
-  function pagesHTML() {
-    const ms = F && F.player ? F.player.time() : 0, dur = F ? F.dur : 0, on = F && F.split != null, playing = !!(F && F.player && F.player.playing());
-    const off = F && F.player ? '' : 'disabled';
-    return `<div class="ft-tp">
-      <div class="ft-tp-g">
-        <button class="ft-ib" data-act="ftBack" data-ft-ctl aria-label="Back 5 seconds (J)" title="Back 5 s (J)" ${off}>${ic('ftBack5', 18)}</button>
-        <button class="ft-play" id="ftPlay" data-act="ftPlay" data-ft-ctl data-on="${playing}" aria-label="${playing ? 'Pause' : 'Play'} (Space)" title="${playing ? 'Pause' : 'Play'} (Space)" ${off}>${ic(playing ? 'pause37' : 'play37', 18)}</button>
-        <button class="ft-ib" data-act="ftFwd" data-ft-ctl aria-label="Forward 5 seconds (L)" title="Forward 5 s (L)" ${off}>${ic('ftFwd5', 18)}</button>
-        <span class="ft-time"><b id="ftT">${fmtMs(ms)}</b><span class="ft-sep">/</span><span id="ftDur">${fmtMs(dur)}</span></span>
-      </div>
-      <div class="ft-tp-g">
-        <button class="ft-chip${on ? ' on' : ''} ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line on the video)">${ic('ftCmp10', 16)}<span>Before / After</span></button>
-        <span class="ft-div" aria-hidden="true"></span>
-        <span class="ft-ib ft-kbd" tabindex="0" role="img" aria-label="Keyboard shortcuts: Space play or pause, J and L 5 seconds back or forward, left and right arrows one frame" title="Space  play / pause
-J / L  5 s back / forward
-← / →  one frame">${ic('ftKbd', 17)}</span>
-      </div>
-    </div>`;
+  /** The transport's extra control: Before / After */
+  function baHTML() {
+    const on = !!F && F.split != null;
+    return `<button class="ft-chip${on ? ' on' : ''} ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line on the video)">${ic('ftCmp10', 16)}<span>Before / After</span></button>`;
   }
 
   function subsHTML() {
@@ -698,34 +655,35 @@ J / L  5 s back / forward
       <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
   }
 
-  wrapEd({
-    edStage: (orig) => function () {
-      const r = orig.apply(this, arguments);
-      if (!isFt(ED.d)) { if (F) stop(); const st = $('#ftStage'); st && st.remove(); $('.ed-stage') && $('.ed-stage').classList.remove('ft10'); $('.ed') && $('.ed').classList.remove('ft10'); exportButton(); return r; }
+  /** The player as the shell drives it (transport, keys, timeline): a no-op until the video can play */
+  const player = {
+    ready: () => !!(F && F.player),
+    toggle: () => F && F.player && F.player.toggle(),
+    play: () => F && F.player && F.player.play(),
+    pause: () => F && F.player && F.player.pause(),
+    seek: (ms) => F && F.player && F.player.seek(ms),
+    time: () => (F && F.player ? F.player.time() : 0),
+    duration: () => (F ? F.dur || (F.player && F.player.duration()) || 0 : 0),
+    playing: () => !!(F && F.player && F.player.playing()),
+    frameMs: () => (F && F.player ? F.player.frameMs() : 1000 / 30),
+  };
+  VS.register('video', {
+    mount() {
       if (!F || F.d !== ED.d || (F.player && !document.body.contains(F.player.video))) start(ED.d);
       drawStage(); sync(); exportButton();
-      return r;
     },
-    edRail: (orig) => function () {
-      if (!isFt(ED.d)) return orig.apply(this, arguments);
-      const el = $('#edRail'); if (el) el.innerHTML = `<button class="on" data-act="edTab" data-k="ftSubs" title="Subtitles">${ic('type', 22)}<span>Subtitles</span></button>`;
+    unmount() {
+      if (F) stop(); const st = $('#ftStage'); st && st.remove();
+      $('.ed-stage') && $('.ed-stage').classList.remove('ft10'); $('.ed') && $('.ed').classList.remove('ft10'); exportButton();
     },
-    edPanel: (orig) => function () {
-      if (!isFt(ED.d) || !F) return orig.apply(this, arguments);
-      const p = $('#edPanel'); if (!p) return; p.classList.remove('agent'); p.innerHTML = subsHTML(); lastRow = null; if (F.player) hilite(F.player.time());
-    },
-    edProps: (orig) => function () {
-      if (!isFt(ED.d) || !F) return orig.apply(this, arguments);
-      const el = $('#edProps'); if (el) el.innerHTML = lookHTML();
-    },
-    edPages: (orig) => function () {
-      const host = $('#edPages'); if (!host) return;
-      if (!isFt(ED.d)) { host.classList.remove('ft10'); return orig.apply(this, arguments); }
-      host.classList.add('ft10');
-      // the timeline stays mounted while the bottom bar is redrawn (every mutate): its zoom and scroll survive an edit
-      if (F && F.tlHost && F.tlHost.parentNode === host && host.querySelector('.ft-tp')) { lane(); return; }
-      host.innerHTML = pagesHTML(); mountTimeline(host);
-    },
+    player,
+    tracks: tlTracks,
+    panel: (key) => (F && key === 'captions' ? subsHTML() : null),
+    panelDrawn: (key) => { if (key !== 'captions') return; lastRow = null; if (F && F.player) hilite(F.player.time()); },
+    inspector: () => (F ? lookHTML() : null),
+    transportExtra: baHTML,
+    canEdit: () => can(),
+    onRetime, onSelect, onToggle,
   });
   /* leaving the editor (or opening another design) stops the video */
   addEventListener('hashchange', () => setTimeout(() => { if (F && !alive(F)) stop(); }));
@@ -733,9 +691,6 @@ J / L  5 s back / forward
   /* ---------- 4. actions and keys ---------- */
   const setSplit = (x) => { if (!F) return; F.split = x; F.player && F.player.setSplit(x); drawStage(); const b = $('[data-act=ftSplit]'); if (b) { b.setAttribute('aria-pressed', String(x != null)); b.classList.toggle('on', x != null); } };
   Object.assign(ACT, {
-    ftPlay: () => F && F.player && F.player.toggle(),
-    ftBack: () => F && F.player && F.player.seek(Math.max(0, F.player.time() - 5000)),
-    ftFwd: () => F && F.player && F.player.seek(F.player.time() + 5000),
     ftSplit: () => setSplit(F && F.split == null ? 0.5 : null),
     ftMore: (a) => rowMenu(a),
     ftAdd: () => addAtPlayhead(),
@@ -771,17 +726,6 @@ J / L  5 s back / forward
     at(e); const up = () => { removeEventListener('pointermove', at); removeEventListener('pointerup', up); };
     addEventListener('pointermove', at); addEventListener('pointerup', up);
   });
-  /* Space play / pause, J / L 5 s back / forward, K pause, ← / → one frame. Capture phase: ahead of the editor's own keys (Space pans, L draws a line) */
-  addEventListener('keydown', (e) => {
-    if (!F || !F.player || !isFt(ED.d) || !document.body.classList.contains('in-editor') || ED.editing || e.ctrlKey || e.metaKey || e.altKey) return;
-    const t = e.target, tag = (t.tagName || '').toLowerCase();
-    if (['input', 'textarea', 'select'].includes(tag) || t.isContentEditable || document.querySelector('.modal-bg, #cmdk')) return;
-    const P = F.player, k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    const act = { ' ': () => P.toggle(), k: () => P.pause(), j: () => P.seek(P.time() - 5000), l: () => P.seek(P.time() + 5000),
-      ArrowLeft: () => { P.pause(); P.seek(P.time() - P.frameMs()); }, ArrowRight: () => { P.pause(); P.seek(P.time() + P.frameMs()); } }[k];
-    if (!act || (k === ' ' && tag === 'button' && !['ftPlay', 'ftBack', 'ftFwd'].includes(t.dataset.act))) return;
-    e.preventDefault(); e.stopImmediatePropagation(); act();
-  }, true);
   /* ---- Look panel: live preview on `input`, one mutate() on `change` (release) ---- */
   const ctlValue = (el) => (el.type === 'checkbox' ? el.checked : el.value);
   const setOut = (el) => {
