@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt, changeTimes } from './captions.js';
+import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt, changeTimes, withDefaults } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e });
 const fakeCtx = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
@@ -69,5 +69,187 @@ describe('captions', () => {
     for (const v of [100, 133, 167, 200, 233]) expect(t).toContain(v);
     expect(t).toEqual([0, 100, 133, 167, 200, 233, 300, 333, 367, 400, 433, 700]);
     expect(changeTimes(lines, { ...DEFAULT_STYLE, anim: 'pop' }, 2000)).not.toContain(133);
+  });
+});
+
+describe('style fields', () => {
+  const rec = (lines, style, ms, w, h) => {
+    const calls = [];
+    const c = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
+      get: (o, k) => (k in o ? o[k] : (...a) => { calls.push([k, ...a]); }),
+      set: (o, k, v) => { calls.push(['set', k, v]); o[k] = v; return true; },
+    });
+    draw(c, lines, style, ms, w, h); return calls;
+  };
+  const l1 = [{ id: 'x', start: 0, end: 500, words: [W('ab', 0, 250), W('cd', 250, 500)] }];
+  const l2 = [{ id: 'x', start: 0, end: 500, words: ['alpha', 'bravo', 'charlie', 'delta'].map((t, i) => W(t, i * 100, i * 100 + 100)) }];
+  const BOX = { ...DEFAULT_STYLE, box: { color: 'rgba(0,0,0,.6)', pad: 0.02, radius: 0.3 } };
+  // Golden call lists recorded from draw() BEFORE the style-field change (legacy styles, no new fields).
+  const GOLDEN = {
+    plain: [
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["save"],
+      ["set","textAlign","left"],
+      ["set","textBaseline","middle"],
+      ["set","globalAlpha",1],
+      ["set","shadowColor","rgba(0,0,0,.55)"],
+      ["set","shadowBlur",6],
+      ["set","shadowOffsetY",2],
+      ["set","fillStyle","#E8B54A"],
+      ["beginPath"],
+      ["moveTo",477.70000000000005,627.5],
+      ["arcTo",500.40000000000003,627.5,500.40000000000003,672.5,8.1],
+      ["arcTo",500.40000000000003,672.5,469.6,672.5,8.1],
+      ["arcTo",469.6,672.5,469.6,627.5,8.1],
+      ["arcTo",469.6,627.5,500.40000000000003,627.5,8.1],
+      ["closePath"],
+      ["fill"],
+      ["save"],
+      ["translate",485,650],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#1A1A1A"],
+      ["fillText","ab",-10,0],
+      ["restore"],
+      ["save"],
+      ["translate",515,650],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#FFFFFF"],
+      ["fillText","cd",-10,0],
+      ["restore"],
+      ["restore"],
+    ],
+    box: [
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["save"],
+      ["set","textAlign","left"],
+      ["set","textBaseline","middle"],
+      ["set","globalAlpha",1],
+      ["set","fillStyle","rgba(0,0,0,.6)"],
+      ["beginPath"],
+      ["moveTo",448.5,607.5],
+      ["arcTo",565,607.5,565,692.5,13.5],
+      ["arcTo",565,692.5,435,692.5,13.5],
+      ["arcTo",435,692.5,435,607.5,13.5],
+      ["arcTo",435,607.5,565,607.5,13.5],
+      ["closePath"],
+      ["fill"],
+      ["set","shadowColor","rgba(0,0,0,.55)"],
+      ["set","shadowBlur",6],
+      ["set","shadowOffsetY",2],
+      ["save"],
+      ["translate",485,650],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#FFFFFF"],
+      ["fillText","ab",-10,0],
+      ["restore"],
+      ["set","fillStyle","#E8B54A"],
+      ["beginPath"],
+      ["moveTo",507.70000000000005,627.5],
+      ["arcTo",530.4,627.5,530.4,672.5,8.1],
+      ["arcTo",530.4,672.5,499.6,672.5,8.1],
+      ["arcTo",499.6,672.5,499.6,627.5,8.1],
+      ["arcTo",499.6,627.5,530.4,627.5,8.1],
+      ["closePath"],
+      ["fill"],
+      ["save"],
+      ["translate",515,650],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#1A1A1A"],
+      ["fillText","cd",-10,0],
+      ["restore"],
+      ["restore"],
+    ],
+    wrap: [
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["save"],
+      ["set","textAlign","left"],
+      ["set","textBaseline","middle"],
+      ["set","globalAlpha",1],
+      ["set","shadowColor","rgba(0,0,0,.55)"],
+      ["set","shadowBlur",6],
+      ["set","shadowOffsetY",2],
+      ["save"],
+      ["translate",70,621.875],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#FFFFFF"],
+      ["fillText","alpha",-25,0],
+      ["restore"],
+      ["set","fillStyle","#E8B54A"],
+      ["beginPath"],
+      ["moveTo",107.69999999999999,599.375],
+      ["arcTo",160.39999999999998,599.375,160.39999999999998,644.375,8.1],
+      ["arcTo",160.39999999999998,644.375,99.6,644.375,8.1],
+      ["arcTo",99.6,644.375,99.6,599.375,8.1],
+      ["arcTo",99.6,599.375,160.39999999999998,599.375,8.1],
+      ["closePath"],
+      ["fill"],
+      ["save"],
+      ["translate",130,621.875],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#1A1A1A"],
+      ["fillText","bravo",-25,0],
+      ["restore"],
+      ["save"],
+      ["translate",70,678.125],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#FFFFFF"],
+      ["fillText","charlie",-35,0],
+      ["restore"],
+      ["save"],
+      ["translate",140,678.125],
+      ["scale",1,1],
+      ["set","font","800 45px \"Cairo\", \"Noto Sans Arabic\", \"Inter\", sans-serif"],
+      ["set","fillStyle","#FFFFFF"],
+      ["fillText","delta",-25,0],
+      ["restore"],
+      ["restore"],
+    ],
+  };
+  it('legacy styles render byte-identical draw calls (plain, box, 2-row wrap)', () => {
+    expect(rec(l1, DEFAULT_STYLE, 100, 1000, 1000)).toEqual(GOLDEN.plain);
+    expect(rec(l1, BOX, 300, 1000, 1000)).toEqual(GOLDEN.box);
+    expect(rec(l2, { ...DEFAULT_STYLE, lines: 2 }, 150, 200, 1000)).toEqual(GOLDEN.wrap);
+  });
+  it('withDefaults fills every new field and keeps explicit ones', () => {
+    expect(withDefaults({})).toMatchObject({ ls: 0, lh: 1.15, x: 0.5, align: 'center', boxOpacity: 1, anim: 'none', animSpeed: 1, offset: 0, minDur: 600, gap: 0 });
+    expect(withDefaults({ ls: 2, x: 0.2 })).toMatchObject({ ls: 2, x: 0.2, lh: 1.15 });
+  });
+  const line = { words: [W('ab', 0, 1), W('cd', 1, 2), W('ef', 2, 3)] };
+  it('x and align move the block', () => {
+    const L1 = layout(fakeCtx, line, { ...DEFAULT_STYLE, x: 0.25, align: 'left' }, 1000, 1000);
+    expect(L1.x).toBeCloseTo(250, 0);
+    const L2 = layout(fakeCtx, line, { ...DEFAULT_STYLE, x: 0.75, align: 'right' }, 1000, 1000);
+    expect(L2.x + L2.w).toBeCloseTo(750, 0);
+    const L3 = layout(fakeCtx, line, { ...DEFAULT_STYLE, x: 0.25, align: 'center' }, 1000, 1000);
+    expect(L3.x + L3.w / 2).toBeCloseTo(250, 0);
+  });
+  it('ls widens every word gap', () => {
+    const a = layout(fakeCtx, line, DEFAULT_STYLE, 1000, 1000);
+    const b = layout(fakeCtx, line, { ...DEFAULT_STYLE, ls: 0.5 }, 1000, 1000);
+    expect(b.w - a.w).toBeCloseTo(0.5 * DEFAULT_STYLE.size * 1000 * 2, 5);
+  });
+  it('lh scales row height on 2-line wraps (default keeps 1.25)', () => {
+    const l = { words: ['alpha', 'bravo', 'charlie', 'delta'].map((t, i) => W(t, i, i + 1)) };
+    const px = DEFAULT_STYLE.size * 1000;
+    expect(layout(fakeCtx, l, { ...DEFAULT_STYLE, lines: 2 }, 200, 1000).h).toBeCloseTo(2 * px * 1.25, 5);
+    expect(layout(fakeCtx, l, { ...DEFAULT_STYLE, lines: 2, lh: 2 }, 200, 1000).h).toBeCloseTo(2 * px * (1.25 * 2) / 1.15, 5);
+  });
+  it('offset delays the line', () => {
+    const n = (st, ms) => rec(l1, st, ms, 1000, 1000).length;
+    const S = { ...DEFAULT_STYLE, offset: 500 };
+    expect(n(S, 100)).toBe(0);
+    expect(n(S, 600)).toBeGreaterThan(0);
+  });
+  it('boxOpacity multiplies the box alpha', () => {
+    const alphaAtBox = (st) => { const c = rec(l1, st, 50, 1000, 1000); return c.slice(0, c.findIndex((x) => x[0] === 'fill')).filter((x) => x[1] === 'globalAlpha').pop()[2]; };
+    expect(alphaAtBox({ ...BOX, boxOpacity: 0.4 })).toBeCloseTo(0.4);
+    expect(alphaAtBox(BOX)).toBe(1);
   });
 });

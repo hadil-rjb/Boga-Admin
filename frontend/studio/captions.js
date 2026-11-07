@@ -9,6 +9,19 @@ export const DEFAULT_STYLE = {
   y: 0.65, maxWords: 3, maxChars: 22, lines: 1, anim: 'none',
 };
 
+// Optional style fields and their defaults; a style without them renders exactly as before.
+// ls: letter/word spacing (em of the font size added to every word gap), lh: line height (wrapped rows),
+// x: horizontal anchor (0..1 of the width), align: how the block sits on x, boxOpacity: box alpha multiplier,
+// anim/animSpeed: animation kind and speed (0.5-2), offset: caption delay (ms), minDur/gap: line duration floor and gap (ms).
+const STYLE_DEFAULTS = {
+  ls: 0, lh: 1.15, x: 0.5, align: 'center', boxOpacity: 1, anim: 'none', animSpeed: 1, offset: 0, minDur: 600, gap: 0,
+};
+export function withDefaults(style) {
+  const out = { ...STYLE_DEFAULTS };
+  for (const k of Object.keys(style || {})) if (style[k] !== undefined) out[k] = style[k];
+  return out;
+}
+
 export const FONT_STACKS = {
   'sans-bold': '"Cairo", "Noto Sans Arabic", "Inter", sans-serif',
   sans: '"Noto Sans Arabic", "Cairo", "Inter", sans-serif',
@@ -185,27 +198,31 @@ function splitRows(widths, gap) {
 }
 
 export function layout(ctx, line, style, w, h) {
+  style = withDefaults(style);
   const px = style.size * h;
   ctx.font = fontOf(style, px);
   const widths = line.words.map((x) => ctx.measureText(shown(x.t, style)).width);
-  const gap = ctx.measureText(' ').width;
+  const gap = ctx.measureText(' ').width + style.ls * px;
   const rowW = (a, b) => widths.slice(a, b).reduce((x, y) => x + y, 0) + gap * Math.max(0, b - a - 1);
   const total = rowW(0, widths.length);
   const rtl = isRtl(line.words.map((x) => x.t).join(' '));
   const wrap = style.lines === 2 && widths.length > 1 && total > 0.86 * w;
   const rows = wrap ? splitRows(widths, gap) : [[0, widths.length]];
-  const lh = wrap ? px * 1.25 : px;
+  const lh = wrap ? px * (style.lh === 1.15 ? 1.25 : (1.25 * style.lh) / 1.15) : px;
   const top = style.y * h - (lh * rows.length) / 2;
+  const bw = Math.max(...rows.map(([a, b]) => rowW(a, b)));
+  const ax = style.x * w;
+  const bx = style.align === 'left' ? ax : style.align === 'right' ? ax - bw : ax - bw / 2;
   const words = [];
   rows.forEach(([a, b], r) => {
     const idx = []; for (let i = a; i < b; i++) idx.push(i);
     if (rtl) idx.reverse();
-    let x = w / 2 - rowW(a, b) / 2;
+    const rw = rowW(a, b);
+    let x = style.align === 'left' ? bx : style.align === 'right' ? bx + bw - rw : ax - rw / 2;
     const y = top + r * lh + (lh - px) / 2;
     for (const i of idx) { words[i] = { i, x, y, w: widths[i], h: px }; x += widths[i] + gap; }
   });
-  const bw = Math.max(...rows.map(([a, b]) => rowW(a, b)));
-  return { x: w / 2 - bw / 2, y: top, w: bw, h: lh * rows.length, words };
+  return { x: bx, y: top, w: bw, h: lh * rows.length, words };
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -236,6 +253,8 @@ function drawWord(ctx, text, b, style, fill, scale, h) {
 }
 
 export function draw(ctx, lines, style, ms, w, h) {
+  style = withDefaults(style);
+  ms -= style.offset;
   const line = lineAt(lines, ms);
   if (!line) return;
   const L = layout(ctx, line, style, w, h);
@@ -249,7 +268,10 @@ export function draw(ctx, lines, style, ms, w, h) {
     const pad = (style.box.pad || 0.012) * h;
     ctx.fillStyle = style.box.color;
     roundRect(ctx, L.x - pad * 2, L.y - pad, L.w + pad * 4, L.h + pad * 2, (style.box.radius || 0.18) * L.h);
-    ctx.fill();
+    if (style.boxOpacity !== 1) {
+      const a = ctx.globalAlpha;
+      ctx.globalAlpha = a * style.boxOpacity; ctx.fill(); ctx.globalAlpha = a;
+    } else ctx.fill();
   }
   if (style.shadow) {
     ctx.shadowColor = style.shadow.color; ctx.shadowBlur = style.shadow.blur * h; ctx.shadowOffsetY = style.shadow.y * h;
