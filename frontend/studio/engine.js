@@ -10051,7 +10051,7 @@ function clipCss(l, frames) {
 
   /* ---------- playback on the canvas ---------- */
   /** Audio hooks, filled in by the audio section (v38): what plays, the caption, the timeline lanes, the export mix */
-  const AU = RT.moAudio = { tick() {}, stop() {}, labels: () => '', lanes: () => '', exportSetup: async () => null, drawCaption() {}, muted: { voice: false, music: false }, capsPreview: null };
+  const AU = RT.moAudio = { tick() {}, stop() {}, exportSetup: async () => null, drawCaption() {}, muted: { voice: false, music: false }, capsPreview: null };
   const PL = { on: false, t: 0, at: 0, raf: 0, view: null, cache: new Map(), loop: false, stopAt: 0, autoExit: false };
   function view() {
     if (PL.view && PL.view.isConnected) return PL.view;
@@ -10138,22 +10138,16 @@ function clipCss(l, frames) {
   function previewScene(i, until) { const s = TL().scenes[i]; if (!s) return; exitPreview(true); play(s.start, s.start + Math.min(s.dur, until || s.dur), true); }
   const toggle = () => (PL.on ? pause() : (PL.view && PL.t > 0 ? play() : play(TL().scenes[ED.pi] ? TL().scenes[ED.pi].start : 0)));
 
-  /* ---------- timeline (the slide strip of a motion design) ---------- */
-  let folded = false; try { folded = localStorage.getItem('boga.mo37Folded') === '1'; } catch (e) {}
-  const lbl = () => (innerWidth < 700 ? 96 : 148); // the layer names column
-  let K = 0.1; // px per ms
+  /* ---------- timeline: the Video Studio shell draws it (reel-source.js); the scene blocks and layer lanes come from here ---------- */
   function head(t) {
-    const ph = $('#mo37Ph'); if (ph) ph.style.transform = `translateX(${t * K}px)`;
-    const tt = $('#mo37T'); if (tt) tt.textContent = MO.fmtTime(t);
     if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(t, PL.on); // the Video Studio shell's transport and playhead
   }
   function controls() {
-    const b = $('#mo37Play'); if (b) { b.innerHTML = ic(PL.on ? 'pause37' : 'play37', 16); b.title = (PL.on ? 'Pause' : 'Play') + ' (K)'; b.setAttribute('aria-label', PL.on ? 'Pause' : 'Play'); }
     const pv = $('#mo37Pv'); if (pv) pv.hidden = !PL.view || PL.on;
     if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(PL.t, PL.on);
   }
   const trIcon = (k) => ({ cut: '│', fade: '◐', slide: '→', push: '↑', zoom: '⤢', wipe: '▸' }[k] || '◐');
-  /** The scene blocks with their + buttons. pos(ms): a CSS length (px in the strip below, % in the shell's timeline), px(ms): its width on screen */
+  /** The scene blocks with their + buttons. pos(ms): a CSS length (% in the shell's timeline), px(ms): its width on screen */
   function sceneBlocks(pos, px) {
     const d = ED.d, tl = TL();
     return tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
@@ -10170,45 +10164,6 @@ function clipCss(l, frames) {
         ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${pos(cur.start + cur.dur - a.ot)};width:max(6px,${pos(a.ot)})" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
         ${a.loop !== 'none' ? `<span class="mo-lp" style="left:calc(${pos(cur.start + cur.dur)} - 18px)" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; } }));
   }
-  function tlHTML() {
-    const tl = TL(), host = $('#edPages'), LBL = lbl(), avail = Math.max(200, (host ? host.clientWidth : 900) - LBL - 150); // room for the + Scene button at the end
-    // fit the whole video, but never squeeze a scene under ~84 px: the timeline scrolls sideways instead
-    K = clamp(Math.max(avail / Math.max(1000, tl.total), 84 / Math.max(500, Math.min(...tl.scenes.map((s) => s.dur)))), 0.02, 0.3);
-    const span = tl.total * K, step = [1000, 2000, 5000, 10000].find((s) => s * K >= 40) || 10000;
-    const ticks = Array.from({ length: Math.floor(tl.total / step) + 1 }, (_, i) => `<span style="left:${i * step * K}px">${MO.fmtTime(i * step, false)}</span>`).join('');
-    const PX = (ms) => ms * K + 'px', W = (ms) => ms * K;
-    const scenes = sceneBlocks(PX, W)
-      + `<button class="mo-addend${insAt === tl.scenes.length && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${tl.scenes.length}" style="left:${span + 10}px" title="Add a scene at the end">${ic('plus', 16)}<span>Scene</span></button>`;
-    const sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []), lanes = layerLanes(PX, W), rows = lanes.map((x) => x.l);
-    return `<div class="pgs-head mo-head">
-        <span class="mo-ctl"><button class="tb" data-act="mo37Rew" title="Back to the start" aria-label="Back to the start">${ic('rew37', 15)}</button><button class="mo-play" id="mo37Play" data-act="mo37Play"></button><button class="tb ${PL.loop ? 'on' : ''}" data-act="mo37Loop" title="Loop playback" aria-label="Loop playback" aria-pressed="${PL.loop}">${ic('loop37', 15)}</button></span>
-        <span class="mo-time"><b id="mo37T">${MO.fmtTime(PL.t)}</b><span> / ${MO.fmtTime(tl.total)}</span></span>
-        <button class="btn link sm mo-pv" id="mo37Pv" data-act="mo37Edit" hidden>Previewing · back to editing</button>
-        <span class="sp"></span>
-        <button class="tb" data-act="mo37More" title="More" aria-label="More video actions" aria-haspopup="menu">${ic('more', 16)}</button>
-        <button class="tb fold" data-act="mo37Fold" title="${folded ? 'Show timeline' : 'Hide timeline'}" aria-label="${folded ? 'Show timeline' : 'Hide timeline'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
-      </div>
-      <div class="mo-tl"><div class="mo-grid" style="--lbl:${LBL}px">
-        <div class="mo-gl"><div class="mo-gl-r mo-r0">Time</div><div class="mo-gl-r mo-r1">Scenes</div>${AU.labels()}
-          ${rows.map((l) => `<button class="mo-gl-r mo-nm${sel.has(l.id) ? ' on' : ''}" data-act="mo37Pick" data-id="${l.id}" title="${esc(l.name)}">${ic(l.type === 'text' ? 'type' : l.type === 'image' ? 'image' : 'shapes', 13, 'faint')}<span>${esc(l.name)}</span></button>`).join('')}
-          ${rows.length ? '' : '<div class="mo-gl-r mo-nm muted">No layers</div>'}</div>
-        <div class="mo-gr" id="mo37Lanes" style="width:${span + 130}px">
-          <div class="mo-ruler" data-scrub>${ticks}</div>
-          <div class="mo-scrow">${scenes}</div>${AU.lanes(K, tl)}
-          ${lanes.map((x) => x.html()).join('')}${rows.length ? '' : '<div class="mo-lane"></div>'}
-          <div class="mo-ph" id="mo37Ph" style="transform:translateX(${PL.t * K}px)"><i data-scrub></i></div>
-        </div></div></div>`;
-  }
-  const _pg37 = edPages;
-  edPages = function () {
-    const host = $('#edPages'); if (!host || !ED.d) return;
-    if (!isMo(ED.d)) { host.classList.remove('mo37'); return _pg37.apply(this, arguments); }
-    const stage = host.closest('.ed-stage'), old = $('.mo-tl', host), sl = old ? [old.scrollLeft, old.scrollTop] : null;
-    if (stage) stage.dataset.pgs = folded ? 'c' : 'o';
-    host.classList.add('mo37'); host.innerHTML = tlHTML(); controls();
-    const tl = $('.mo-tl', host); if (tl && sl) { tl.scrollLeft = sl[0]; tl.scrollTop = sl[1]; }
-  };
-
   /* the shell's timeline (reel-source.js): a scene's length and the animation bars drag here, the + / scene / clip buttons
      act on click; its own lane seeks on everything else. Capture phase: ahead of the lane. */
   document.addEventListener('pointerdown', (e) => {
@@ -10217,13 +10172,7 @@ function clipCss(l, frames) {
     if (e.target.closest('[data-rs], [data-bar]')) { e.stopPropagation(); const w = tr.getBoundingClientRect().width, total = TL().total; if (w && total) tlDrag(e, tr, w / total); }
     else if (e.target.closest('.vs-tl-row button')) e.stopPropagation();
   }, true);
-  /* drags in the timeline: scrub the playhead, change a scene's length, move or stretch an animation */
-  document.addEventListener('pointerdown', (e) => {
-    if (!ED.d || !isMo(ED.d) || e.button !== 0) return;
-    const lanes = $('#mo37Lanes'); if (!lanes || !lanes.contains(e.target)) return;
-    tlDrag(e, lanes, K);
-  });
-  /** A drag in the lanes `lanes` drawn at `K` px per ms */
+  /** A drag in the timeline `lanes` drawn at `K` px per ms: scrub the playhead, change a scene's length, move or stretch an animation */
   function tlDrag(e, lanes, K) {
     const x0 = lanes.getBoundingClientRect().left, at = (ev) => (ev.clientX - x0) / K, tl = TL();
     const rs = e.target.closest('[data-rs]'), bar = e.target.closest('[data-bar]'), scrub = e.target.closest('[data-scrub]') || (!e.target.closest('button') && !rs && !bar);
@@ -10273,17 +10222,6 @@ function clipCss(l, frames) {
       d.pages.forEach((p, i) => { p.scene = { ...MO.sceneOf(p), tr: !i ? 'cut' : MO.sceneOf(p).tr === 'cut' && p === pg ? 'fade' : MO.sceneOf(p).tr }; });
     });
     toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
-  }
-  function moreMenu(btn) {
-    const r = btn.getBoundingClientRect(), n = ED.d.pages.length; $$('#ctx').forEach((x) => x.remove());
-    const rows = [['Duplicate this scene', 'copy', () => dupScene(ED.pi)], ['Delete this scene', 'trash', () => delScene(ED.pi), n < 2, 'dng']]; // video-wide actions: the Motion panel's ⋯
-    const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
-    c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
-    document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
-    c.style.left = clamp(r.right - w, 8, innerWidth - w - 8) + 'px'; c.style.top = clamp(r.top - h - 6, 8, innerHeight - h - 8) + 'px';
-    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); rows[+b.dataset.k][2](); } };
-    c.onkeydown = (e) => { e.stopPropagation(); const bs = $$('button:not(:disabled)', c), j = bs.indexOf(document.activeElement); if (e.key === 'ArrowDown') { e.preventDefault(); bs[(j + 1) % bs.length].focus(); } else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(j - 1 + bs.length) % bs.length].focus(); } else if (e.key === 'Escape') { c.remove(); btn.focus(); } };
-    const f = $('button', c); f && f.focus();
   }
   function dupScene(i) { exitPreview(true); mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; }); }
   function delScene(i) { if (ED.d.pages.length < 2) return toast('A video needs at least one scene'); exitPreview(true); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); }
@@ -10387,7 +10325,6 @@ function clipCss(l, frames) {
   document.addEventListener('input', (e) => {
     const t = e.target; if (!t.dataset || !t.dataset.mo || t.type !== 'range') return;
     const o = t.closest('label') && t.closest('label').querySelector('.mo-out'); if (o) o.textContent = secs(+t.value);
-    if (t.dataset.mo === 'dur') { const s = TL().scenes[ED.pi], b = $(`#edPages .mo-sc-b[data-i="${ED.pi}"]`); if (s && b) b.parentNode.style.width = +t.value * K + 'px'; }
   });
   document.addEventListener('change', (e) => {
     const t = e.target, k = t.dataset && t.dataset.mo; if (!k || !ED.d || !t.closest('#edProps, #edPanel')) return;
@@ -10401,12 +10338,9 @@ function clipCss(l, frames) {
   /* ---------- actions ---------- */
   Object.assign(ACT, {
     mo37Play: () => toggle(),
-    mo37Rew: () => { pause(); PL.t = 0; if (PL.view) draw(0); else head(0); },
     mo37Loop: () => { PL.loop = !PL.loop; edPages(); },
     mo37Edit: () => exitPreview(),
-    mo37Fold: () => { folded = !folded; try { localStorage.setItem('boga.mo37Folded', folded ? '1' : '0'); } catch (e) {} edPages(); if (ED.fit) requestAnimationFrame(fitZoom); },
     mo37Scene: (a) => { const i = +a.dataset.i, s = TL().scenes[i]; exitPreview(true); insAt = null; PL.t = s ? s.start : 0; if (i !== ED.pi) { ED.pi = i; ED.sel = null; ED.ms = []; edAll(); } else head(PL.t); },
-    mo37Pick: (a) => { exitPreview(true); ED.sel = a.dataset.id; ED.ms = []; ED.rtab = 'design'; edAll(); },
     mo37Ins: (a) => openLibrary(+a.dataset.at),
     mo37Fill: () => openLibrary(ED.pi + 1),
     mo37Aim: () => { insAt = null; edPanel(); edPages(); },
@@ -10417,7 +10351,6 @@ function clipCss(l, frames) {
       ['Make it a still design', 'image', () => ACT.mo37Off()],
     ]); },
     mo37Lib: (a) => { const { at, fill } = target(); insAt = null; addScene(a.dataset.k, a.dataset.v, at, fill); },
-    mo37More: (a) => moreMenu(a),
     mo37Dup: () => dupScene(ED.pi), mo37Del: () => delScene(ED.pi),
     mo37PlayScene: () => previewScene(ED.pi),
     mo37SetKind: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), k: a.dataset.k }; order(ED.d); ED.d.pages.forEach((p, i) => { if (!i) p.scene = { ...MO.sceneOf(p), tr: 'cut' }; }); }); },
@@ -10481,7 +10414,6 @@ function clipCss(l, frames) {
   const _ds37 = drawSel;
   drawSel = function () { const r = _ds37.apply(this, arguments); if (PL.view) { const s = $('#sel'); s && (s.hidden = true); } return r; };
   addEventListener('hashchange', () => pause());
-  addEventListener('resize', () => { if (ED.d && isMo(ED.d) && $('#mo37Lanes')) edPages(); });
 
   /* ---------- export: a video, recorded from the scenes ----------
      Each layer is rendered once to its own bitmap (the same renderer as image exports), then every frame is
@@ -10720,9 +10652,7 @@ function clipCss(l, frames) {
     ctx.restore();
   };
 
-  /* ---------- timeline: a Music and a Voice lane under the scenes ---------- */
-  AU.labels = () => (ED.d && isMo(ED.d) ? `<div class="mo-gl-r au-lbl">${ic('music38', 13, 'faint')}<span>Music</span></div><div class="mo-gl-r au-lbl">${ic('mic38', 13, 'faint')}<span>Voice</span></div>` : '');
-  /** The music clip and the voice clips; pos(ms) is a CSS length (px in the strip, % in the shell's timeline) */
+  /* ---------- timeline: the music clip and the voice clips; pos(ms) is a CSS length (% in the shell's timeline) ---------- */
   AU.clipsHTML = (tl, pos) => {
     const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track), w = (ms) => `max(8px,${pos(ms)})`;
     const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${pos(tl.total)}" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
@@ -10733,7 +10663,6 @@ function clipCss(l, frames) {
     const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${pos(tr.start)};width:${w(tr.dur)}" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
     return { music, voice: `${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}` };
   };
-  AU.lanes = (K, tl) => { const h = AU.clipsHTML(tl, (ms) => ms * K + 'px'); return `<div class="mo-lane au-lane">${h.music}</div><div class="mo-lane au-lane">${h.voice}</div>`; };
 
   /* ---------- left rail: Audio, for videos ---------- */
   const ri = RAIL.findIndex((r) => r[0] === 'motion'); RAIL.splice(ri + 1, 0, ['audio', 'Audio', 'music38']);
