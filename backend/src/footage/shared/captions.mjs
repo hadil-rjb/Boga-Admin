@@ -51,13 +51,38 @@ function breaksBefore(cur, w, style) {
 }
 
 export function group(words, style) {
-  const lines = [];
+  let lines = [];
   let cur = [];
   for (const w of words) {
     if (breaksBefore(cur, w, style)) { lines.push(mkLine(cur)); cur = []; }
     cur.push(w);
   }
   if (cur.length) lines.push(mkLine(cur));
+  // minDur and gap apply only when the caller sets them (withDefaults' minDur must not leak in).
+  const minDur = Number(style.minDur) > 0 ? Number(style.minDur) : 0;
+  const gap = Number(style.gap) > 0 ? Number(style.gap) : 0;
+  if (minDur) {
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      let l = lines[i];
+      while (l.end - l.start < minDur && i + 1 < lines.length) {
+        const n = lines[i + 1];
+        const all = [...l.words, ...n.words];
+        const chars = all.reduce((c, x) => c + x.t.length + 1, 0) - 1;
+        if (all.length > style.maxWords || chars > style.maxChars) { l = { ...l, end: Math.max(l.end, n.start) }; break; }
+        l = mkLine(all); i++;
+      }
+      out.push(l);
+    }
+    lines = out;
+  }
+  if (gap) {
+    lines = lines.map((l, i) => {
+      const nx = lines[i + 1];
+      if (!nx || nx.start - l.end >= gap) return l;
+      return { ...l, end: Math.max(l.start + 1, nx.start - gap) };
+    });
+  }
   return lines;
 }
 

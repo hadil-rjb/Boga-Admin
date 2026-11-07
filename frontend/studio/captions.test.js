@@ -8,6 +8,27 @@ const fakeCtx = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
 });
 
 describe('captions', () => {
+  it('minDur merges a short line into its neighbour', () => {
+    const ws = [W('a',0,200),W('b',1000,1500),W('c',1500,2000)];
+    expect(group(ws, { ...DEFAULT_STYLE, maxWords: 4 })).toHaveLength(2);
+    const l = group(ws, { ...DEFAULT_STYLE, maxWords: 4, minDur: 600 });
+    expect(l.map((x) => x.words.length)).toEqual([3]);
+    expect([l[0].start, l[0].end]).toEqual([0, 2000]);
+  });
+  it('minDur extends end when merging would break maxWords', () => {
+    const l = group([W('a',0,200),W('b',500,1500)], { ...DEFAULT_STYLE, maxWords: 1, minDur: 600 });
+    expect(l).toHaveLength(2);
+    expect(l[0].end).toBe(500);
+  });
+  it('gap leaves at least gap ms between lines', () => {
+    const l = group([W('a.',0,500),W('b',500,1000)], { ...DEFAULT_STYLE, gap: 100 });
+    expect(l[1].start - l[0].end).toBeGreaterThanOrEqual(100);
+    expect(l[0].end).toBeGreaterThan(l[0].start);
+  });
+  it('absent minDur/gap keeps the old output', () => {
+    const l = group([W('a',0,200),W('b',1000,1500)], DEFAULT_STYLE);
+    expect(l.map((x) => [x.start, x.end])).toEqual([[0,200],[1000,1500]]);
+  });
   it('groups by maxWords', () => { expect(group([W('a',0,100),W('b',100,200),W('c',200,300),W('d',300,400)], { ...DEFAULT_STYLE, maxWords: 3 }).map((l) => l.words.length)).toEqual([3, 1]); });
   it('breaks on a 350 ms pause', () => { expect(group([W('a',0,100),W('b',450,500)], DEFAULT_STYLE)).toHaveLength(2); });
   it('breaks after punctuation', () => { expect(group([W('a.',0,100),W('b',100,200)], DEFAULT_STYLE)).toHaveLength(2); });
