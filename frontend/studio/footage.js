@@ -6,12 +6,39 @@
    ============================================================ */
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
 import { installFootageEditor } from './footage-editor.js';
+import { apiUrl } from '../lib/api';
 
 /* ---------- 1. helpers ---------- */
-/** The brand's language is stored as a name ('English'); the server takes ISO 639-1 */
-const LANG_CODES = { english: 'en', french: 'fr', spanish: 'es', german: 'de', arabic: 'ar', italian: 'it', portuguese: 'pt' };
-export const langCode = (name) => LANG_CODES[String(name || '').trim().toLowerCase()] || undefined;
 const DEFAULT_SIZE = { w: 1080, h: 1920 };
+/** Card thumbnail frame: 20% into the video, 3 s at most (skips a black first frame) */
+export const posterTime = (dur) => Math.max(0, Math.min(3, (+dur || 0) * 0.2));
+/** "2:43" */
+export const fmtDur = (ms) => { const s = Math.max(0, Math.round((+ms || 0) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+/**
+ * A video's poster frame as a JPEG data URL (`width` px wide) and its length in ms, or null when the browser
+ * cannot decode it in time. Used for the design cards; persist.ts uploads the data URL as an asset on sync.
+ */
+export function grabPoster(url, { width = 360, timeout = 15000 } = {}) {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined') return resolve(null);
+    const v = document.createElement('video'); let done = false;
+    const fin = (x) => { if (done) return; done = true; clearTimeout(t); v.removeAttribute('src'); try { v.load(); } catch (e) { /* ignore */ } resolve(x); };
+    const t = setTimeout(() => fin(null), timeout);
+    if (!/^(blob|data):/.test(url)) v.crossOrigin = 'anonymous';
+    v.muted = true; v.preload = 'auto'; v.playsInline = true;
+    v.addEventListener('error', () => fin(null));
+    v.addEventListener('loadedmetadata', () => { if (!(v.duration > 0) || !isFinite(v.duration)) return fin(null); v.currentTime = posterTime(v.duration); });
+    v.addEventListener('seeked', () => {
+      try {
+        const vw = v.videoWidth, vh = v.videoHeight; if (!vw || !vh) return fin(null);
+        const w = Math.min(width, vw), h = Math.max(1, Math.round((w * vh) / vw)), c = document.createElement('canvas'); c.width = w; c.height = h;
+        c.getContext('2d').drawImage(v, 0, 0, w, h);
+        fin({ src: c.toDataURL('image/jpeg', 0.78), dur: Math.round(v.duration * 1000) });
+      } catch (e) { fin(null); } // a cross-origin frame without CORS taints the canvas
+    });
+    v.src = url;
+  });
+}
 const fileLabel = (f) => `${f.name} · ${f.size >= 1e9 ? (f.size / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(f.size / 1e6)) + ' MB'}`;
 const baseName = (n) => String(n || 'Video').replace(/\.[^.]+$/, '');
 /** Output canvas: the reference's display size when probed (even numbers, 4 digits at most), else a vertical video */
@@ -58,8 +85,30 @@ export function footageDoc({ src, ref = null, lookId = null, lang = null, size, 
 }
 
 export function installFootage(ctx) {
-  const { ACT, api, modal, toast, ic, esc, save, uid, brand, canEdit, createDesign, ensureRatio, BG } = ctx;
+  const { ACT, api, modal, toast, ic, esc, save, uid, brand, canEdit, createDesign, ensureRatio, BG, RATIOS } = ctx;
   const FT = { ctx };
+  /** A standard ratio with the same size ('9:16' for 1080×1920) instead of a custom one */
+  const ratioFor = (size) => (RATIOS && Object.keys(RATIOS).find((k) => RATIOS[k][0] === size.w && RATIOS[k][1] === size.h)) || ensureRatio(`${size.w}x${size.h}`);
+  /** Puts the poster on the design's page (every thumbnail of the app draws it) and the length on the footage */
+  const setPoster = (d, shot) => { if (!d || !d.pages || !d.pages[0] || !shot) return false; d.pages[0].poster = shot.src; if (d.footage) d.footage.dur = shot.dur; return true; };
+  /* Designs made before thumbnails existed (or whose local file could not be decoded) get theirs from the proxy, one at a time */
+  const posterTried = new Set(); let posterQ = Promise.resolve();
+  FT.needsPoster = (d) => !!(d && d.footage && d.footage.src && d.pages && d.pages[0] && !(d.pages[0].poster && d.footage.dur));
+  /** Resolves true once `d` has a new poster (saved), false when there is nothing to do or it could not be made */
+  FT.ensurePoster = (d, proxyUrl) => {
+    if (!FT.needsPoster(d) || posterTried.has(d.id)) return Promise.resolve(false);
+    posterTried.add(d.id);
+    const run = async () => {
+      try {
+        let url = proxyUrl;
+        if (!url) { const rec = await api('/footage/' + d.footage.src); if (!rec || !rec.proxyUrl) { posterTried.delete(d.id); return false; } url = apiUrl(rec.proxyUrl); }
+        const shot = await grabPoster(url);
+        if (!shot || !FT.needsPoster(d)) return false;
+        setPoster(d, shot); save(); return true;
+      } catch (e) { return false; }
+    };
+    return (posterQ = posterQ.then(run, run));
+  };
 
   /* ---------- 2. upload modal and design creation ---------- */
   function openNew() {
@@ -117,9 +166,13 @@ export function installFootage(ctx) {
     start.addEventListener('click', async () => {
       if (st.busy) return;
       st.busy = true; st.uploaded = false; say(''); refresh(); start.textContent = 'Uploading…';
+      // the card's thumbnail, from the local file while it uploads (a codec the browser can't play falls back to the proxy later)
+      const localUrl = URL.createObjectURL(st.original), posterP = grabPoster(localUrl, { timeout: 10000 }).finally(() => URL.revokeObjectURL(localUrl));
       const ac = st.ac = new AbortController(), signal = ac.signal;
       try {
-        const brandId = brand().id, lang = langCode(brand().lang);
+        // the spoken language is left to Whisper's auto-detect: the brand's language is the copy's, not the speaker's,
+        // and forcing it (e.g. 'en' on Arabic speech) makes Whisper output an English translation instead of a transcript
+        const brandId = brand().id, lang = null;
         // the first failure aborts the sibling; Start only comes back once both have settled
         const run = (file, role, k) => uploadFootage(file, { role, brand: brandId, api, signal, onProgress: (v) => progress(k, v) }).catch((e) => { ac.abort(); throw e; });
         const res = await Promise.allSettled([run(st.original, 'original', 'original'), ...(st.ref ? [run(st.ref, 'reference', 'ref')] : [])]);
@@ -137,6 +190,7 @@ export function installFootage(ctx) {
           if (!st.closed) say('');
         }
         const d = createFootageDesign({ original: st.original, src: orig.id, ref: ref ? ref.id : null, lookId: ref ? null : st.lookId, lang, probe });
+        if (setPoster(d, await posterP)) save();
         st.busy = false;
         if (st.closed) { toast(READY_IN_STUDIO); return; }
         close(); FT.open(d);
@@ -150,7 +204,7 @@ export function installFootage(ctx) {
   }
 
   function createFootageDesign({ original, src, ref, lookId, lang, probe }) {
-    const size = outSize(probe), r = ensureRatio(`${size.w}x${size.h}`);
+    const size = outSize(probe), r = ratioFor(size);
     const saved = lookId && (Array.isArray(brand().looks) ? brand().looks : []).find((l) => l && l.id === lookId);
     const d = createDesign({
       name: `${baseName(original.name)} · matched`, ratio: r,

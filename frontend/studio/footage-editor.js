@@ -257,7 +257,15 @@ const GOOGLE_FONTS = FONTS_CSS;
 
 export function installFootageEditor(ctx, FT) {
   const { ED, ACT, api, toast, ic, IC, esc, mutate, save, canEdit, wrapEd, ed, brand } = ctx;
-  Object.assign(IC, { ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>' });
+  Object.assign(IC, {
+    ftCmp10: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M7 9l-2 3 2 3M17 9l2 3-2 3"/>',
+    ftBack5: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+    ftFwd5: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+    ftZoomIn: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
+    ftZoomOut: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/>',
+    ftFit: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+    ftKbd: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  });
   const $ = (s, r = document) => r.querySelector(s);
   const isFt = (d) => !!(d && d.footage);
   /** The open footage design's session */
@@ -347,7 +355,7 @@ export function installFootageEditor(ctx, FT) {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: ft.captions,
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
       onTime: (ms, playing) => transport(ms, playing),
-      onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); },
+      onReady: (dur) => { S.dur = dur; transport(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
       onError: (err) => refreshProxy(S, err),
     });
     S.player.setSplit(S.split);
@@ -416,13 +424,14 @@ export function installFootageEditor(ctx, FT) {
 
   function transport(ms, playing) {
     if (!F) return;
-    const t = $('#ftT'), sc = $('#ftScrub'), pb = $('#ftPlay'), dur = F.dur || (F.player && F.player.duration()) || 0;
+    const t = $('#ftT'), pb = $('#ftPlay'), dur = F.dur || (F.player && F.player.duration()) || 0;
     if (t) t.textContent = fmtMs(ms);
     const td = $('#ftDur'); if (td) td.textContent = fmtMs(dur);
-    if (sc && document.activeElement !== sc) { sc.max = String(Math.max(1, Math.round(dur))); sc.value = String(Math.round(ms)); }
-    if (sc) sc.style.setProperty('--p', dur ? (ms / dur) * 100 + '%' : '0%');
-    if (pb && pb.dataset.on !== String(!!playing)) { pb.dataset.on = String(!!playing); pb.innerHTML = ic(playing ? 'pause37' : 'play37', 16); pb.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)'); }
+    // the transport is drawn before the player exists: enable it as soon as the player is there
+    document.querySelectorAll('[data-ft-ctl]').forEach((b) => { b.disabled = !F.player; });
+    if (pb && pb.dataset.on !== String(!!playing)) { pb.dataset.on = String(!!playing); pb.innerHTML = ic(playing ? 'pause37' : 'play37', 18); pb.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)'); pb.title = playing ? 'Pause (Space)' : 'Play (Space)'; }
     const hd = $('#ftHead'); if (hd && dur) hd.style.left = Math.min(100, Math.max(0, (ms / dur) * 100)) + '%';
+    if (playing && dur) follow(ms / dur);
     hilite(ms, playing);
   }
   /** The subtitle row being spoken */
@@ -431,7 +440,8 @@ export function installFootageEditor(ctx, FT) {
     const lines = ED.d && ED.d.footage ? ED.d.footage.captions.lines : [];
     const i = lines.findIndex((l) => ms >= l.start && ms < l.end), id = i >= 0 ? lines[i].id : null;
     if (id === lastRow) return; lastRow = id;
-    document.querySelectorAll('#edPanel .ft-row.on').forEach((x) => x.classList.remove('on'));
+    document.querySelectorAll('#edPanel .ft-row.on, #ftBlks .ft-blk.on').forEach((x) => x.classList.remove('on'));
+    if (id) { const b = document.querySelector(`#ftBlks .ft-blk[data-id="${CSS.escape(id)}"]`); if (b) b.classList.add('on'); }
     if (id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) { r.classList.add('on'); if (playing && !r.contains(document.activeElement)) r.scrollIntoView({ block: 'nearest' }); } }
   }
 
@@ -445,25 +455,86 @@ export function installFootageEditor(ctx, FT) {
     const dur = F && F.dur; if (!dur || !ED.d || !isFt(ED.d)) return '';
     return (ED.d.footage.captions.lines || []).map((l, i) => blockHTML(l, i, dur)).join('');
   }
+  /* Zoom is in pixels per second; null fits the whole video in the lane. The default keeps subtitles readable on long clips. */
+  const ZOOMS = [null, 10, 20, 40, 80, 160], RULER = 18, DEFAULT_PPS = 40;
+  const laneView = () => { const sc = $('#ftScroll'); return sc ? sc.clientWidth : 0; };
+  function trackWidth() {
+    const v = laneView(), dur = F && F.dur; if (!v || !dur) return v;
+    if (F.zoom === undefined) F.zoom = (dur / 1000) * DEFAULT_PPS > v ? DEFAULT_PPS : null;
+    return F.zoom ? Math.max(v, Math.round((dur / 1000) * F.zoom)) : v;
+  }
+  function sizeTrack() {
+    const tr = $('#ftTrack'); if (!tr || !F) return;
+    tr.style.width = trackWidth() + 'px';
+    const fits = !F.zoom || trackWidth() <= laneView(), i = ZOOMS.indexOf(F.zoom);
+    const zo = $('[data-act=ftZoomOut]'), zi = $('[data-act=ftZoomIn]'), zf = $('[data-act=ftZoomFit]');
+    if (zo) zo.disabled = fits; if (zi) zi.disabled = i >= ZOOMS.length - 1 || !F.dur; if (zf) zf.disabled = fits;
+  }
+  /** Keeps the playhead in view while playing */
+  function follow(frac) {
+    const sc = $('#ftScroll'), tw = trackWidth(), v = laneView(); if (!sc || !tw || tw <= v || (F && F.drag) || (F && F.scrubbing)) return;
+    const x = frac * tw;
+    if (x < sc.scrollLeft || x > sc.scrollLeft + v * 0.85) sc.scrollLeft = Math.max(0, x - v * 0.15);
+  }
+  /** Zooms around the playhead (or the lane's center) */
+  function setZoom(z) {
+    if (!F || !F.dur) return; const sc = $('#ftScroll'); if (!sc) return;
+    const v = laneView(), before = trackWidth(), ms = F.player ? F.player.time() : 0;
+    const headX = (ms / F.dur) * before, anchor = headX >= sc.scrollLeft && headX <= sc.scrollLeft + v ? headX - sc.scrollLeft : v / 2;
+    const frac = (sc.scrollLeft + anchor) / before;
+    F.zoom = z; sizeTrack();
+    sc.scrollLeft = Math.max(0, frac * trackWidth() - anchor); drawWave();
+  }
+  const zoomStep = (dir) => {
+    if (!F) return; const v = laneView(), dur = (F.dur || 0) / 1000; if (!v || !dur) return;
+    const cur = F.zoom || v / dur; // "fit" as an equivalent pps
+    const steps = ZOOMS.filter(Boolean);
+    const next = dir > 0 ? steps.find((z) => z > cur * 1.01) : [...steps].reverse().find((z) => z < cur * 0.99);
+    if (dir > 0 && next) setZoom(next);
+    else if (dir < 0) setZoom(next && next * dur > v ? next : null);
+  };
   /** Redraws the blocks (after an edit, undo or redo) and the waveform */
-  function lane() { const b = $('#ftBlks'); if (!b || !F) return; b.innerHTML = blocksHTML(); drawWave(); }
+  function lane() { const b = $('#ftBlks'); if (!b || !F) return; b.innerHTML = blocksHTML(); sizeTrack(); drawWave(); lastRow = null; if (F.player) hilite(F.player.time()); }
   function laneInit() {
     F && F.lro && F.lro.disconnect();
-    const el = $('#ftLane'); if (!el || !F) return;
-    if (typeof ResizeObserver !== 'undefined') { F.lro = new ResizeObserver(() => drawWave()); F.lro.observe(el); }
-    drawWave();
+    const el = $('#ftLane'), sc = $('#ftScroll'); if (!el || !F) return;
+    if (typeof ResizeObserver !== 'undefined') { F.lro = new ResizeObserver(() => { sizeTrack(); drawWave(); }); F.lro.observe(el); }
+    if (sc) sc.addEventListener('scroll', () => drawWave(), { passive: true });
+    sizeTrack(); drawWave();
   }
+  const tickStep = (pps) => [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find((s) => s * pps >= 64) || 600;
+  const tickLabel = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}${s % 1 ? '.5' : ''}`;
+  /** The canvas covers the visible part of the lane: ruler on top, waveform below, both following the scroll */
   function drawWave() {
-    const cv = $('#ftWave'), el = $('#ftLane'); if (!cv || !el || !F) return;
+    const cv = $('#ftWave'), el = $('#ftLane'), sc = $('#ftScroll'); if (!cv || !el || !F) return;
     const r = el.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
     if (!w || !h) return;
     if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-    const c = cv.getContext('2d'); c.clearRect(0, 0, w, h);
+    const c = cv.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, w, h);
+    const tw = trackWidth(), dur = F.dur, sl = sc ? sc.scrollLeft : 0, cs = getComputedStyle(el);
+    if (!tw || !dur) return;
+    c.scale(dpr, dpr);
+    const vw = r.width, vh = r.height, pps = tw / (dur / 1000), rh = RULER;
+    // ruler
+    const step = tickStep(pps), minor = step / 2;
+    c.fillStyle = cs.getPropertyValue('--ft-tick').trim() || 'rgba(148,163,184,.5)';
+    c.font = '500 10px system-ui, -apple-system, sans-serif'; c.textBaseline = 'middle';
+    const first = Math.floor(sl / pps / minor) * minor;
+    for (let t = first; t * pps <= sl + vw; t += minor) {
+      const x = Math.round(t * pps - sl) + 0.5, major = Math.abs(t / step - Math.round(t / step)) < 1e-6;
+      c.fillRect(x, major ? 4 : rh - 6, 1, major ? rh - 4 : 6);
+      if (major) c.fillText(tickLabel(t), x + 4, 9);
+    }
+    c.fillRect(0, rh, vw, 1);
+    // waveform, under the subtitle blocks
     if (!F.peaks) return;
-    const px = fitPeaks(F.peaks, w); // one peak per device pixel column
-    c.fillStyle = getComputedStyle(el).getPropertyValue('--ft-wave').trim() || 'rgba(100,116,139,.5)';
-    const mid = h / 2;
-    for (let x = 0; x < w; x++) { const a = Math.max(1, px[x] * h * 0.9); c.fillRect(x, mid - a / 2, 1, a); }
+    const N = F.peaks.length, top = rh + 4, mid = top + (vh - top) / 2, amp = (vh - top - 4);
+    c.fillStyle = cs.getPropertyValue('--ft-wave').trim() || 'rgba(100,116,139,.5)';
+    for (let x = 0; x < vw; x += 2) {
+      const a0 = Math.floor(((sl + x) / tw) * N), a1 = Math.max(a0 + 1, Math.floor(((sl + x + 2) / tw) * N));
+      let m = 0; for (let k = a0; k < a1 && k < N; k++) if (F.peaks[k] > m) m = F.peaks[k];
+      const a = Math.max(1, m * amp); c.fillRect(x, mid - a / 2, 1.2, a);
+    }
   }
   /** Decodes the proxy's audio once (lazily, after the player is ready) into 2000 fixed peak buckets; without it the lane has no waveform */
   async function loadPeaks(S) {
@@ -572,12 +643,23 @@ export function installFootageEditor(ctx, FT) {
     });
   }
 
+  function scrub(e, track) {
+    const S = F; e.preventDefault(); S.scrubbing = true;
+    const at = (ev) => { const r = track.getBoundingClientRect(); S.player && S.player.seek(Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * S.dur); };
+    at(e);
+    const up = () => { S.scrubbing = false; removeEventListener('pointermove', at); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
+    addEventListener('pointermove', at); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+  }
   /* dragging a block edge, or the block: preview through the player, one mutate() on release */
   function dragStart(e) {
-    if (!F || !can() || e.button > 0 || F.drag) return;
-    let blk = e.target.closest('.ft-blk'); const lnEl = $('#ftLane'); if (!lnEl) return;
-    if (!blk) { // an empty spot of the lane: seek there
-      if (e.target.closest('#ftLane') && F.dur && F.player) { const r = lnEl.getBoundingClientRect(); F.player.seek(((e.clientX - r.left) / r.width) * F.dur); }
+    if (!F || e.button > 0 || F.drag) return;
+    if (!can()) { // read-only: the lane still seeks
+      const tr = $('#ftTrack'); if (tr && e.target.closest && e.target.closest('#ftLane') && F.dur && F.player) scrub(e, tr);
+      return;
+    }
+    let blk = e.target.closest('.ft-blk'); const lnEl = $('#ftTrack'); if (!lnEl || !e.target.closest('#ftLane')) return;
+    if (!blk) { // an empty spot of the lane or the ruler: seek there, and keep scrubbing while the pointer is down
+      if (F.dur && F.player) scrub(e, lnEl);
       return;
     }
     if (lineIdx(blk.dataset.id) < 0 || !F.dur) return;
@@ -612,14 +694,34 @@ export function installFootageEditor(ctx, FT) {
 
   function pagesHTML() {
     const ms = F && F.player ? F.player.time() : 0, dur = F ? F.dur : 0, on = F && F.split != null, playing = !!(F && F.player && F.player.playing());
+    const off = F && F.player ? '' : 'disabled';
     return `<div class="ft-tp">
-      <button class="mo-play" id="ftPlay" data-act="ftPlay" data-on="${playing}" aria-label="${playing ? 'Pause' : 'Play'} (Space)" title="Play / pause (Space, K)" ${F && F.player ? '' : 'disabled'}>${ic(playing ? 'pause37' : 'play37', 16)}</button>
-      <span class="mo-time"><b id="ftT">${fmtMs(ms)}</b><span> / <span id="ftDur">${fmtMs(dur)}</span></span></span>
-      <input type="range" class="ft-scrub" id="ftScrub" min="0" max="${Math.max(1, Math.round(dur))}" step="1" value="${Math.round(ms)}" aria-label="Playback position" ${F && F.player ? '' : 'disabled'}>
-      <button class="btn ${on ? 'secondary on' : 'ghost'} sm ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line)">${ic('ftCmp10', 15)}Before / After</button>
-      <span class="ft-keys xs-t muted" title="J / L: 5 s back / forward · ← / →: one frame">J K L · ← →</span>
+      <div class="ft-tp-g">
+        <button class="ft-ib" data-act="ftBack" data-ft-ctl aria-label="Back 5 seconds (J)" title="Back 5 s (J)" ${off}>${ic('ftBack5', 18)}</button>
+        <button class="ft-play" id="ftPlay" data-act="ftPlay" data-ft-ctl data-on="${playing}" aria-label="${playing ? 'Pause' : 'Play'} (Space)" title="${playing ? 'Pause' : 'Play'} (Space)" ${off}>${ic(playing ? 'pause37' : 'play37', 18)}</button>
+        <button class="ft-ib" data-act="ftFwd" data-ft-ctl aria-label="Forward 5 seconds (L)" title="Forward 5 s (L)" ${off}>${ic('ftFwd5', 18)}</button>
+        <span class="ft-time"><b id="ftT">${fmtMs(ms)}</b><span class="ft-sep">/</span><span id="ftDur">${fmtMs(dur)}</span></span>
+      </div>
+      <div class="ft-tp-g">
+        <button class="ft-chip${on ? ' on' : ''} ft-ba" data-act="ftSplit" aria-pressed="${on}" title="Compare with the original (drag the line on the video)">${ic('ftCmp10', 16)}<span>Before / After</span></button>
+        <span class="ft-div" aria-hidden="true"></span>
+        <div class="ft-zoom" role="group" aria-label="Timeline zoom">
+          <button class="ft-ib" data-act="ftZoomOut" aria-label="Zoom out the timeline" title="Zoom out">${ic('ftZoomOut', 17)}</button>
+          <button class="ft-ib" data-act="ftZoomIn" aria-label="Zoom in the timeline" title="Zoom in">${ic('ftZoomIn', 17)}</button>
+          <button class="ft-ib" data-act="ftZoomFit" aria-label="Fit the whole video" title="Fit the whole video">${ic('ftFit', 17)}</button>
+        </div>
+        <span class="ft-ib ft-kbd" tabindex="0" role="img" aria-label="Keyboard shortcuts: Space play or pause, J and L 5 seconds back or forward, left and right arrows one frame" title="Space  play / pause
+J / L  5 s back / forward
+← / →  one frame">${ic('ftKbd', 17)}</span>
+      </div>
     </div>
-    <div class="ft-lane" id="ftLane" aria-label="Subtitle timeline"><canvas id="ftWave" aria-hidden="true"></canvas><div class="ft-blks" id="ftBlks">${blocksHTML()}</div><i class="ft-head" id="ftHead" style="left:${F && F.dur ? Math.min(100, (ms / F.dur) * 100) : 0}%"></i></div>`;
+    <div class="ft-lane" id="ftLane" aria-label="Subtitle timeline: click or drag to move the playhead, drag a subtitle to retime it">
+      <canvas id="ftWave" aria-hidden="true"></canvas>
+      <div class="ft-scroll" id="ftScroll"><div class="ft-track" id="ftTrack">
+        <div class="ft-blks" id="ftBlks">${blocksHTML()}</div>
+        <i class="ft-head" id="ftHead" style="left:${F && F.dur ? Math.min(100, (ms / F.dur) * 100) : 0}%"></i>
+      </div></div>
+    </div>`;
   }
 
   function subsHTML() {
@@ -741,9 +843,14 @@ export function installFootageEditor(ctx, FT) {
   addEventListener('hashchange', () => setTimeout(() => { if (F && !alive(F)) stop(); }));
 
   /* ---------- 4. actions and keys ---------- */
-  const setSplit = (x) => { if (!F) return; F.split = x; F.player && F.player.setSplit(x); drawStage(); const b = $('[data-act=ftSplit]'); if (b) { b.setAttribute('aria-pressed', String(x != null)); b.className = `btn ${x != null ? 'secondary on' : 'ghost'} sm ft-ba`; } };
+  const setSplit = (x) => { if (!F) return; F.split = x; F.player && F.player.setSplit(x); drawStage(); const b = $('[data-act=ftSplit]'); if (b) { b.setAttribute('aria-pressed', String(x != null)); b.classList.toggle('on', x != null); } };
   Object.assign(ACT, {
     ftPlay: () => F && F.player && F.player.toggle(),
+    ftBack: () => F && F.player && F.player.seek(Math.max(0, F.player.time() - 5000)),
+    ftFwd: () => F && F.player && F.player.seek(F.player.time() + 5000),
+    ftZoomIn: () => zoomStep(1),
+    ftZoomOut: () => zoomStep(-1),
+    ftZoomFit: () => setZoom(null),
     ftSplit: () => setSplit(F && F.split == null ? 0.5 : null),
     ftMore: (a) => rowMenu(a),
     ftAdd: () => addAtPlayhead(),
@@ -773,7 +880,6 @@ export function installFootageEditor(ctx, FT) {
     if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const l = ED.d.footage.captions.lines.find((x) => x.id === t.dataset.ftText); t.value = l ? lineText(l) : ''; t.blur(); }
   }, true);
   document.addEventListener('pointerdown', dragStart);
-  document.addEventListener('input', (e) => { if (e.target && e.target.id === 'ftScrub' && F && F.player) F.player.seek(+e.target.value); });
   /* the split line: drag anywhere on the frame while Before / After is on */
   document.addEventListener('pointerdown', (e) => {
     if (!F || F.split == null || e.button !== 0) return; const fr = $('#ftFrame'); if (!fr || !fr.contains(e.target)) return;
@@ -789,7 +895,7 @@ export function installFootageEditor(ctx, FT) {
     const P = F.player, k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const act = { ' ': () => P.toggle(), k: () => P.pause(), j: () => P.seek(P.time() - 5000), l: () => P.seek(P.time() + 5000),
       ArrowLeft: () => { P.pause(); P.seek(P.time() - P.frameMs()); }, ArrowRight: () => { P.pause(); P.seek(P.time() + P.frameMs()); } }[k];
-    if (!act || (k === ' ' && tag === 'button' && t.dataset.act !== 'ftPlay')) return;
+    if (!act || (k === ' ' && tag === 'button' && !['ftPlay', 'ftBack', 'ftFwd'].includes(t.dataset.act))) return;
     e.preventDefault(); e.stopImmediatePropagation(); act();
   }, true);
   /* ---- Look panel: live preview on `input`, one mutate() on `change` (release) ---- */

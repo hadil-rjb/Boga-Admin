@@ -20,7 +20,7 @@ import * as PATH from './paths';
 import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
-import { installFootage, blockSchedule } from './footage';
+import { installFootage, blockSchedule, fmtDur } from './footage';
 
 let mounted = null; // destroy() of the running instance
 
@@ -480,6 +480,8 @@ const posterHTML = (pg) => withTree(pg, () => pg.layers.map(layerHTML).join(''))
 /** Scaled, static preview of a page (used on cards, planner, template pickers) */
 function thumb(pg, ratio, boxW, boxH) {
   const [w, h] = RATIOS[ratio], k = Math.min(boxW / w, boxH / h);
+  // a video design (footage): its poster frame instead of the page
+  if (pg.poster) return `<div class="thumb thumb-v" style="width:${w * k}px;height:${h * k}px"><img src="${esc(pg.poster)}" alt="" loading="lazy" decoding="async"></div>`;
   return `<div class="thumb" style="width:${w * k}px;height:${h * k}px"><div class="poster" style="width:${w}px;height:${h}px;background:${pg.bg};transform:scale(${k})">${posterHTML(pg)}</div></div>`;
 }
 const tplThumb = (key, ratio, bw, bh) => { const [w, h] = RATIOS[ratio]; return thumb({ bg: '#0b1220', layers: brandize(TPL[key].fn(w, h)) }, ratio, bw, bh); };
@@ -11037,13 +11039,27 @@ function clipCss(l, frames) {
 })();
 
 /* ============ footage style match: Match a reference tile, upload modal, footage designs (see footage.js) ============ */
-installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
+const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
   /* the footage editor wraps the editor's drawing like the blocks above do: wrapEd({ edStage: (orig) => fn, ... }) */
   wrapEd: (w) => {
     if (w.edStage) edStage = w.edStage(edStage); if (w.edPanel) edPanel = w.edPanel(edPanel); if (w.edProps) edProps = w.edProps(edProps);
     if (w.edPages) edPages = w.edPages(edPages); if (w.edRail) edRail = w.edRail(edRail);
   },
   ed: { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() } });
+/* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */
+{
+  const _dcFt = designCard;
+  designCard = function (d) {
+    let html = _dcFt.apply(this, arguments); const dd = getD(d.id);
+    if (!dd || !dd.footage) return html;
+    const dur = dd.footage.dur;
+    html = html.replace('<span class="st">', `<span class="badge b-mo37">${ic('play37', 10)}${dur ? fmtDur(dur) : 'Video'}</span><span class="st">`)
+      .replace(/<small>[^·<]*·/, '<small>Video ·');
+    if (FOOTAGE.needsPoster(dd)) setTimeout(() => FOOTAGE.ensurePoster(dd).then((ok) => { if (ok) document.querySelectorAll(`.card.dc[data-id="${CSS.escape(dd.id)}"]`).forEach((c) => { c.outerHTML = designCard(dd); }); }));
+    return html;
+  };
+}
+
 
 /* ============ v39 · select several designs in the Studio and delete them at once ============ */
 /* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a
