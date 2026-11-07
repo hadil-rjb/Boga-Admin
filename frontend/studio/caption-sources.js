@@ -5,7 +5,7 @@ import { group, lcsPairs } from './captions.js';
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const toks = (s) => String(s || '').split(/\s+/).filter(Boolean);
 const norm = (s) => String(s).normalize('NFKC').toLowerCase()
-  .replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '').replace(/[\p{P}\p{S}]/gu, '');
+  .replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '').replace(/[\p{P}\p{S}]/gu, '');
 const mkLine = (words) => ({ id: rid(), start: words[0].s, end: words[words.length - 1].e, words });
 
 // Words timed by character count across [s, e].
@@ -49,17 +49,39 @@ export function spreadScript(text, startMs, endMs) {
 export function alignScript(text, speechWords) {
   const { tokens, breaks } = scriptTokens(text);
   if (!tokens.length) return { words: [], matched: 0, breaks };
-  const pairs = lcsPairs(tokens.map(norm), speechWords.map((w) => norm(w.t)));
-  const words = new Array(tokens.length);
+  // Tokens that normalise to '' (pure punctuation) never match anything.
+  const keep = (list) => list.map((t, i) => [norm(t), i]).filter(([n]) => n);
+  const ta = keep(tokens), sa = keep(speechWords.map((w) => w.t));
+  const pairs = lcsPairs(ta.map((x) => x[0]), sa.map((x) => x[0])).map(([i, j]) => [ta[i][1], sa[j][1]]);
+  const words = new Array(tokens.length).fill(null);
+  for (const [ti, si] of pairs) words[ti] = { t: tokens[ti], s: speechWords[si].s, e: Math.max(speechWords[si].e, speechWords[si].s + 1) };
+  const anchors = pairs.map(([ti]) => ti);
   const first = speechWords.length ? speechWords[0].s : 0;
-  const last = speechWords.length ? speechWords[speechWords.length - 1].e : 0;
-  let ni = 0, gapStart = first;
-  for (const [ti, si] of [...pairs, [tokens.length, -1]]) {
-    const gapEnd = si < 0 ? last : speechWords[si].s;
-    if (ti > ni) spreadTokens(tokens.slice(ni, ti), gapStart, Math.max(gapStart, gapEnd)).forEach((w, k) => { words[ni + k] = w; });
-    if (si >= 0) { words[ti] = { t: tokens[ti], s: speechWords[si].s, e: speechWords[si].e }; gapStart = speechWords[si].e; }
-    ni = ti + 1;
+  let prevIdx = -1;
+  for (const nextIdx of [...anchors, tokens.length]) {
+    const k = nextIdx - prevIdx - 1;
+    if (k > 0) {
+      const prev = prevIdx >= 0 ? words[prevIdx] : null;
+      const next = nextIdx < tokens.length ? words[nextIdx] : null;
+      const ref = next || prev;
+      const slice = ref ? Math.max(1, Math.round((ref.e - ref.s) / 2)) : 1;
+      let lo = prev ? prev.e : (next ? Math.min(first, next.s) : first);
+      let hi = next ? next.s : lo + k * slice;
+      const deficit = k * slice - (hi - lo);
+      if (deficit > 0) {
+        const bp = prev ? Math.min(Math.ceil(deficit / 2), Math.max(0, prev.e - prev.s - 1)) : 0;
+        const bn = next ? Math.min(deficit - bp, Math.max(0, next.e - next.s - 1)) : 0;
+        const bp2 = prev ? Math.min(deficit - bn, Math.max(0, prev.e - prev.s - 1)) : 0;
+        if (prev) { prev.e -= bp2; lo -= bp2; }
+        if (next) { next.s += bn; hi += bn; }
+      }
+      spreadTokens(tokens.slice(prevIdx + 1, nextIdx), lo, Math.max(lo, hi)).forEach((w, n) => { words[prevIdx + 1 + n] = w; });
+    }
+    prevIdx = nextIdx;
   }
+  // Times never go backwards and every word lasts at least 1 ms.
+  let ps = -Infinity;
+  for (const w of words) { w.s = Math.max(w.s, ps); w.e = Math.max(w.e, w.s + 1); ps = w.s; }
   return { words, matched: pairs.length / tokens.length, breaks };
 }
 
@@ -83,8 +105,8 @@ const parseTs = (m) => ((Number(m[1] || 0) * 60 + Number(m[2])) * 60 + Number(m[
 export function parseSubtitles(text) {
   const src = String(text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n');
   const lines = [];
-  for (const block of src.split(/\n{2,}/)) {
-    const rows = block.split('\n');
+  for (const block of src.split(/\n[ \t]*\n/)) {
+    const rows = block.split('\n').map((r) => r.trim());
     const at = rows.findIndex((r) => r.includes('-->'));
     if (at < 0 || /^NOTE\b/.test(rows[0])) continue;
     const [a, b] = rows[at].split('-->');
@@ -112,8 +134,8 @@ export const toSrt = (lines) => lines
 export function voSig(pages) {
   return (pages || []).map((pg, i) => {
     const vo = pg && pg.scene && pg.scene.vo;
-    return vo && (vo.text || vo.dur) ? `${i}:${String(vo.text || '').trim()}:${vo.dur || 0}` : '';
-  }).join('|');
+    return vo && (vo.text || vo.dur) ? `${i}:${String(vo.text || '').trim()}:${vo.dur || 0}` : null;
+  }).filter((x) => x !== null).join('|');
 }
 
-export const needsRebuild = (captions, pages) => !!captions && captions.source === 'manual' && captions.voSig !== voSig(pages);
+export const needsRebuild = (captions, pages) => !!captions && captions.source === 'manual' && typeof captions.voSig === 'string' && captions.voSig !== voSig(pages);
