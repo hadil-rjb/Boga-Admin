@@ -19,7 +19,21 @@ import type { Browser } from "puppeteer-core";
  *     (★ impact stars, arrows, symbols) need a system font, and the bundled Chromium only has Open Sans.
  *     DejaVu Sans (dejavu-fonts-ttf) is added, after the system fonts, so they never render as empty boxes.
  */
-const esm = new Function("s", "return import(s)") as <T = any>(s: string) => Promise<T>;
+const nativeImport = new Function("s", "return import(s)") as (s: string) => Promise<any>;
+
+/**
+ * import() of an ES module from this CommonJS build. The Function-wrapped import is what runs in production (tsc would
+ * compile a plain import() to require(), which cannot load these ES-only packages). Inside vitest's vm context that
+ * wrapper has no import callback ("A dynamic import callback was not specified"); only then is `fallback` used, vitest's
+ * own transformed import() (in the compiled dist it is a require(), never reached there). Same pattern as footage/shared.ts.
+ */
+export async function importEsm(s: string, native: (s: string) => Promise<any> = nativeImport, fallback: (s: string) => Promise<any> = (x) => import(/* @vite-ignore */ x)): Promise<any> {
+  try { return await native(s); } catch (e: any) {
+    if (!/dynamic import callback/i.test(String(e?.message))) throw e;
+    return fallback(s);
+  }
+}
+const esm = (s: string) => importEsm(s);
 
 const LOCAL = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -56,9 +70,10 @@ async function linuxSetup(chromium: any) {
   }
 }
 
-export async function launchChromium(): Promise<Browser> {
+/** extraArgs: added to the launch flags (the footage parity test asks for SwiftShader WebGL) */
+export async function launchChromium(extraArgs: string[] = []): Promise<Browser> {
   const puppeteer = (await esm("puppeteer-core")).default;
-  const common = ["--hide-scrollbars", "--mute-audio", "--font-render-hinting=none", "--disable-dev-shm-usage"];
+  const common = ["--hide-scrollbars", "--mute-audio", "--font-render-hinting=none", "--disable-dev-shm-usage", ...extraArgs];
   const custom = process.env.CHROME_PATH;
   if (!custom && process.platform === "linux") {
     const mod = await esm("@sparticuz/chromium"), chromium = mod.default;

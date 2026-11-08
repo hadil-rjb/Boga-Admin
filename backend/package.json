@@ -5,7 +5,11 @@
   "node": ">=22"
  },
  "scripts": {
+  "sync:shared": "node scripts/sync-shared.mjs",
+  "prebuild": "npm run sync:shared",
+  "pretest": "npm run sync:shared",
   "build": "nest build",
+  "test": "vitest run",
   "start": "nest start",
   "dev": "nest start --watch",
   "start:prod": "node dist/src/main",
@@ -42,7 +46,8 @@
   "@types/node": "^22.0.0",
   "ts-node": "^10.9.2",
   "tsconfig-paths": "^4.2.0",
-  "typescript": "^5.5.0"
+  "typescript": "^5.5.0",
+  "vitest": "^3.2.7"
  },
  "overrides": {
   "multer": "^2.5.0",

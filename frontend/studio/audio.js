@@ -57,22 +57,6 @@ export function musicCurve(total, a, cl) {
   return out;
 }
 
-/** The caption on screen at time t: the line of the scene being shown, while its voice plays (or the whole scene without audio) */
-export function captionAt(pages, tl, t, a) {
-  if (!a.captions) return null;
-  const s = tl.scenes.find((x) => t >= x.start && t < x.start + x.dur) || tl.scenes[tl.scenes.length - 1]; if (!s) return null;
-  const vo = voOf(pages[s.i]), text = vo && String(vo.text || '').trim(); if (!text) return null;
-  if (vo.src && vo.dur) { const st = s.start + LEAD; if (t < st || t > st + vo.dur + 400) return null; }
-  else if (a.track && a.track.src && a.track.dur && (t < (a.track.at || 0) || t > (a.track.at || 0) + a.track.dur + 400)) return null;
-  return text;
-}
-/** Breaks a caption into lines that fit maxW, using a text measurer (canvas measureText) */
-export function wrap(text, maxW, measure) {
-  const out = []; let line = '';
-  String(text).split(/\s+/).forEach((w) => { const t = line ? line + ' ' + w : w; if (line && measure(t) > maxW) { out.push(line); line = w; } else line = t; });
-  if (line) out.push(line);
-  return out.slice(0, 3);
-}
 export const MOODS = ['Upbeat', 'Chill', 'Corporate', 'Cinematic', 'Lo-fi', 'Inspiring'];
 export const TONES = ['Auto', 'Friendly', 'Energetic', 'Expert', 'Calm', 'Playful'];
 export const LANGUAGES = ['English', 'French', 'Arabic', 'Spanish', 'German', 'Turkish', 'Italian', 'Portuguese'];

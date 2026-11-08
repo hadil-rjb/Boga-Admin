@@ -8,7 +8,7 @@ import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
 import { validTz, zonedToUtc } from "../../framer/time";
 import { SocialMedia } from "./connection.schema";
 import { ConnectionsService } from "./connections.service";
-import { mergePost, PublishState, textFor } from "./post-state";
+import { isVideoDesign, mergePost, PublishState, textFor, VIDEO_NOT_SCHEDULABLE } from "./post-state";
 import { Net, NETS, PublishImage } from "./providers";
 
 export const MAX_ATTEMPTS = 3;
@@ -144,14 +144,16 @@ export class PublisherService {
     }
     const prev = claimed.publish || {};
     const results: Record<string, NetResult> = { ...(prev.results || {}) };
-    let state: PublishState = "failed", status = claimed.status, attempts = (prev.attempts || 0) + 1, nextTry: Date | null = null, fatal = "";
+    let state: PublishState = "failed", status = claimed.status, attempts = (prev.attempts || 0) + 1, nextTry: Date | null = null, fatal = "", permanent = false;
     try {
+      const design = await this.designs.findOne({ brandId, id: claimed.d }).select("name ratio footage").lean();
+      // a video design's slides are its black background page: never publish them, and never retry
+      if (isVideoDesign(design)) { permanent = true; throw new Error(VIDEO_NOT_SCHEDULABLE); }
       const nets = ((claimed.pf || []) as string[]).filter((n): n is Net => NETS.includes(n as Net));
       if (!nets.length) throw new Error("No network selected");
       const files = await this.media.find({ brandId, postId }).sort({ index: 1 }).select("+data").lean();
       if (!files.length) throw new Error("The slides haven't been rendered yet: open the post in the studio and schedule it again");
       const images: PublishImage[] = files.map((f) => ({ buffer: toBuffer(f.data), mime: f.mime, url: this.publicUrl(String(f._id)), width: f.width, height: f.height }));
-      const design = await this.designs.findOne({ brandId, id: claimed.d }).select("name ratio").lean();
       const story = design?.ratio === "9:16";
 
       for (const net of nets) {
@@ -178,7 +180,7 @@ export class PublisherService {
       fatal = e?.message || "Failed";
       state = "failed";
     }
-    const retry = state === "failed" && !manual && attempts < MAX_ATTEMPTS;
+    const retry = state === "failed" && !manual && !permanent && attempts < MAX_ATTEMPTS;
     if (state === "published" || state === "partial") status = "Published";
     else if (retry) { state = "pending"; nextTry = new Date(Date.now() + 2 ** attempts * 60_000); }
     else status = "Failed";

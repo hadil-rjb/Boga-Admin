@@ -13,6 +13,10 @@ import { useEffect } from "react";
  *
  * The page holds no data and makes no API calls: requests the engine makes go to window.bogaApi,
  * which the API exposes to the page (only live data is answered: calendar events, quotes, news, photos).
+ *
+ * ?mode=captions (backend/src/footage/export.service.ts): the studio is not booted. The page loads captions.js and the
+ * subtitle web fonts, and exposes window.bogaCaptions(lines, style, w, h, times): one transparent PNG data URL per time,
+ * drawn by captions.draw exactly as the footage editor's preview draws it.
  */
 type Renderer = { renderPost: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[]; texts?: string[] }> };
 type Win = Window & {
@@ -20,7 +24,35 @@ type Win = Window & {
   bogaBoot?: (state: unknown) => Promise<boolean>;
   bogaRender?: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[]; texts?: string[] }>;
   bogaReady?: boolean;
+  bogaCaptions?: (lines: unknown[], style: Record<string, unknown> | null, w: number, h: number, times: number[]) => Promise<string[]>;
 };
+
+/** Subtitle frames for the footage export: fonts loaded first (the style's font at its pixel size, for the words' characters) */
+async function captionsMode(w: Win) {
+  const C = await import("@/studio/captions.js");
+  const css = new Promise<void>((ok) => {
+    const l = document.createElement("link");
+    l.rel = "stylesheet"; l.href = C.FONTS_CSS; l.onload = () => ok(); l.onerror = () => ok(); // without the fonts the fallbacks draw
+    document.head.append(l);
+  });
+  w.bogaCaptions = async (lines, style, W, H, times) => {
+    await css;
+    const st = (style || C.DEFAULT_STYLE) as typeof C.DEFAULT_STYLE;
+    const text = (lines as { words?: { t: string }[] }[]).flatMap((l) => (l.words || []).map((x) => x.t)).join(" ");
+    const chars = [...new Set(text + text.toUpperCase() + text.toLowerCase())].join("") || "a";
+    await document.fonts.load(C.fontOf(st, st.size * H), chars).catch(() => []);
+    await document.fonts.ready;
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d");
+    if (!ctx) throw new Error("No 2D canvas");
+    return times.map((t) => {
+      ctx.clearRect(0, 0, W, H);
+      C.draw(ctx, lines, st, t, W, H);
+      return cv.toDataURL("image/png");
+    });
+  };
+}
 
 /** The only requests the engine makes while rendering: live data */
 const LIVE_PATHS = /^\/social\/(calendar\/events|markets\/(quotes|news|photo))\?/;
@@ -41,6 +73,10 @@ const persist = {
 export default function StudioRenderPage() {
   useEffect(() => {
     const w = window as Win;
+    if (new URLSearchParams(location.search).get("mode") === "captions") {
+      captionsMode(w).then(() => { w.bogaReady = true; }, (e) => console.error("captions mode", e));
+      return;
+    }
     w.bogaBoot = async (initialState) => {
       const { bootStudio } = await import("@/studio/engine");
       let renderer: Renderer | null = null;

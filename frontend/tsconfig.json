@@ -30,8 +30,9 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    ".next-check/types/**/*.ts",
     ".next/types/**/*.ts",
-    ".next-check/types/**/*.ts"
+    ".next-phase0/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

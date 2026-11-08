@@ -16,6 +16,7 @@ import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
 import { hfImageModels, hfWhoami } from "./hf";
 import { trackClaude } from "./usage";
+import { NoAnthropicKey, parseJsonLoose } from "../footage/caption-style";
 
 export type Provider = "anthropic" | "groq";
 const LABEL: Record<Provider, string> = { anthropic: "Claude", groq: "Groq" };
@@ -206,8 +207,8 @@ export class AiService {
   }
   async models(p: Provider) { return { models: await this.listModels(p) }; }
 
-  private async complete(system: string, user: string, o: { maxTokens: number; json?: boolean; images?: Img[]; model?: string; feature?: string }) {
-    const s = await this.load(), p = s.provider, key = this.key(s, p);
+  private async complete(system: string, user: string, o: { maxTokens: number; json?: boolean; images?: Img[]; model?: string; feature?: string; provider?: Provider }) {
+    const s = await this.load(), p = o.provider ?? s.provider, key = this.key(s, p);
     if (!key) throw new BadRequestException(`Add a ${LABEL[p]} API key in Settings → AI first`);
     const model = o.model ?? (p === "anthropic" ? s.anthropicModel : s.groqModel);
     const imgs = o.images ?? [];
@@ -247,6 +248,36 @@ Only state facts that appear on the slides; never invent figures, dates or promi
     const m = d.image && /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(d.image);
     const { text, model } = await this.complete(system, user, { maxTokens: 1500, images: m ? [{ media: m[1], data: m[2] }] : [], feature: "Post captions" });
     return { caption: text.trim().replace(/^["“]|["”]$/g, ""), model };
+  }
+
+  /**
+   * Describes the burned-in subtitle style of a reference video from crops of its caption band (`images[0]` is a whole frame,
+   * the others are crops of the band `band`, fractions of the frame height). Always Claude: the settings model when it can read
+   * images, else claude-sonnet-5-5. Throws NoAnthropicKey without a Claude key. Colors are not asked: the caller samples them from the pixels.
+   */
+  async captionStyle(images: Img[], sampled: { text: string | null; highlight: string | null }, actor: Actor, band?: [number, number]): Promise<{ style: Record<string, any>; model: string }> {
+    const s = await this.load();
+    if (!this.key(s, "anthropic")) throw new NoAnthropicKey();
+    const model = /^claude-(?!2|instant)/i.test(s.anthropicModel ?? "") ? s.anthropicModel : "claude-sonnet-5-5";
+    const [b0, b1] = band ? [Math.max(0, band[0] - 0.05), Math.min(1, band[1] + 0.05)] : [0, 1];
+    const system = `You are a motion designer who copies the burned-in subtitle style of a video. Reply with one JSON object only: no prose, no code fence.`;
+    const user = `Image 1 is a whole frame of the reference video. The other ${Math.max(0, images.length - 1)} images are crops of the caption band, taken at full resolution from different moments; in the whole frame the band runs from ${b0.toFixed(3)} to ${b1.toFixed(3)} of the frame height (0 = top, 1 = bottom).${sampled.text ? ` The measured text color is ${sampled.text}.` : ""}${sampled.highlight ? ` The measured color of the emphasized word is ${sampled.highlight}.` : ""}
+Reply with one JSON object that has exactly these keys, in this order (the values below only show the types):
+{"font":"sans-bold","size":0.045,"weight":800,"case":"none","stroke":null,"shadow":null,"box":null,"highlight":{"mode":"box","textLight":false,"radius":0.2},"y":0.65,"maxWords":3,"maxChars":22,"lines":1,"anim":"none"}
+Every key must be present; "highlight" is always an object and "y" is always a top-level number. Meaning of each key:
+- font: the closest class: "sans-bold" (heavy rounded or grotesque), "sans" (regular grotesque), "serif" (letters with serifs), "display" (decorative or condensed poster lettering).
+- size: font size as a fraction of the FULL frame height. The cap height of the letters is about 0.7 x the font size: measure a capital letter, divide by 0.7, convert to a fraction of the full frame height. Typical 0.03 to 0.07.
+- weight: 300 to 900. case: "none" or "upper".
+- stroke: null, or {"width": n} for an outline around the letters (fraction of the frame height, typical 0.003 to 0.008).
+- shadow: null, or {"blur": n, "y": n} for a soft drop shadow (fractions of the frame height). Its "y" is the shadow offset and has nothing to do with the top-level "y".
+- box: null, or {"radius": n, "pad": n} for a background box behind the WHOLE caption line, not behind one word (radius 0 to 0.5 relative to the box height, pad a fraction of the frame height).
+- highlight: one word emphasized differently from the others. mode "box" = a colored box behind that word, "color" = only that word's color changes, "scale" = that word is larger, "none" = no emphasis. textLight = true when the emphasized word's letters are light (for example white on a colored box), false when they are dark. radius = corner radius of the word box relative to its height, 0 to 0.5.
+- y: the vertical CENTER of the caption line as a fraction of the FULL frame height, 0 = top edge, 1 = bottom edge. Measure it on image 1: find the line of text, take the middle of its letters, divide by the image height. Cross-check with the crops: they start at ${b0.toFixed(3)} and end at ${b1.toFixed(3)} of the frame height, so y = ${b0.toFixed(3)} + (position of the line center inside the crop, 0 to 1) x ${(b1 - b0).toFixed(3)}. The band is wider than the text and may show body, clothes or background above and below the line: the caption is the text, not the middle of the band.
+- maxWords: how many words are visible at once on the line, counted across the images. maxChars: the most characters visible on one line. lines: 1 or 2.
+- anim: "pop" only when the emphasized word looks larger in some images than in others, "fade" only if you can see it fading, otherwise "none".
+Describe only what is visible. When unsure, use the most common value.`;
+    const { text } = await this.complete(system, user, { maxTokens: 700, json: true, images, model, provider: "anthropic", feature: "Footage captions" });
+    return { style: (parseJsonLoose(text) as Record<string, any>) ?? {}, model };
   }
 
   /** One spoken line per scene, as many words as fit the scene at a natural pace (about 2.5 words a second) */
