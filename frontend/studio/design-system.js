@@ -315,3 +315,31 @@ export function lintText(issues, nameOf) {
   if (!arr(issues).length) return 'No issues.';
   return issues.map((i) => `- ${(i.layerId && nameOf(i.layerId)) || 'Slide'}: ${i.detail}`).join('\n');
 }
+
+// ---- Pattern wireframes (Brand kit) ----
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/** Height of a 100-wide canvas for a ratio such as '4:5' or '1920x1080'; 125 (4:5) when it cannot be read. */
+function wireHeight(ratio) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*[:x×]\s*(\d+(?:\.\d+)?)\s*$/i.exec(String(ratio || ''));
+  const w = m ? Number(m[1]) : 0;
+  const h = m ? Number(m[2]) : 0;
+  return w > 0 && h > 0 ? round2((100 * h) / w) : 125;
+}
+
+/** A pattern drawn as an inline SVG wireframe: the canvas as a path, then one rect per slot, on a 100-wide canvas. */
+export function patternWire(pattern, { esc }) {
+  const H = wireHeight(pattern && pattern.ratio);
+  const rects = arr(pattern && pattern.slots).map((s) => {
+    s = obj(s);
+    const role = oneOf(s.role, SLOT_ROLES, 'shape');
+    const x = round2(num(s.x, 0, 1) * 100);
+    const y = round2(num(s.y, 0, 1) * H);
+    const w = round2(num(s.w, 0, 1) * 100);
+    const h = round2(num(s.h, 0, 1) * H);
+    return `<rect class="ds-slot ds-${role}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"><title>${esc(role)}</title></rect>`;
+  }).join('');
+  return `<svg class="ds-wire" viewBox="0 0 100 ${H}" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">`
+    + `<path class="ds-canvas" d="M0 0H100V${H}H0Z"></path>${rects}</svg>`;
+}

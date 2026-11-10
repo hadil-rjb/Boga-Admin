@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickSources, sourceSig, MAX_SOURCES, tidySystem, mergeRules, forAgent, LIMITS, lintSlide, lintText } from './design-system.js';
+import { pickSources, sourceSig, MAX_SOURCES, tidySystem, mergeRules, forAgent, LIMITS, lintSlide, lintText, patternWire } from './design-system.js';
 
 const tpl = (id, at) => ({ id, name: 'T ' + id, ratio: '4:5', bg: '#000', layers: [], at });
 const des = (id, status, at) => ({ id, name: 'D ' + id, ratio: '1:1', status, at, pages: [{ bg: '#fff', layers: [] }] });
@@ -153,5 +153,20 @@ describe('lintText', () => {
   it('says so when there is nothing, and lists issues by layer name', () => {
     expect(lintText([], () => '')).toBe('No issues.');
     expect(lintText([{ layerId: 't', rule: 'size', detail: 'Too small.' }, { layerId: '', rule: 'logo', detail: 'No logo.' }], (id) => (id === 't' ? 'Headline' : ''))).toBe('- Headline: Too small.\n- Slide: No logo.');
+  });
+});
+
+describe('patternWire', () => {
+  const esc = (s) => String(s).replace(/</g, '&lt;');
+  it('draws one rect per slot on a canvas with the pattern\'s shape', () => {
+    const svg = patternWire({ ratio: '4:5', slots: [{ role: 'headline', x: 0.1, y: 0.3, w: 0.8, h: 0.2 }, { role: 'logo', x: 0.1, y: 0.06, w: 0.2, h: 0.05 }] }, { esc });
+    expect(svg).toContain('viewBox="0 0 100 125"');
+    expect(svg.match(/<rect /g)).toHaveLength(2);
+    expect(svg).toContain('class="ds-slot ds-headline"');
+    expect(svg).toContain('x="10" y="37.5" width="80" height="25"');
+  });
+  it('reads pixel ratios and falls back to 4:5', () => {
+    expect(patternWire({ ratio: '1920x1080', slots: [] }, { esc })).toContain('viewBox="0 0 100 56.25"');
+    expect(patternWire({ ratio: '?', slots: [] }, { esc })).toContain('viewBox="0 0 100 125"');
   });
 });
