@@ -174,3 +174,144 @@ export function forAgent(system) {
   }
   return out;
 }
+
+// ---- The design check ----
+// Sizes and distances in a system are for a 1080 px wide canvas; the check scales them by canvas.w / 1080.
+
+const DELTA_E_MAX = 12;
+const CONTRAST_NORMAL = 4.5;
+const CONTRAST_LARGE = 3;
+const LARGE_TEXT_PX = 28;
+
+function plainHex(v) {
+  if (typeof v !== 'string') return null;
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v.trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
+  return '#' + h.toUpperCase();
+}
+
+function rgbOf(hexStr) {
+  const h = plainHex(hexStr);
+  if (!h) return null;
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+}
+
+const linear = (c) => {
+  const s = c / 255;
+  return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+};
+
+function labOf(rgb) {
+  const [r, g, b] = rgb.map(linear);
+  const x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+  const y = 0.2126729 * r + 0.7151522 * g + 0.072175 * b;
+  const z = (0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883;
+  const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116);
+  const fx = f(x), fy = f(y), fz = f(z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+const deltaE = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+const luminance = (rgb) => {
+  const [r, g, b] = rgb.map(linear);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+function contrast(a, b) {
+  const la = luminance(a), lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+const inBox = (l, x, y) => x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h;
+
+export function lintSlide(page, canvas, brand, system) {
+  const issues = [];
+  const k = (canvas && canvas.w > 0 ? canvas.w : 1080) / 1080;
+  const W = canvas && canvas.w > 0 ? canvas.w : 1080;
+  const H = canvas && canvas.h > 0 ? canvas.h : 1080;
+  const layers = arr(page && page.layers);
+  const sys = system && typeof system === 'object' ? system : null;
+  const fonts = obj(brand && brand.fonts);
+
+  const allowedFonts = new Set(
+    [fonts.heading, fonts.body, fonts.arabic, ...arr(sys && sys.type).map((t) => t.font)]
+      .filter((f) => typeof f === 'string' && f).map((f) => f.toLowerCase()),
+  );
+  const palette = [
+    ...arr(brand && brand.colors).map((c) => c && c.hex),
+    ...arr(sys && sys.colors && sys.colors.roles).map((r) => r && r.hex),
+  ].map(rgbOf).filter(Boolean).map(labOf);
+
+  const types = arr(sys && sys.type);
+  const sizeLo = types.length ? Math.min(...types.map((t) => t.sizeMin)) : 0;
+  const sizeHi = types.length ? Math.max(...types.map((t) => t.sizeMax)) : 0;
+  const margin = sys && sys.layout && sys.layout.margin > 0 ? sys.layout.margin : 0;
+  const m = margin * k - 1;
+  const corner = sys && sys.layout && sys.layout.logo && sys.layout.logo.corner;
+
+  const live = layers.filter((l) => l && !l.hidden);
+  const pageBg = rgbOf(page && page.bg);
+
+  const offPalette = (value) => {
+    const rgb = rgbOf(value);
+    if (!rgb) return false;
+    const hexVal = plainHex(value);
+    if (hexVal === '#000000' || hexVal === '#FFFFFF') return false;
+    const lab = labOf(rgb);
+    return !palette.some((p) => deltaE(lab, p) <= DELTA_E_MAX);
+  };
+
+  layers.forEach((l, i) => {
+    if (!l || l.hidden || l.locked || l.feed) return;
+    const id = l.id;
+    if (l.type !== 'text') {
+      if (offPalette(l.fill)) issues.push({ layerId: id, rule: 'colour', detail: `Fill ${plainHex(l.fill)} is not in the brand palette.` });
+      return;
+    }
+    if (typeof l.font === 'string' && l.font && !allowedFonts.has(l.font.toLowerCase())) {
+      issues.push({ layerId: id, rule: 'font', detail: `Font ${l.font} is not one of the brand's fonts.` });
+    }
+    if (types.length && typeof l.size === 'number') {
+      const lo = sizeLo * k, hi = sizeHi * k;
+      if (l.size < lo) issues.push({ layerId: id, rule: 'size', detail: `Text is ${Math.round(l.size)} px; the brand's smallest is ${Math.round(lo)} px.` });
+      else if (l.size > hi) issues.push({ layerId: id, rule: 'size', detail: `Text is ${Math.round(l.size)} px; the brand's largest is ${Math.round(hi)} px.` });
+    }
+    if (offPalette(l.color)) issues.push({ layerId: id, rule: 'colour', detail: `Text colour ${plainHex(l.color)} is not in the brand palette.` });
+    if (margin > 0 && (l.x < m || l.y < m || l.x + l.w > W - m || l.y + l.h > H - m)) {
+      issues.push({ layerId: id, rule: 'margin', detail: `Text is closer than the brand's ${Math.round(margin * k)} px margin to the edge.` });
+    }
+    const fg = rgbOf(l.color);
+    if (fg) {
+      const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+      let back = null;
+      let known = true;
+      for (let j = i - 1; j >= 0; j--) {
+        const b = layers[j];
+        if (!b || b.hidden || typeof b.fill !== 'string' || !b.fill.trim() || !inBox(b, cx, cy)) continue;
+        back = rgbOf(b.fill);
+        known = !!back;
+        break;
+      }
+      if (back === null && known) back = pageBg;
+      if (back) {
+        const ratio = contrast(fg, back);
+        const need = l.size / k >= LARGE_TEXT_PX ? CONTRAST_LARGE : CONTRAST_NORMAL;
+        if (ratio < need) {
+          issues.push({ layerId: id, rule: 'contrast', detail: `Text contrast is ${ratio.toFixed(1)} to 1; it needs at least ${need} to 1.` });
+        }
+      }
+    }
+  });
+
+  if (corner && corner !== 'none' && !live.some((l) => /logo/i.test(l.name || ''))) {
+    issues.push({ layerId: '', rule: 'logo', detail: `The slide has no logo; the brand places it in the ${corner} corner.` });
+  }
+  return issues;
+}
+
+export function lintText(issues, nameOf) {
+  if (!arr(issues).length) return 'No issues.';
+  return issues.map((i) => `- ${(i.layerId && nameOf(i.layerId)) || 'Slide'}: ${i.detail}`).join('\n');
+}

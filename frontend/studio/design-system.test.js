@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickSources, sourceSig, MAX_SOURCES, tidySystem, mergeRules, forAgent, LIMITS } from './design-system.js';
+import { pickSources, sourceSig, MAX_SOURCES, tidySystem, mergeRules, forAgent, LIMITS, lintSlide, lintText } from './design-system.js';
 
 const tpl = (id, at) => ({ id, name: 'T ' + id, ratio: '4:5', bg: '#000', layers: [], at });
 const des = (id, status, at) => ({ id, name: 'D ' + id, ratio: '1:1', status, at, pages: [{ bg: '#fff', layers: [] }] });
@@ -99,5 +99,59 @@ describe('forAgent at every limit', () => {
     expect(JSON.stringify(a).length).toBeLessThan(6000);
     expect(a.layout.patterns.length).toBeLessThan(LIMITS.patterns);
     expect(s.layout.patterns).toHaveLength(LIMITS.patterns);
+  });
+});
+
+const brand = { colors: [{ hex: '#E8343F' }, { hex: '#0B1220' }, { hex: '#F8FAFC' }], fonts: { heading: 'Plus Jakarta Sans', body: 'Inter', arabic: 'Cairo' } };
+const sys = tidySystem({
+  type: [{ role: 'headline', font: 'Plus Jakarta Sans', weight: 700, sizeMin: 64, sizeMax: 110 }, { role: 'body', font: 'Inter', weight: 400, sizeMin: 28, sizeMax: 36 }],
+  colors: { roles: [{ hex: '#94A3B8', role: 'muted', usage: '' }] },
+  layout: { margin: 72, gap: 24, align: 'left', logo: { corner: 'tl', width: 140 }, patterns: [] },
+});
+const text = (o) => ({ id: 't', type: 'text', name: 'Headline', x: 80, y: 300, w: 800, h: 120, font: 'Plus Jakarta Sans', size: 80, color: '#FFFFFF', ...o });
+const logo = { id: 'lg', type: 'image', name: 'Logo', x: 80, y: 80, w: 140, h: 40, fill: "url('x') center/contain no-repeat" };
+const page = (...layers) => ({ bg: '#0B1220', layers: [logo, ...layers] });
+const C = { w: 1080, h: 1350 };
+const rules = (p, c = C, s = sys) => lintSlide(p, c, brand, s).map((i) => i.rule);
+
+describe('lintSlide', () => {
+  it('passes an on-brand slide', () => { expect(lintSlide(page(text()), C, brand, sys)).toEqual([]); });
+  it('flags an off-brand font, a size outside the scale and an off-palette colour', () => {
+    expect(rules(page(text({ font: 'Comic Sans MS' })))).toEqual(['font']);
+    expect(rules(page(text({ size: 20 })))).toEqual(['size']);
+    expect(rules(page(text({ size: 200 })))).toEqual(['size']);
+    expect(rules(page(text({ color: '#22C55E' })))).toContain('colour');
+    expect(rules(page(text({ color: '#E93540' })))).toEqual([]);          // within delta E 12 of the brand red
+    expect(rules(page(text({ color: '#94A3B8' })))).toEqual([]);          // a system colour
+  });
+  it('flags text in the margin and weak contrast, using the layer under the text', () => {
+    expect(rules(page(text({ x: 20 })))).toEqual(['margin']);
+    expect(rules(page(text({ color: '#0B1220' })))).toEqual(['contrast']);
+    const card = { id: 'c', type: 'rect', name: 'Card', x: 72, y: 280, w: 900, h: 200, fill: '#F8FAFC' };
+    expect(rules(page(card, text({ color: '#0B1220' })))).toEqual([]);
+    expect(rules(page(card, text({ color: '#FFFFFF' })))).toEqual(['contrast']);
+    const photo = { ...card, fill: "url('p.jpg') center/cover" };
+    expect(rules(page(photo, text({ color: '#0B1220' })))).toEqual([]);   // unknown backdrop: skipped
+  });
+  it('scales sizes and margins on a canvas that is not 1080 wide', () => {
+    const wide = { w: 1920, h: 1080 };
+    expect(rules(page(text({ x: 128, y: 300, w: 1000, size: 140 })), wide)).toEqual([]);
+    expect(rules(page(text({ x: 100, y: 300, w: 1000, size: 140 })), wide)).toEqual(['margin']);
+    expect(rules(page(text({ x: 128, y: 300, w: 1000, size: 40 })), wide)).toEqual(['size']);
+  });
+  it('reports a missing logo once, and ignores hidden, locked and live layers', () => {
+    const noLogo = { bg: '#0B1220', layers: [text()] };
+    expect(lintSlide(noLogo, C, brand, sys)).toEqual([{ layerId: '', rule: 'logo', detail: expect.any(String) }]);
+    expect(rules(page(text({ font: 'Arial', hidden: true }), text({ font: 'Arial', locked: true }), text({ font: 'Arial', feed: 'price' })))).toEqual([]);
+  });
+  it('without a system, checks font, colour and contrast against the brand kit only', () => {
+    expect(rules({ bg: '#0B1220', layers: [text({ size: 12, x: 0 })] }, C, null)).toEqual([]);
+    expect(rules({ bg: '#0B1220', layers: [text({ font: 'Arial' })] }, C, null)).toEqual(['font']);
+  });
+});
+describe('lintText', () => {
+  it('says so when there is nothing, and lists issues by layer name', () => {
+    expect(lintText([], () => '')).toBe('No issues.');
+    expect(lintText([{ layerId: 't', rule: 'size', detail: 'Too small.' }, { layerId: '', rule: 'logo', detail: 'No logo.' }], (id) => (id === 't' ? 'Headline' : ''))).toBe('- Headline: Too small.\n- Slide: No logo.');
   });
 });
