@@ -124,6 +124,16 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: "select_layer", description: "Select a layer in the editor so the user sees it (or pass no id to deselect).", parameters: { type: "object", properties: { id: str("Layer id") } } },
   { name: "get_slide", description: "Read the layers of another slide (the current slide is already in the context).", parameters: { type: "object", properties: { index: num("Slide number, 1-based") }, required: ["index"] } },
   { name: "view_slide", description: "Look at a picture of a slide as it renders now, to check the result of your changes.", parameters: { type: "object", properties: { index: num("Slide number, 1-based (default: current)") } } },
+  {
+    name: "view_reference",
+    description: "Look at one of the brand's reference designs (ids in brand.references): a picture and its layers. Use it to see how the brand handles a layout before building your own.",
+    parameters: { type: "object", properties: { id: str("Reference id") }, required: ["id"] },
+  },
+  {
+    name: "check_design",
+    description: "Check a slide against the brand's design system: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo. Call it before you finish and fix what it reports.",
+    parameters: { type: "object", properties: { page } },
+  },
 ];
 
 export const AGENT_PROMPT = `You are the design agent inside Boğa Studio, a social media post editor. You edit the user's open design with tools, like a skilled designer working in the editor.
@@ -137,6 +147,21 @@ How to work:
 - Live data slides (calendar, price alert, news) refresh their own texts; restyle them freely but don't rewrite their live texts.
 - If the request is unclear or impossible, say so briefly and suggest what you can do.
 - Finish with one or two short sentences saying what you changed. No markdown headings, no lists unless asked. Answer in the user's language.`;
+
+/** Added to the prompt only when the brand has a design system in the context */
+export const DESIGN_SYSTEM_PROMPT = `The brand has a design system (brand.designSystem in the context):
+- Follow the design system. It is how this brand designs: the brand kit's colours and fonts are the ingredients, the design system is the recipe.
+- Sizes and distances are for a 1080 px wide canvas. Multiply them by width / 1080 for the canvas you are on.
+- For a new design, choose the layout pattern whose "when" fits the request and build its slots, adapting them to the canvas ratio. If no pattern fits, compose from the type scale, the margins and the colour pairs.
+- Use only the listed colour pairs for text on backgrounds.
+- When unsure how the brand handles something, look at a reference with view_reference.
+- Before you finish, call check_design and fix what it reports. If you keep a violation on purpose, say so.
+- The user's request wins over the system when they conflict. Say what you departed from.`;
+
+/** The agent's system prompt: today's prompt, plus the design system section when the context carries one */
+export function agentSystemPrompt(context: string): string {
+  return context.includes('"designSystem":{') ? `${AGENT_PROMPT}\n\n${DESIGN_SYSTEM_PROMPT}` : AGENT_PROMPT;
+}
 
 /* ---------- conversation: provider-neutral, as the studio sends it ---------- */
 export type AgentCall = { id: string; name: string; input: Record<string, unknown> };

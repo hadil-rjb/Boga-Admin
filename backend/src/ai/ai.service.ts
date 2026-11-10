@@ -10,7 +10,7 @@ import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
 import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto } from "./dto/ai.dto";
-import { AGENT_PROMPT, AGENT_TOOLS, AgentCall, cleanMessages, toAnthropic, toOpenAi } from "./agent";
+import { AGENT_TOOLS, AgentCall, agentSystemPrompt, cleanMessages, toAnthropic, toOpenAi } from "./agent";
 import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
@@ -89,7 +89,7 @@ export class AiService {
     if (!key) throw new BadRequestException(`Add a ${LABEL[p]} API key in Settings → AI first`);
     const model = d.model || (p === "anthropic" ? s.anthropicModel : s.groqModel);
     const msgs = cleanMessages(d.messages);
-    const system = `${AGENT_PROMPT}\n\nWorkspace brief (audience, tone, goals): ${clip(s.brief, 1500) || "none"}\nDefault language for copy: ${s.language || "English"}\n\nThe editor right now (JSON):\n${d.context}`;
+    const system = `${agentSystemPrompt(d.context)}\n\nWorkspace brief (audience, tone, goals): ${clip(s.brief, 1500) || "none"}\nDefault language for copy: ${s.language || "English"}\n\nThe editor right now (JSON):\n${d.context}`;
 
     if (p === "anthropic") {
       const res = await this.http("https://api.anthropic.com/v1/messages", {
