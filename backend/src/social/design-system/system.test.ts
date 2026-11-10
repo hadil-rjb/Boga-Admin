@@ -3,6 +3,7 @@ import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { tidy, systemFromAnswer, SYSTEM_PROMPT } from './system';
 import { AnalyzeSystemDto } from './system.controller';
+import fixture from './tidy.fixture.json';
 
 const good = () => ({
   summary: 'Bold and dark.',
@@ -32,6 +33,11 @@ describe('tidy', () => {
     expect(s.layout.patterns[1].sourceId).toBe('');
     expect(s.rules).toHaveLength(16);
   });
+  it('tidies the shared fixture exactly as the studio does', () => {
+    const s = tidy(fixture.raw, fixture.sourceIds);
+    expect(s.rules.every((r) => r.by === 'ai')).toBe(true);
+    expect(s).toEqual(fixture.expected);
+  });
   it('refuses an answer with nothing usable', () => {
     expect(() => tidy({ summary: 'x' }, [])).toThrow('empty');
     expect(() => tidy(null, [])).toThrow('empty');
@@ -47,6 +53,12 @@ describe('AnalyzeSystemDto', () => {
     expect(await check({ kit, references: Array.from({ length: 13 }, (_, i) => ref({ id: 't' + i })) })).toBeGreaterThan(0);
     expect(await check({ kit, references: [ref({ id: '../x' })] })).toBeGreaterThan(0);
     expect(await check({ kit, references: [ref({ image: 'https://x/y.png' })] })).toBeGreaterThan(0);
+  });
+  it('accepts up to 12 logo names in the kit, each at most 60 characters', async () => {
+    expect(await check({ kit: { ...kit, logos: ['Boğa icon'] }, references: [ref()] })).toBe(0);
+    expect(await check({ kit: { ...kit, logos: Array.from({ length: 13 }, (_, i) => 'Logo ' + i) }, references: [ref()] })).toBeGreaterThan(0);
+    expect(await check({ kit: { ...kit, logos: ['x'.repeat(61)] }, references: [ref()] })).toBeGreaterThan(0);
+    expect(await check({ kit: { ...kit, logos: [3] }, references: [ref()] })).toBeGreaterThan(0);
   });
 });
 describe('SYSTEM_PROMPT', () => {

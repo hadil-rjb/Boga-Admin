@@ -11,10 +11,18 @@ export const MAX_SOURCES = 12;
 
 const byNewest = (a, b) => (b.at || 0) - (a.at || 0);
 
-/** The references to learn from: { kind, id, name, ratio, at, live }. */
+/** A short hash of a page's background and layers (32-bit FNV-1a, base 36): changes when its content changes. */
+export function sourceRev(page) {
+  const s = JSON.stringify([page && page.bg, page && page.layers]) || '';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+
+/** The references to learn from: { kind, id, name, ratio, at, live, rev }. `at` orders them; `rev` follows their content. */
 export function pickSources(brand, designs, posts) {
   const templates = ((brand && brand.templates) || []).slice().sort(byNewest).map((t) => ({
-    kind: 'template', id: t.id, name: t.name, ratio: t.ratio, at: t.at || 0, live: !!t.live,
+    kind: 'template', id: t.id, name: t.name, ratio: t.ratio, at: t.at || 0, live: !!t.live, rev: sourceRev(t),
   }));
   const published = new Set((posts || []).filter((p) => p.status === 'Published').map((p) => p.d));
   const picked = (designs || [])
@@ -22,13 +30,14 @@ export function pickSources(brand, designs, posts) {
     .sort(byNewest)
     .map((d) => ({
       kind: 'design', id: d.id, name: d.name, ratio: d.ratio, at: d.at || 0, live: !!(d.pages && d.pages[0] && d.pages[0].live),
+      rev: sourceRev(d.pages && d.pages[0] ? d.pages[0] : d),
     }));
   return templates.concat(picked).slice(0, MAX_SOURCES);
 }
 
-/** A string that changes when a reference is edited, added or removed. */
+/** A string that changes when a reference's content is edited, or a reference is added or removed; not when it is only saved again. */
 export function sourceSig(sources) {
-  return (sources || []).map((s) => s.id + ':' + (s.at || 0)).join('|');
+  return (sources || []).map((s) => s.id + ':' + (s.rev || '')).join('|');
 }
 
 export const LIMITS = { type: 5, roles: 8, pairs: 6, gradients: 3, patterns: 8, slots: 10, rules: 16 };
@@ -175,6 +184,14 @@ export function forAgent(system) {
   return out;
 }
 
+/** What a brand adds to the agent's context: its system and the references the system was learned from, or nothing at all. */
+export function agentExtras(system) {
+  const designSystem = forAgent(system);
+  if (!designSystem) return {};
+  const references = arr(system.sources).map((s) => obj(s)).map(({ id, kind, name, ratio }) => ({ id, kind, name, ratio }));
+  return { designSystem, references };
+}
+
 // ---- The design check ----
 // Sizes and distances in a system are for a 1080 px wide canvas; the check scales them by canvas.w / 1080.
 
@@ -242,7 +259,11 @@ export function lintSlide(page, canvas, brand, system) {
   const palette = [
     ...arr(brand && brand.colors).map((c) => c && c.hex),
     ...arr(sys && sys.colors && sys.colors.roles).map((r) => r && r.hex),
+    ...arr(sys && sys.colors && sys.colors.pairs).flatMap((p) => (p ? [p.bg, p.text, p.accent] : [])),
   ].map(rgbOf).filter(Boolean).map(labOf);
+  // A layer is the logo when it is named so, or when it shows one of the brand's logo images (the agent names it after the file).
+  const logoSrcs = arr(brand && brand.logos).map((l) => l && l.src).filter((s) => typeof s === 'string' && s);
+  const isLogo = (l) => /logo/i.test(l.name || '') || (typeof l.fill === 'string' && logoSrcs.some((s) => l.fill.includes(s)));
 
   const types = arr(sys && sys.type);
   const sizeLo = types.length ? Math.min(...types.map((t) => t.sizeMin)) : 0;
@@ -256,7 +277,7 @@ export function lintSlide(page, canvas, brand, system) {
 
   const offPalette = (value) => {
     const rgb = rgbOf(value);
-    if (!rgb) return false;
+    if (!rgb || !palette.length) return false;
     const hexVal = plainHex(value);
     if (hexVal === '#000000' || hexVal === '#FFFFFF') return false;
     const lab = labOf(rgb);
@@ -270,7 +291,7 @@ export function lintSlide(page, canvas, brand, system) {
       if (offPalette(l.fill)) issues.push({ layerId: id, rule: 'colour', detail: `Fill ${plainHex(l.fill)} is not in the brand palette.` });
       return;
     }
-    if (typeof l.font === 'string' && l.font && !allowedFonts.has(l.font.toLowerCase())) {
+    if (allowedFonts.size && typeof l.font === 'string' && l.font && !allowedFonts.has(l.font.toLowerCase())) {
       issues.push({ layerId: id, rule: 'font', detail: `Font ${l.font} is not one of the brand's fonts.` });
     }
     if (types.length && typeof l.size === 'number') {
@@ -305,7 +326,7 @@ export function lintSlide(page, canvas, brand, system) {
     }
   });
 
-  if (corner && corner !== 'none' && !live.some((l) => /logo/i.test(l.name || ''))) {
+  if (corner && corner !== 'none' && !live.some(isLogo)) {
     issues.push({ layerId: '', rule: 'logo', detail: `The slide has no logo; the brand places it in the ${corner} corner.` });
   }
   return issues;

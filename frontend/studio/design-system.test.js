@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { pickSources, sourceSig, MAX_SOURCES, tidySystem, mergeRules, forAgent, LIMITS, lintSlide, lintText, patternWire } from './design-system.js';
+import { readFileSync } from 'node:fs';
+import { pickSources, sourceSig, sourceRev, MAX_SOURCES, tidySystem, mergeRules, forAgent, agentExtras, LIMITS, lintSlide, lintText, patternWire } from './design-system.js';
+
+const FIXTURE = JSON.parse(readFileSync(new URL('../../backend/src/social/design-system/tidy.fixture.json', import.meta.url), 'utf8'));
 
 const tpl = (id, at) => ({ id, name: 'T ' + id, ratio: '4:5', bg: '#000', layers: [], at });
 const des = (id, status, at) => ({ id, name: 'D ' + id, ratio: '1:1', status, at, pages: [{ bg: '#fff', layers: [] }] });
@@ -22,11 +25,33 @@ describe('pickSources', () => {
     expect(s).toMatchObject({ kind: 'template', id: 't1', name: 'T t1', ratio: '4:5', live: true });
   });
 });
+describe('sourceRev', () => {
+  it('is a short stable string that follows the page content', () => {
+    const p = { bg: '#000', layers: [{ id: 'a', type: 'text', text: 'Hi' }] };
+    expect(sourceRev(p)).toMatch(/^[0-9a-z]+$/);
+    expect(sourceRev(p)).toBe(sourceRev(JSON.parse(JSON.stringify(p))));
+    expect(sourceRev({ ...p, layers: [{ id: 'a', type: 'text', text: 'Hello' }] })).not.toBe(sourceRev(p));
+    expect(sourceRev({ ...p, bg: '#fff' })).not.toBe(sourceRev(p));
+    expect(typeof sourceRev(undefined)).toBe('string');
+  });
+});
 describe('sourceSig', () => {
-  it('changes when a source is edited, added or removed', () => {
-    const a = [{ id: 't1', at: 1 }, { id: 'd2', at: 3 }];
-    expect(sourceSig(a)).toBe('t1:1|d2:3');
-    expect(sourceSig([{ id: 't1', at: 2 }, { id: 'd2', at: 3 }])).not.toBe(sourceSig(a));
+  const sig = (brand, designs) => sourceSig(pickSources(brand, designs, []));
+  const t = (text, at) => ({ ...tpl('t1', at), layers: [{ id: 'a', type: 'text', text }] });
+  it('changes when a layer\'s text changes, and when a source is added or removed', () => {
+    const a = sig({ templates: [t('Hi', 1)] }, [des('d2', 'Approved', 3)]);
+    expect(sig({ templates: [t('Hello', 1)] }, [des('d2', 'Approved', 3)])).not.toBe(a);
+    expect(sig({ templates: [t('Hi', 1)] }, [])).not.toBe(a);
+    expect(sig({ templates: [t('Hi', 1)] }, [des('d2', 'Approved', 3), des('d3', 'Approved', 1)])).not.toBe(a);
+    const d = des('d2', 'Approved', 3); d.pages[0].layers = [{ id: 'x', type: 'text', text: 'One' }];
+    const d2 = des('d2', 'Approved', 3); d2.pages[0].layers = [{ id: 'x', type: 'text', text: 'Two' }];
+    expect(sig({}, [d])).not.toBe(sig({}, [d2]));
+  });
+  it('does not change when only the save time changes', () => {
+    expect(sig({ templates: [t('Hi', 1)] }, [des('d2', 'Approved', 3)])).toBe(sig({ templates: [t('Hi', 9)] }, [des('d2', 'Approved', 99)]));
+    expect(sourceSig([{ id: 't1', at: 1, rev: 'r' }])).toBe(sourceSig([{ id: 't1', at: 2, rev: 'r' }]));
+  });
+  it('is empty for no sources', () => {
     expect(sourceSig([])).toBe('');
     expect(sourceSig(undefined)).toBe('');
   });
@@ -64,6 +89,12 @@ describe('tidySystem', () => {
     expect(s.layout.patterns).toEqual([]);
   });
 });
+describe('tidySystem on the shared fixture', () => {
+  it('gives the same result as the server\'s tidy', () => {
+    const s = tidySystem(FIXTURE.raw, FIXTURE.sourceIds);
+    expect({ ...s, rules: s.rules.map((r) => ({ ...r, by: r.by || 'ai' })) }).toEqual(FIXTURE.expected);
+  });
+});
 describe('mergeRules', () => {
   it('keeps the user\'s rules, replaces the AI\'s, and drops duplicates', () => {
     const old = [{ text: 'Never centre body text', kind: 'dont', by: 'user' }, { text: 'Old AI rule', kind: 'do', by: 'ai' }];
@@ -80,6 +111,21 @@ describe('forAgent', () => {
     expect(a.type).toHaveLength(1);
     expect(JSON.stringify(a).length).toBeLessThan(6000);
     expect(forAgent(undefined)).toBeNull();
+  });
+});
+describe('agentExtras', () => {
+  it('is empty without a system, so the context has no designSystem key', () => {
+    expect(agentExtras(undefined)).toEqual({});
+    expect(agentExtras(null)).toEqual({});
+    expect(JSON.stringify({ brand: { name: 'B', ...agentExtras(undefined) } })).not.toContain('designSystem');
+  });
+  it('carries the system for the agent and its references with four fields each', () => {
+    const s = { ...tidySystem(base(), ['t1']), v: 1, at: 5, sig: 'x', sources: [{ kind: 'template', id: 't1', name: 'T', ratio: '4:5', at: 3, rev: 'r', live: true }] };
+    const x = agentExtras(s);
+    expect(Object.keys(x).sort()).toEqual(['designSystem', 'references']);
+    expect(x.designSystem).toEqual(forAgent(s));
+    expect(x.references).toEqual([{ id: 't1', kind: 'template', name: 'T', ratio: '4:5' }]);
+    expect(JSON.stringify({ brand: { name: 'B', ...x } })).toContain('"designSystem":{');
   });
 });
 describe('forAgent at every limit', () => {
@@ -143,6 +189,24 @@ describe('lintSlide', () => {
     const noLogo = { bg: '#0B1220', layers: [text()] };
     expect(lintSlide(noLogo, C, brand, sys)).toEqual([{ layerId: '', rule: 'logo', detail: expect.any(String) }]);
     expect(rules(page(text({ font: 'Arial', hidden: true }), text({ font: 'Arial', locked: true }), text({ font: 'Arial', feed: 'price' })))).toEqual([]);
+  });
+  it('accepts a colour that is only in one of the system\'s pairs', () => {
+    const withPair = tidySystem({ ...sys, colors: { roles: [], pairs: [{ bg: '#0B1220', text: '#FDE68A', accent: '#22C55E' }] } });
+    expect(rules(page(text({ color: '#FDE68A' })), C, withPair)).toEqual([]);
+    expect(rules(page({ id: 'r', type: 'rect', name: 'Pill', x: 80, y: 600, w: 200, h: 60, fill: '#22C55E' }), C, withPair)).toEqual([]);
+    expect(rules(page(text({ color: '#FDE68A' })))).toContain('colour');
+  });
+  it('skips the font and colour rules when the brand kit and system list none', () => {
+    const bare = { fonts: {}, colors: [] };
+    const p = { bg: '#0B1220', layers: [text({ font: 'Comic Sans MS', color: '#22C55E' }), { id: 'r', type: 'rect', name: 'Box', x: 80, y: 600, w: 200, h: 60, fill: '#7C3AED' }] };
+    expect(lintSlide(p, C, bare, null).map((i) => i.rule)).toEqual([]);
+  });
+  it('counts a layer filled with a brand logo as the logo, whatever its name', () => {
+    const src = 'data:image/png;base64,QUJD';
+    const withLogo = { ...brand, logos: [{ id: 'l1', name: 'Boğa wordmark', kind: 'wordmark', src }, { id: 'l2', name: 'Text', kind: 'text' }] };
+    const mark = { id: 'm', type: 'image', name: 'Boğa wordmark', x: 80, y: 80, w: 140, h: 40, fill: `url(${src}) center/contain no-repeat` };
+    expect(lintSlide({ bg: '#0B1220', layers: [mark, text()] }, C, withLogo, sys)).toEqual([]);
+    expect(lintSlide({ bg: '#0B1220', layers: [{ ...mark, fill: "url('other.png') center/contain no-repeat" }, text()] }, C, withLogo, sys).map((i) => i.rule)).toEqual(['logo']);
   });
   it('without a system, checks font, colour and contrast against the brand kit only', () => {
     expect(rules({ bg: '#0B1220', layers: [text({ size: 12, x: 0 })] }, C, null)).toEqual([]);

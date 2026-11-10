@@ -131,7 +131,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   },
   {
     name: "check_design",
-    description: "Check a slide against the brand's design system: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo. Call it before you finish and fix what it reports.",
+    description: "Check a slide against the brand: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo.",
     parameters: { type: "object", properties: { page } },
   },
 ];
@@ -151,12 +151,15 @@ How to work:
 /** Added to the prompt only when the brand has a design system in the context */
 export const DESIGN_SYSTEM_PROMPT = `The brand has a design system (brand.designSystem in the context):
 - Follow the design system. It is how this brand designs: the brand kit's colours and fonts are the ingredients, the design system is the recipe.
+- Where the design system gives a value (margin, sizes, logo placement), it replaces the general guidance above.
 - Sizes and distances are for a 1080 px wide canvas. Multiply them by width / 1080 for the canvas you are on.
 - For a new design, choose the layout pattern whose "when" fits the request and build its slots, adapting them to the canvas ratio. If no pattern fits, compose from the type scale, the margins and the colour pairs.
+- When the canvas size is left to you, use the ratio of the pattern you chose (resize_canvas) before adding layers; keep a size the user chose.
 - Use only the listed colour pairs for text on backgrounds.
 - When unsure how the brand handles something, look at a reference with view_reference.
 - Before you finish, call check_design and fix what it reports. If you keep a violation on purpose, say so.
-- The user's request wins over the system when they conflict. Say what you departed from.`;
+- The user's request wins over the system when they conflict. Say what you departed from.
+- Mention a kept violation or a departure inside your closing sentences.`;
 
 /** The agent's system prompt: today's prompt, plus the design system section when the context carries one */
 export function agentSystemPrompt(context: string): string {

@@ -217,7 +217,7 @@ export function tidy(raw: unknown, sourceIds: string[]): System {
 }
 
 export type AnalyzeInput = {
-  kit: { name: string; industry?: string; voice?: string; colors: { name: string; hex: string }[]; fonts: { heading?: string; body?: string; arabic?: string } };
+  kit: { name: string; industry?: string; voice?: string; colors: { name: string; hex: string }[]; fonts: { heading?: string; body?: string; arabic?: string }; logos?: string[] };
   references: { kind: string; id: string; name: string; ratio: string; w: number; h: number; live?: boolean; image: string; layers: string }[];
 };
 

@@ -24,6 +24,8 @@ class KitDto {
   @IsOptional() @IsString() @MaxLength(2000) voice?: string;
   @IsArray() @ArrayMaxSize(12) @ValidateNested({ each: true }) @Type(() => KitColor) colors!: KitColor[];
   @ValidateNested() @Type(() => KitFonts) fonts!: KitFonts;
+  /** Names of the brand's logos, so the analysis can tell them apart in the layer lists */
+  @IsOptional() @IsArray() @ArrayMaxSize(12) @IsString({ each: true }) @MaxLength(60, { each: true }) logos?: string[];
 }
 
 class ReferenceDto {

@@ -14,6 +14,7 @@ import { NotionService } from "./notion/notion.service";
 import { PublisherService } from "./publishing/publisher.service";
 import { VersionsService } from "./versions.service";
 import { CommentsService } from "./comments.service";
+import { keepDesignSystem } from "./design-system/keep";
 
 type Item = Record<string, any> & { id: string };
 
@@ -138,9 +139,16 @@ export class WorkspaceService {
         const i = dto.brandOrder?.indexOf(id) ?? -1;
         return i >= 0 ? i : existing.get(id) ?? next++;
       };
+      // A kit sent without designSystem (a tab loaded before the analysis) keeps the stored one
+      const bare = dto.brands.filter((b) => b.kit && b.kit.designSystem === undefined).map((b) => b.id);
+      const systems = new Map<string, unknown>(
+        bare.length
+          ? (await this.brands.find({ _id: { $in: bare } }, { designSystem: 1 }).lean<{ _id: string; designSystem?: unknown }[]>()).map((b) => [b._id, b.designSystem])
+          : [],
+      );
       await this.brands.bulkWrite(
         dto.brands.map((b): AnyBulkWriteOperation => ({
-          replaceOne: { filter: { _id: b.id }, replacement: this.brandDoc(b, orderOf(b.id)), upsert: true },
+          replaceOne: { filter: { _id: b.id }, replacement: this.brandDoc({ ...b, kit: keepDesignSystem(b.kit, systems.get(b.id)) }, orderOf(b.id)), upsert: true },
         })),
         { ordered: false },
       );

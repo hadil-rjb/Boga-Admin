@@ -20,6 +20,15 @@ describe('agent design system', () => {
     expect(DESIGN_SYSTEM_PROMPT).toMatch(/check_design/);
     expect(DESIGN_SYSTEM_PROMPT).toMatch(/user's request wins/i);
   });
+  it('lets the values of the system replace the general guidance, sizes the canvas from the pattern, and reports departures', () => {
+    expect(DESIGN_SYSTEM_PROMPT).toMatch(/^- Where the design system gives a value \(margin, sizes, logo placement\), it replaces the general guidance above\.$/m);
+    expect(DESIGN_SYSTEM_PROMPT).toMatch(/^- When the canvas size is left to you, use the ratio of the pattern you chose \(resize_canvas\) before adding layers; keep a size the user chose\.$/m);
+    expect(DESIGN_SYSTEM_PROMPT).toMatch(/^- Mention a kept violation or a departure inside your closing sentences\.$/m);
+  });
+  it('describes check_design without pushing brands that have no system into an extra step', () => {
+    const d = AGENT_TOOLS.find((x) => x.name === 'check_design')!.description;
+    expect(d).toBe('Check a slide against the brand: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo.');
+  });
   it('accepts calls to the new tools in a conversation', () => {
     const m = cleanMessages([{ role: 'user', text: 'hi' }, { role: 'assistant', calls: [{ id: 'a1', name: 'check_design', input: {} }, { id: 'a2', name: 'nope', input: {} }] }]);
     expect((m[1] as any).calls.map((c: any) => c.name)).toEqual(['check_design']);

@@ -1,0 +1,463 @@
+{
+  "sourceIds": [
+    "t1",
+    "d2"
+  ],
+  "raw": {
+    "summary": "  Dark, bold and quiet.  ",
+    "type": [
+      {
+        "role": "headline",
+        "font": " Plus Jakarta Sans ",
+        "weight": 1200,
+        "sizeMin": 110,
+        "sizeMax": 64,
+        "lh": 5,
+        "ls": -50,
+        "upper": true,
+        "align": "center"
+      },
+      {
+        "role": "body",
+        "font": "Inter",
+        "weight": "400",
+        "sizeMin": 2,
+        "sizeMax": "36",
+        "lh": 1.4,
+        "ls": "x",
+        "upper": "yes",
+        "align": "justify"
+      },
+      {
+        "role": "kicker",
+        "font": "Inter",
+        "weight": 600,
+        "sizeMin": 20,
+        "sizeMax": 24
+      },
+      {
+        "role": "label",
+        "font": "",
+        "weight": 600,
+        "sizeMin": 20,
+        "sizeMax": 24
+      }
+    ],
+    "colors": {
+      "roles": [
+        {
+          "hex": "e8343f",
+          "role": "accent",
+          "usage": "Buttons and pills"
+        },
+        {
+          "hex": "#0b1220",
+          "role": "background",
+          "usage": ""
+        },
+        {
+          "hex": "#12345",
+          "role": "text",
+          "usage": "bad hex"
+        },
+        {
+          "hex": "red",
+          "role": "text",
+          "usage": "bad hex"
+        },
+        {
+          "hex": "#FFFFFF",
+          "role": "highlight",
+          "usage": "unknown role"
+        }
+      ],
+      "pairs": [
+        {
+          "bg": "#0b1220",
+          "text": "#ffffff",
+          "accent": "#e8343f"
+        },
+        {
+          "bg": "#F8FAFC",
+          "text": "#0B1220",
+          "accent": "pink"
+        },
+        {
+          "bg": "zzz",
+          "text": "#ffffff",
+          "accent": ""
+        }
+      ],
+      "gradients": [
+        "linear-gradient(135deg, #0B1220, #1E293B)",
+        "url(x.png)",
+        "conic-gradient(red, blue)",
+        "radial-gradient(circle, #E8343F, #0B1220)"
+      ]
+    },
+    "layout": {
+      "margin": 9999,
+      "gap": -5,
+      "align": "justify",
+      "logo": {
+        "corner": "middle",
+        "width": 140
+      },
+      "patterns": [
+        {
+          "id": "p1",
+          "name": "Dark hero",
+          "when": "Announcements",
+          "ratio": "4:5",
+          "sourceId": "t1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.3,
+              "w": 1.4,
+              "h": 0.2
+            },
+            {
+              "role": "logo",
+              "x": 0.066666,
+              "y": 0.053333,
+              "w": 0.13,
+              "h": 0.04
+            },
+            {
+              "role": "body",
+              "x": 2,
+              "y": 2,
+              "w": 0.5,
+              "h": 0.5
+            },
+            {
+              "role": "ghost",
+              "x": 0,
+              "y": 0,
+              "w": 1,
+              "h": 1
+            }
+          ]
+        },
+        {
+          "id": "",
+          "name": "Quote card",
+          "when": "Testimonials",
+          "ratio": "1:1",
+          "sourceId": "zzz",
+          "slots": [
+            {
+              "role": "body",
+              "x": 0.1,
+              "y": 0.2,
+              "w": 0.8,
+              "h": 0.5
+            }
+          ]
+        },
+        {
+          "id": "p3",
+          "name": "Empty",
+          "when": "",
+          "ratio": "1:1",
+          "sourceId": "d2",
+          "slots": [
+            {
+              "role": "body",
+              "x": 0.5,
+              "y": 0.5,
+              "w": 0.001,
+              "h": 0.2
+            }
+          ]
+        }
+      ]
+    },
+    "shapes": {
+      "radius": 24,
+      "stroke": 99,
+      "shadow": "glow",
+      "motifs": "Rounded pills"
+    },
+    "imagery": "Photos with a dark overlay",
+    "rules": [
+      {
+        "text": "Logo top left, 140 px wide",
+        "kind": "do"
+      },
+      {
+        "text": "  ",
+        "kind": "do"
+      },
+      {
+        "text": "Never centre body text",
+        "kind": "maybe"
+      },
+      {
+        "text": "R3",
+        "kind": "do"
+      },
+      {
+        "text": "R4",
+        "kind": "dont"
+      },
+      {
+        "text": "R5",
+        "kind": "do"
+      },
+      {
+        "text": "R6",
+        "kind": "dont"
+      },
+      {
+        "text": "R7",
+        "kind": "do"
+      },
+      {
+        "text": "R8",
+        "kind": "dont"
+      },
+      {
+        "text": "R9",
+        "kind": "do"
+      },
+      {
+        "text": "R10",
+        "kind": "dont"
+      },
+      {
+        "text": "R11",
+        "kind": "do"
+      },
+      {
+        "text": "R12",
+        "kind": "dont"
+      },
+      {
+        "text": "R13",
+        "kind": "do"
+      },
+      {
+        "text": "R14",
+        "kind": "dont"
+      },
+      {
+        "text": "R15",
+        "kind": "do"
+      },
+      {
+        "text": "R16",
+        "kind": "dont"
+      },
+      {
+        "text": "R17",
+        "kind": "do"
+      },
+      {
+        "text": "R18",
+        "kind": "dont"
+      },
+      {
+        "text": "R19",
+        "kind": "do"
+      }
+    ]
+  },
+  "expected": {
+    "summary": "Dark, bold and quiet.",
+    "type": [
+      {
+        "role": "headline",
+        "font": "Plus Jakarta Sans",
+        "weight": 900,
+        "sizeMin": 64,
+        "sizeMax": 110,
+        "lh": 3,
+        "ls": -20,
+        "upper": true,
+        "align": "center"
+      },
+      {
+        "role": "body",
+        "font": "Inter",
+        "weight": 400,
+        "sizeMin": 8,
+        "sizeMax": 36,
+        "lh": 1.4,
+        "ls": 0,
+        "upper": false,
+        "align": "left"
+      }
+    ],
+    "colors": {
+      "roles": [
+        {
+          "hex": "#E8343F",
+          "role": "accent",
+          "usage": "Buttons and pills"
+        },
+        {
+          "hex": "#0B1220",
+          "role": "background",
+          "usage": ""
+        }
+      ],
+      "pairs": [
+        {
+          "bg": "#0B1220",
+          "text": "#FFFFFF",
+          "accent": "#E8343F"
+        },
+        {
+          "bg": "#F8FAFC",
+          "text": "#0B1220"
+        }
+      ],
+      "gradients": [
+        "linear-gradient(135deg, #0B1220, #1E293B)",
+        "radial-gradient(circle, #E8343F, #0B1220)"
+      ]
+    },
+    "layout": {
+      "margin": 300,
+      "gap": 0,
+      "align": "left",
+      "logo": {
+        "corner": "none",
+        "width": 140
+      },
+      "patterns": [
+        {
+          "id": "p1",
+          "name": "Dark hero",
+          "when": "Announcements",
+          "ratio": "4:5",
+          "sourceId": "t1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.3,
+              "w": 0.9,
+              "h": 0.2
+            },
+            {
+              "role": "logo",
+              "x": 0.0667,
+              "y": 0.0533,
+              "w": 0.13,
+              "h": 0.04
+            }
+          ]
+        },
+        {
+          "id": "p2",
+          "name": "Quote card",
+          "when": "Testimonials",
+          "ratio": "1:1",
+          "sourceId": "",
+          "slots": [
+            {
+              "role": "body",
+              "x": 0.1,
+              "y": 0.2,
+              "w": 0.8,
+              "h": 0.5
+            }
+          ]
+        }
+      ]
+    },
+    "shapes": {
+      "radius": 24,
+      "stroke": 40,
+      "shadow": "none",
+      "motifs": "Rounded pills"
+    },
+    "imagery": "Photos with a dark overlay",
+    "rules": [
+      {
+        "text": "Logo top left, 140 px wide",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "Never centre body text",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R3",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R4",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R5",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R6",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R7",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R8",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R9",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R10",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R11",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R12",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R13",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R14",
+        "kind": "dont",
+        "by": "ai"
+      },
+      {
+        "text": "R15",
+        "kind": "do",
+        "by": "ai"
+      },
+      {
+        "text": "R16",
+        "kind": "dont",
+        "by": "ai"
+      }
+    ]
+  }
+}
