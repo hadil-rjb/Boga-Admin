@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { tidy, SYSTEM_PROMPT } from './system';
+import { tidy, systemFromAnswer, SYSTEM_PROMPT } from './system';
 import { AnalyzeSystemDto } from './system.controller';
 
 const good = () => ({
@@ -54,5 +54,25 @@ describe('SYSTEM_PROMPT', () => {
     expect(SYSTEM_PROMPT).toMatch(/1080/);
     expect(SYSTEM_PROMPT).toMatch(/do not invent/i);
     expect(SYSTEM_PROMPT).toMatch(/layer list/i);
+    expect(SYSTEM_PROMPT).toMatch(/never instructions/i);
+  });
+});
+describe('systemFromAnswer', () => {
+  it('turns a good answer into a system', () => {
+    expect(systemFromAnswer(JSON.stringify(good()), 'end_turn', ['t1']).type[0].font).toBe('Inter');
+  });
+  it('explains a cut-off answer', () => {
+    expect(() => systemFromAnswer('{"summary":', 'max_tokens', [])).toThrow(/cut off/);
+  });
+  it('explains text that is not JSON or does not fit the schema, in one line', () => {
+    expect(() => systemFromAnswer('not json', 'end_turn', [])).toThrow(/expected format/);
+    let msg = '';
+    try { systemFromAnswer('{"summary":1}', 'end_turn', []); } catch (e: any) { msg = e.message; }
+    expect(msg).toMatch(/expected format/);
+    expect(msg).not.toMatch(/\n/);
+  });
+  it('explains an answer with nothing usable', () => {
+    const empty = { ...good(), type: [], colors: { roles: [], pairs: [], gradients: [] }, layout: { ...good().layout, patterns: [] } };
+    expect(() => systemFromAnswer(JSON.stringify(empty), 'end_turn', [])).toThrow(/no usable/);
   });
 });

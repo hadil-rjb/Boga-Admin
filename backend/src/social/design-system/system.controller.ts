@@ -58,7 +58,8 @@ export class DesignSystemController {
       return await analyzeWithClaude(key, dto);
     } catch (e: any) {
       this.log.warn(`Design system analysis failed: ${e?.message || e}`);
-      throw new BadGatewayException(`Claude couldn't analyze these designs: ${e?.message || "error"}`);
+      const reason = String(e?.message || "").split("\n")[0].trim().slice(0, 160) || "error";
+      throw new BadGatewayException(`Claude couldn't analyze these designs: ${reason}`);
     }
   }
 }
