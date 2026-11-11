@@ -270,6 +270,7 @@ describe('gatherSources', () => {
     expect(g.inspiration[0]).toMatchObject({ kind: 'inspiration', id: 'i0', name: 'Pic i0', ratio: '1080x1350', w: 1080, h: 1350 });
     expect(g.guide).toEqual({ name: 'Guide 2026.pdf', rev: expect.any(String) });
     expect(hasSources(g)).toBe(true);
+    expect(gatherSources({ inspiration: [{ name: 'no id', src: 'data:x' }] }, [], []).inspiration).toEqual([]);
   });
   it('a brand with only pictures, or only a guide, has sources; a brand with nothing has none', () => {
     expect(hasSources(gatherSources({ inspiration: [pic('i1')] }, [], []))).toBe(true);
@@ -308,6 +309,7 @@ describe('tidySystem with inspiration and guide', () => {
     expect(s.layout.patterns[0].origin).toBe('brand');
     expect(s.rules.map((r) => r.by)).toEqual(['guide', 'ai']);
     expect(s.guide).toEqual({ name: 'Guide.pdf' });
+    expect(tidySystem({ ...sys([]), guide: { name: ' ' } })).not.toHaveProperty('guide');
     expect(forAgent(s)).not.toHaveProperty('guide');
     expect(forAgent(s).rules[0].by).toBe('guide');
   });
@@ -318,6 +320,7 @@ describe('guide rules', () => {
     expect(markGuideRules(fresh, gd()).map((r) => r.by)).toEqual(['guide', 'ai']);
     expect(markGuideRules([{ text: 'Never stretch the logo', kind: 'dont', by: 'user' }], gd())[0].by).toBe('user');
     expect(markGuideRules([{ text: 'A', kind: 'do', by: 'guide' }], null)[0].by).toBe('ai');
+    expect(markGuideRules([{ text: 'Not in the guide', kind: 'do', by: 'guide' }], gd())[0].by).toBe('ai');
     expect(fresh[0].by).toBe('ai'); // not mutated
   });
   it('orders user rules, then guide rules, then the rest, and never carries old guide rules over', () => {

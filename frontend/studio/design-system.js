@@ -1,8 +1,9 @@
 /* ============================================================
    Brand design system: the shape of a system, and choosing the references it is learned from.
    - Templates first, newest first, then designs that were approved or published, newest first. Drafts are never used.
+   - Sources also include the brand's inspiration pictures and the design reading of its brand guide; gatheredSig covers all three.
    - At most MAX_SOURCES references per analysis, and the first page of each only.
-   - sourceSig tells when the references changed, so a saved system can be marked out of date.
+   - sourceSig (and gatheredSig for everything gathered) tells when the sources changed, so a saved system can be marked out of date.
    - tidySystem applies every limit to what the model returns or the user edits; a value that fails is dropped, never guessed.
    Pure: no DOM, no imports from engine.js.
    ============================================================ */
@@ -78,7 +79,7 @@ export function guideForRequest(guideDesign) {
 /** Every source a design system is learned from: { own, inspiration, guide }. */
 export function gatherSources(brand, designs, posts) {
   const inspiration = ((brand && Array.isArray(brand.inspiration)) ? brand.inspiration : [])
-    .filter((p) => p && typeof p.src === 'string').slice(0, MAX_INSPIRATION).map((p) => {
+    .filter((p) => p && typeof p.src === 'string' && typeof p.id === 'string').slice(0, MAX_INSPIRATION).map((p) => {
       const sized = typeof p.w === 'number' && typeof p.h === 'number';
       return {
         kind: 'inspiration', id: p.id, name: p.name, ratio: sized ? p.w + 'x' + p.h : '',
@@ -233,19 +234,18 @@ export function tidySystem(raw, sourceIds, inspirationIds) {
     rules: arr(raw.rules).map(tidyRule).filter(Boolean).slice(0, LIMITS.rules),
   };
   for (const k of BOOKKEEPING) if (k !== 'guide' && raw[k] !== undefined) out[k] = raw[k];
-  if (raw.guide && typeof raw.guide === 'object' && !Array.isArray(raw.guide)) out.guide = { name: str(raw.guide.name, 120) };
+  if (raw.guide && typeof raw.guide === 'object' && !Array.isArray(raw.guide) && str(raw.guide.name, 120)) out.guide = { name: str(raw.guide.name, 120) };
   return out;
 }
 
-/** A copy of the rules where those matching a guide rule are marked by: 'guide'; with no guide, no rule stays marked that way. */
+/** A copy of the rules where, except for the user's own, the ones whose text matches a guide rule are marked by: 'guide' and all others by: 'ai'. */
 export function markGuideRules(rules, guideDesign) {
   const g = tidyGuideDesign(guideDesign);
   const key = (t) => String(t || '').trim().toLowerCase();
   const fromGuide = new Set(g ? g.rules.map((r) => key(r.text)) : []);
   return arr(rules).map((r) => {
-    if (!g) return r && r.by === 'guide' ? { ...r, by: 'ai' } : { ...r };
-    if (r && r.by !== 'user' && fromGuide.has(key(r.text))) return { ...r, by: 'guide' };
-    return { ...r };
+    if (r && r.by === 'user') return { ...r };
+    return { ...r, by: fromGuide.has(key(r && r.text)) ? 'guide' : 'ai' };
   });
 }
 
