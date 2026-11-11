@@ -11,6 +11,8 @@
 export const MAX_SOURCES = 12;
 export const MAX_INSPIRATION = 8;
 export const MAX_INSPIRATION_PATTERNS = 3;
+/** What a stored picture's src must look like: only data URLs of these types are shown or sent. */
+export const PICTURE_SRC = /^data:image\/(png|jpeg|webp);base64,/;
 
 const byNewest = (a, b) => (b.at || 0) - (a.at || 0);
 
@@ -56,7 +58,7 @@ export function tidyGuideDesign(raw) {
   const rules = (Array.isArray(raw.rules) ? raw.rules : []).map((r) => {
     r = r && typeof r === 'object' ? r : {};
     const text = typeof r.text === 'string' ? r.text.trim().slice(0, 160) : '';
-    return text ? { text, kind: r.kind === 'dont' ? 'dont' : 'do' } : null;
+    return text ? { text, kind: r.kind === 'do' ? 'do' : 'dont' } : null;
   }).filter(Boolean).slice(0, 12);
   const t = (v) => (typeof v === 'string' ? v.trim().slice(0, 400) : '');
   const out = {
@@ -79,7 +81,7 @@ export function guideForRequest(guideDesign) {
 /** Every source a design system is learned from: { own, inspiration, guide }. */
 export function gatherSources(brand, designs, posts) {
   const inspiration = ((brand && Array.isArray(brand.inspiration)) ? brand.inspiration : [])
-    .filter((p) => p && typeof p.src === 'string' && typeof p.id === 'string').slice(0, MAX_INSPIRATION).map((p) => {
+    .filter((p) => p && typeof p.src === 'string' && PICTURE_SRC.test(p.src) && typeof p.id === 'string').slice(0, MAX_INSPIRATION).map((p) => {
       const sized = typeof p.w === 'number' && typeof p.h === 'number';
       return {
         kind: 'inspiration', id: p.id, name: p.name, ratio: sized ? p.w + 'x' + p.h : '',
@@ -173,7 +175,9 @@ function tidyPattern(p, i, sourceIds, inspirationIds) {
   const slots = arr(p.slots).map(tidySlot).filter(Boolean).slice(0, LIMITS.slots);
   if (!slots.length) return null;
   const sourceId = str(p.sourceId, 80);
-  const origin = p.origin === 'inspiration' ? 'inspiration' : 'brand';
+  // A pattern drawn from a sent inspiration picture is an inspiration pattern, whatever the model called it. The studio also
+  // re-tidies stored systems without the id list and then trusts the stored origin; the server always has the list.
+  const origin = p.origin === 'inspiration' || (inspirationIds && inspirationIds.includes(sourceId)) ? 'inspiration' : 'brand';
   if (origin === 'inspiration' && inspirationIds && !inspirationIds.includes(sourceId)) return null;
   return {
     id: str(p.id, 40) || 'p' + (i + 1),
@@ -249,6 +253,13 @@ export function markGuideRules(rules, guideDesign) {
   });
 }
 
+/** The guide's own rules (by: 'guide', in the guide's order) followed by the fresh rules marked as markGuideRules does; the model is not trusted to copy them. */
+export function withGuideRules(fresh, guideDesign) {
+  const g = tidyGuideDesign(guideDesign);
+  const own = g ? g.rules.map((r) => ({ text: r.text, kind: r.kind, by: 'guide' })) : [];
+  return own.concat(markGuideRules(fresh, guideDesign));
+}
+
 /** The old rules the user wrote, then the new guide rules, then the other new rules, one per lower-cased text, at most LIMITS.rules. */
 export function mergeRules(oldRules, newRules) {
   const seen = new Set();
@@ -269,10 +280,18 @@ export function forAgent(system) {
   const out = { ...system };
   for (const k of BOOKKEEPING) delete out[k];
   if (out.layout && Array.isArray(out.layout.patterns)) {
-    out.layout = { ...out.layout, patterns: out.layout.patterns.slice() };
+    // origin 'brand' is the default and is left out, so a brand that uses neither inspiration nor a guide gives the agent what it always got.
+    out.layout = { ...out.layout, patterns: out.layout.patterns.map((p) => { if (!p || p.origin !== 'brand') return p; const { origin, ...rest } = p; return rest; }) };
     while (JSON.stringify(out).length >= AGENT_MAX_CHARS && out.layout.patterns.length) out.layout.patterns.pop();
   }
   return out;
+}
+
+/** The sources of a system in words for the tab: '3 designs, 2 pictures and the brand guide', '2 pictures', or '' for nothing. */
+export function sourcesPhrase({ designs = 0, pictures = 0, guide = false } = {}) {
+  const n = (c, one) => (c > 0 ? c + ' ' + one + (c === 1 ? '' : 's') : '');
+  const parts = [n(designs, 'design'), n(pictures, 'picture'), guide ? 'the brand guide' : ''].filter(Boolean);
+  return parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0] || '';
 }
 
 /** What a brand adds to the agent's context: its system and the references the system was learned from, or nothing at all. */

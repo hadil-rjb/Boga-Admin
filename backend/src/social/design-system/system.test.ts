@@ -25,6 +25,13 @@ describe('tidy', () => {
     expect(s.rules[0].by).toBe('ai');
     expect(tidy(good(), ['t1']).layout.patterns[0].origin).toBe('brand');
   });
+  it('treats a pattern whose sourceId is an inspiration picture as an inspiration pattern', () => {
+    const g: any = good();
+    g.layout.patterns[0].sourceId = 'i1';
+    const p = tidy(g, ['t1'], ['i1']).layout.patterns[0];
+    expect(p.origin).toBe('inspiration');
+    expect(p.sourceId).toBe('i1');
+  });
   it('normalises a good answer and marks rules as written by the AI', () => {
     const s = tidy(good(), ['t1']);
     expect(s.colors.roles[0].hex).toBe('#E8343F');
@@ -93,9 +100,11 @@ describe('inspiration and guide in the request', () => {
 });
 describe('SYSTEM_PROMPT', () => {
   it('keeps colours and fonts out of inspiration and puts the guide first', () => {
-    expect(SYSTEM_PROMPT).toMatch(/never take a colour, a font or a logo from them/i);
-    expect(SYSTEM_PROMPT).toMatch(/follow it even where the references differ/i);
-    expect(SYSTEM_PROMPT).toMatch(/origin/);
+    expect(SYSTEM_PROMPT).toMatch(/Sources rank in this order: the brand guide/);
+    expect(SYSTEM_PROMPT).toMatch(/never take a colour, gradient, colour pair, font, type size/i);
+    expect(SYSTEM_PROMPT).toMatch(/added to rules for you, word for word/);
+    expect(SYSTEM_PROMPT).toMatch(/logo corner to "none"/);
+    expect(SYSTEM_PROMPT).toMatch(/origin "inspiration"/);
   });
   it('tells the model to measure, to normalise to 1080 and not to invent', () => {
     expect(SYSTEM_PROMPT).toMatch(/1080/);

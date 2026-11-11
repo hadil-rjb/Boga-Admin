@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { pickSources, sourceSig, sourceRev, MAX_SOURCES, tidySystem, mergeRules, forAgent, agentExtras, LIMITS, lintSlide, lintText, patternWire, MAX_INSPIRATION, MAX_INSPIRATION_PATTERNS, tidyGuideDesign, guideForRequest, gatherSources, hasSources, gatheredSig, markGuideRules, hashText } from './design-system.js';
+import { pickSources, sourceSig, sourceRev, MAX_SOURCES, tidySystem, mergeRules, forAgent, agentExtras, LIMITS, lintSlide, lintText, patternWire, MAX_INSPIRATION, MAX_INSPIRATION_PATTERNS, tidyGuideDesign, guideForRequest, gatherSources, hasSources, gatheredSig, markGuideRules, withGuideRules, sourcesPhrase, hashText } from './design-system.js';
 
 const FIXTURE = JSON.parse(readFileSync(new URL('../../backend/src/social/design-system/tidy.fixture.json', import.meta.url), 'utf8'));
 
@@ -249,7 +249,7 @@ describe('tidyGuideDesign', () => {
   it('trims, cuts and drops empty rules; null when the guide says nothing about design', () => {
     const g = tidyGuideDesign(gd());
     expect(g).toMatchObject({ name: 'Guide 2026.pdf', at: 5, layout: '12-column grid, 64 px margins', imagery: '', typography: '' });
-    expect(g.rules).toEqual([{ text: 'Never stretch the logo', kind: 'dont' }, { text: 'Use one accent per slide', kind: 'do' }]);
+    expect(g.rules).toEqual([{ text: 'Never stretch the logo', kind: 'dont' }, { text: 'Use one accent per slide', kind: 'dont' }]);
     expect(tidyGuideDesign({ name: 'x.pdf', layout: ' ', imagery: '', logoUse: '', typography: '', rules: [] })).toBeNull();
     expect(tidyGuideDesign(null)).toBeNull();
     expect(tidyGuideDesign({ layout: 'x'.repeat(900) }).layout).toHaveLength(400);
@@ -271,6 +271,10 @@ describe('gatherSources', () => {
     expect(g.guide).toEqual({ name: 'Guide 2026.pdf', rev: expect.any(String) });
     expect(hasSources(g)).toBe(true);
     expect(gatherSources({ inspiration: [{ name: 'no id', src: 'data:x' }] }, [], []).inspiration).toEqual([]);
+  });
+  it('gathers only pictures that are data URLs of a supported type', () => {
+    const g = gatherSources({ inspiration: [pic('a'), pic('b', 'https://example.com/x.jpg'), pic('c', 'data:image/svg+xml;base64,AAA'), pic('d', 'data:image/png;base64,AAA')] }, [], []);
+    expect(g.inspiration.map((p) => p.id)).toEqual(['a', 'd']);
   });
   it('a brand with only pictures, or only a guide, has sources; a brand with nothing has none', () => {
     expect(hasSources(gatherSources({ inspiration: [pic('i1')] }, [], []))).toBe(true);
@@ -312,6 +316,55 @@ describe('tidySystem with inspiration and guide', () => {
     expect(tidySystem({ ...sys([]), guide: { name: ' ' } })).not.toHaveProperty('guide');
     expect(forAgent(s)).not.toHaveProperty('guide');
     expect(forAgent(s).rules[0].by).toBe('guide');
+  });
+});
+describe('tidySystem origin by source', () => {
+  const p = (origin) => ({ id: 'a', name: 'a', when: '', ratio: '4:5', origin, sourceId: 'i1', slots: [{ role: 'headline', x: 0.1, y: 0.1, w: 0.8, h: 0.2 }] });
+  const sys = (patterns) => ({ type: [{ role: 'headline', font: 'Inter', weight: 700, sizeMin: 60, sizeMax: 90 }], layout: { patterns } });
+  it('a pattern whose source is an inspiration picture is an inspiration pattern, whatever it was called', () => {
+    const a = tidySystem(sys([p('brand')]), ['t1'], ['i1']).layout.patterns[0];
+    expect([a.origin, a.sourceId]).toEqual(['inspiration', 'i1']);
+    expect(tidySystem(sys([p('brand')]), ['t1']).layout.patterns[0].origin).toBe('brand');
+  });
+});
+describe('withGuideRules', () => {
+  const fresh = [{ text: 'Do not distort the logo', kind: 'dont', by: 'ai' }, { text: 'Logo top left', kind: 'do', by: 'ai' }];
+  it('puts the guide\'s rules first as by guide and keeps the model\'s own as ai, without mutating', () => {
+    const r = withGuideRules(fresh, gd());
+    expect(r.map((x) => [x.text, x.by])).toEqual([['Never stretch the logo', 'guide'], ['Use one accent per slide', 'guide'], ['Do not distort the logo', 'ai'], ['Logo top left', 'ai']]);
+    expect(fresh.map((x) => x.by)).toEqual(['ai', 'ai']);
+  });
+  it('orders user, guide, other after merging, and keeps a rule the model copied once', () => {
+    const r = mergeRules([{ text: 'Mine', kind: 'do', by: 'user' }], withGuideRules(fresh, gd()));
+    expect(r.map((x) => x.text)).toEqual(['Mine', 'Never stretch the logo', 'Use one accent per slide', 'Do not distort the logo', 'Logo top left']);
+    const copied = mergeRules([], withGuideRules([{ text: 'never stretch the logo', kind: 'dont', by: 'ai' }], gd()));
+    expect(copied.filter((x) => x.text.toLowerCase() === 'never stretch the logo')).toEqual([{ text: 'Never stretch the logo', kind: 'dont', by: 'guide' }]);
+  });
+  it('with no usable guide it is markGuideRules', () => {
+    expect(withGuideRules(fresh, null)).toEqual(markGuideRules(fresh, null));
+    expect(withGuideRules([{ text: 'A', kind: 'do', by: 'guide' }], undefined)[0].by).toBe('ai');
+  });
+});
+describe('sourcesPhrase', () => {
+  it('names designs, pictures and the guide naturally', () => {
+    expect(sourcesPhrase({ designs: 3, pictures: 2, guide: true })).toBe('3 designs, 2 pictures and the brand guide');
+    expect(sourcesPhrase({ designs: 3, pictures: 2 })).toBe('3 designs and 2 pictures');
+    expect(sourcesPhrase({ designs: 0, pictures: 2 })).toBe('2 pictures');
+    expect(sourcesPhrase({ designs: 1, pictures: 0, guide: true })).toBe('1 design and the brand guide');
+    expect(sourcesPhrase({ designs: 1, pictures: 1 })).toBe('1 design and 1 picture');
+    expect(sourcesPhrase({ designs: 4 })).toBe('4 designs');
+    expect(sourcesPhrase({ guide: true })).toBe('the brand guide');
+    expect(sourcesPhrase({ designs: 0, pictures: 0, guide: false })).toBe('');
+  });
+});
+describe('forAgent origin', () => {
+  it('leaves origin out of brand patterns, so a brand with neither feature gives the agent what it always got', () => {
+    const slots = [{ role: 'headline', x: 0.1, y: 0.1, w: 0.8, h: 0.2 }];
+    const s = { type: [], layout: { patterns: [{ id: 'a', origin: 'brand', sourceId: 't1', slots }, { id: 'b', origin: 'inspiration', sourceId: 'i1', slots }] } };
+    const out = forAgent(s).layout.patterns;
+    expect(out[0]).not.toHaveProperty('origin');
+    expect(out[1].origin).toBe('inspiration');
+    expect(s.layout.patterns[0].origin).toBe('brand');
   });
 });
 describe('guide rules', () => {

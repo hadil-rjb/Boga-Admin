@@ -177,6 +177,23 @@
           ]
         },
         {
+          "id": "pf",
+          "name": "Brand-labelled picture pattern",
+          "when": "Quotes",
+          "ratio": "1:1",
+          "origin": "brand",
+          "sourceId": "i1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.2,
+              "w": 0.8,
+              "h": 0.3
+            }
+          ]
+        },
+        {
           "id": "pa",
           "name": "Inspired pa",
           "when": "Quotes",
@@ -464,6 +481,23 @@
           ]
         },
         {
+          "id": "pf",
+          "name": "Brand-labelled picture pattern",
+          "when": "Quotes",
+          "ratio": "1:1",
+          "sourceId": "i1",
+          "origin": "inspiration",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.2,
+              "w": 0.8,
+              "h": 0.3
+            }
+          ]
+        },
+        {
           "id": "pa",
           "name": "Inspired pa",
           "when": "Quotes",
@@ -483,23 +517,6 @@
         {
           "id": "pc",
           "name": "Inspired pc",
-          "when": "Quotes",
-          "ratio": "4:5",
-          "sourceId": "i1",
-          "origin": "inspiration",
-          "slots": [
-            {
-              "role": "headline",
-              "x": 0.1,
-              "y": 0.1,
-              "w": 0.8,
-              "h": 0.2
-            }
-          ]
-        },
-        {
-          "id": "pd",
-          "name": "Inspired pd",
           "when": "Quotes",
           "ratio": "4:5",
           "sourceId": "i1",
