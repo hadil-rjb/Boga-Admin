@@ -206,7 +206,14 @@ describe('lintSlide', () => {
     const withLogo = { ...brand, logos: [{ id: 'l1', name: 'Boğa wordmark', kind: 'wordmark', src }, { id: 'l2', name: 'Text', kind: 'text' }] };
     const mark = { id: 'm', type: 'image', name: 'Boğa wordmark', x: 80, y: 80, w: 140, h: 40, fill: `url(${src}) center/contain no-repeat` };
     expect(lintSlide({ bg: '#0B1220', layers: [mark, text()] }, C, withLogo, sys)).toEqual([]);
-    expect(lintSlide({ bg: '#0B1220', layers: [{ ...mark, fill: "url('other.png') center/contain no-repeat" }, text()] }, C, withLogo, sys).map((i) => i.rule)).toEqual(['logo']);
+    expect(lintSlide({ bg: '#0B1220', layers: [{ ...mark, name: 'Picture', fill: "url('other.png') center/contain no-repeat" }, text()] }, C, withLogo, sys).map((i) => i.rule)).toEqual(['logo']);
+  });
+  it('counts a layer named after a brand logo as the logo once its picture is stored elsewhere', () => {
+    // saved designs keep pictures as media URLs, so the fill no longer contains the kit's data URL; the agent names the layer after the kit logo
+    const withLogo = { ...brand, logos: [{ id: 'l1', name: 'Boğa icon', kind: 'icon', src: 'data:image/png;base64,QUJD' }, { id: 'l2', name: '', kind: 'text' }] };
+    const icon = { id: 'm', type: 'image', name: 'boğa ICON', x: 64, y: 64, w: 56, h: 56, fill: "url('http://localhost:4000/api/media/abc.png') center/contain no-repeat" };
+    expect(lintSlide({ bg: '#0B1220', layers: [icon, text()] }, C, withLogo, sys)).toEqual([]);
+    expect(lintSlide({ bg: '#0B1220', layers: [{ ...icon, name: '' }, text()] }, C, withLogo, sys).map((i) => i.rule)).toEqual(['logo']);
   });
   it('without a system, checks font, colour and contrast against the brand kit only', () => {
     expect(rules({ bg: '#0B1220', layers: [text({ size: 12, x: 0 })] }, C, null)).toEqual([]);

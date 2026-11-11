@@ -261,9 +261,12 @@ export function lintSlide(page, canvas, brand, system) {
     ...arr(sys && sys.colors && sys.colors.roles).map((r) => r && r.hex),
     ...arr(sys && sys.colors && sys.colors.pairs).flatMap((p) => (p ? [p.bg, p.text, p.accent] : [])),
   ].map(rgbOf).filter(Boolean).map(labOf);
-  // A layer is the logo when it is named so, or when it shows one of the brand's logo images (the agent names it after the file).
+  // A layer is the logo when it is named "logo", named after one of the brand's logos (the agent names it after the kit logo,
+  // and a saved design keeps its pictures as media URLs, so the fill no longer holds the kit's data URL), or shows a brand logo image.
   const logoSrcs = arr(brand && brand.logos).map((l) => l && l.src).filter((s) => typeof s === 'string' && s);
-  const isLogo = (l) => /logo/i.test(l.name || '') || (typeof l.fill === 'string' && logoSrcs.some((s) => l.fill.includes(s)));
+  const logoNames = new Set(arr(brand && brand.logos).map((l) => String((l && l.name) || '').trim().toLowerCase()).filter(Boolean));
+  const isLogo = (l) => /logo/i.test(l.name || '') || logoNames.has(String(l.name || '').trim().toLowerCase())
+    || (typeof l.fill === 'string' && logoSrcs.some((s) => l.fill.includes(s)));
 
   const types = arr(sys && sys.type);
   const sizeLo = types.length ? Math.min(...types.map((t) => t.sizeMin)) : 0;
