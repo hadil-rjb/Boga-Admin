@@ -6,11 +6,13 @@
 export type PublishState = "idle" | "pending" | "publishing" | "published" | "partial" | "failed";
 
 /**
- * A footage design (Studio, Match a reference) is a video: its only page is the black background, so rendering or publishing
- * it as images would post a black still. Until video publishing exists such a post fails with this message (studio copy).
+ * A video design (an imported clip, or an animated design) publishes its MP4, prepared by the studio when the post is
+ * scheduled (media.video). Until that file is there the post can't go out: this message says what to do.
  */
-export const VIDEO_NOT_SCHEDULABLE = "Scheduling videos isn't available yet. Download the video and post it from your phone.";
-export const isVideoDesign = (design: Record<string, any> | null | undefined) => !!design?.footage;
+export const VIDEO_NOT_READY = "The video for this post isn't ready yet. Open the post in the studio and schedule it again.";
+export { isVideoPost as isVideoDesign } from "./post-video";
+/** What the scheduler needs before it can publish a post: its slides, or its video */
+export const mediaReady = (media: Record<string, any> | null | undefined) => !!(media?.ids?.length || media?.video?.id);
 
 const DONE: PublishState[] = ["published", "partial", "publishing"];
 
@@ -38,7 +40,7 @@ export function mergePost(existing: Record<string, any> | null | undefined, item
     } else if (out.status === "Scheduled") {
       // (re)scheduled from the studio: arm it again if images are ready
       const moved = out.date !== existing!.date || out.time !== existing!.time || existing!.status !== "Scheduled";
-      if (existing?.media?.ids?.length && (pub.state === "idle" || (pub.state === "failed" && moved))) pub = { ...pub, state: "pending", attempts: 0, nextTry: null };
+      if (mediaReady(existing?.media) && (pub.state === "idle" || (pub.state === "failed" && moved))) pub = { ...pub, state: "pending", attempts: 0, nextTry: null };
     } else if (pub.state === "pending") {
       pub = { ...pub, state: "idle" }; // back to draft: disarm
     }

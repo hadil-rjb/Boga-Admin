@@ -33,10 +33,26 @@ export interface PublishImage {
   height?: number;
 }
 
+/** A post's video (an MP4, H.264 + AAC, faststart), prepared by the studio and stored on disk by PostVideoStore */
+export interface PublishVideo {
+  /** Public URL (Range requests): Instagram, Facebook and TikTok download it themselves */
+  url: string;
+  /** Local file, for networks that take an upload (LinkedIn, X, Telegram) */
+  path: string;
+  mime: string;
+  size: number;
+  width: number;
+  height: number;
+  durationMs: number;
+}
+
 export interface PublishInput {
   text: string;
   firstComment?: string;
+  /** Slides (an image post), or empty for a video post */
   images: PublishImage[];
+  /** A video post: networks publish it as a video (Reel, TikTok video…) instead of images */
+  video?: PublishVideo;
   /** 9:16 design: Instagram publishes it as a Story */
   story: boolean;
 }

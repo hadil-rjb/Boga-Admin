@@ -13,6 +13,8 @@ async function bootstrap() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { raw } = require("express"); // express ships with @nestjs/platform-express
   app.use("/api/footage/:id/chunk", raw({ type: "application/octet-stream", limit: "9mb" }));
+  // a post's video (the studio's recording of an animated design): 8 MB raw chunks too
+  app.use("/api/social/brands/:brandId/posts/:id/video/upload/:uploadId/:index", raw({ type: "application/octet-stream", limit: "9mb" }));
   // the studio names the brand it works for: Claude usage is billed to it
   app.use((req: any, _res: any, next: () => void) => {
     const b = req.headers["x-brand-id"];

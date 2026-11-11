@@ -1,3 +1,5 @@
+import { FootageModule } from "../footage/footage.module";
+import { PostVideoStore } from "./publishing/post-video.store";
 import { Module } from "@nestjs/common";
 import { MongooseModule } from "@nestjs/mongoose";
 import { BrandsService } from "./brands.service";
@@ -23,6 +25,7 @@ import { AiModule } from "../ai/ai.module";
 import { CalendarController } from "./calendar/calendar.controller";
 import { CalendarService } from "./calendar/calendar.service";
 import { BrandGuideController } from "./brand-guide/guide.controller";
+import { DesignSystemController } from "./design-system/system.controller";
 import { MarketsController } from "./markets/markets.controller";
 import { AutomationsController } from "./automations/automations.controller";
 import { AutomationsService } from "./automations/automations.service";
@@ -41,6 +44,7 @@ import { CommentsService } from "./comments.service";
 @Module({
   imports: [
     AiModule,
+    FootageModule, // a video post's MP4: the footage export it was made from, and ffmpeg for recordings
     MongooseModule.forFeature([
       { name: SocialBrand.name, schema: SocialBrandSchema },
       { name: SocialDesign.name, schema: SocialDesignSchema },
@@ -57,7 +61,7 @@ import { CommentsService } from "./comments.service";
       { name: SocialDesignComment.name, schema: SocialDesignCommentSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, VersionsController, CommentsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController],
-  providers: [WorkspaceService, BrandsService, VersionsService, CommentsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
+  controllers: [SocialWorkspaceController, SocialBrandsController, VersionsController, CommentsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController, DesignSystemController],
+  providers: [WorkspaceService, BrandsService, VersionsService, CommentsService, ConnectionsService, PublisherService, PostVideoStore, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
 })
 export class SocialModule {}

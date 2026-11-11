@@ -14,7 +14,7 @@ import { VersionsService } from "./versions.service";
 import { CommentsService } from "./comments.service";
 
 /** Fields a client may not overwrite through PATCH */
-const LOCKED = ["_id", "id", "brandId", "order", "hash", "rev", "createdAt", "updatedAt", "publish", "media"];
+const LOCKED = ["_id", "id", "brandId", "order", "hash", "rev", "wid", "createdAt", "updatedAt", "publish", "media"];
 /** Darken/lighten a hex color, same as the studio's shade() */
 const shade = (h: string, k: number) => {
   const n = parseInt(h.slice(1), 16);
@@ -153,7 +153,7 @@ export class BrandsService implements OnModuleInit {
   }
 
   async updateDesign(brandId: string, id: string, body: Record<string, unknown>) {
-    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...dropAt(editable(body)), hash: "" }, $inc: { rev: 1 } }, { new: true }).lean();
+    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...dropAt(editable(body)), hash: "" }, $inc: { rev: 1 }, $unset: { wid: 1 } }, { new: true }).lean();
     if (!d) throw new NotFoundException(`Design "${id}" not found`);
     return withAt(d);
   }

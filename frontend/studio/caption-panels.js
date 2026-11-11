@@ -339,8 +339,9 @@ export function installCaptionPanels(ctx, VS) {
       body = `<label class="cp-search">${ic('search', 15)}<input class="field" type="search" data-cp-q value="${esc(q)}" placeholder="Search captions" aria-label="Search captions" dir="auto"></label>
         <div class="ft-rows">${lines.map((l) => rowHTML(l, ro, !keep.has(l.id))).join('')}</div><p class="xs-t muted cp-none" ${keep.size ? 'hidden' : ''}>No caption matches.</p>`;
     } else body = (h.body && h.body()) || '<p class="sm-t muted">No captions yet.</p>';
-    const foot = ro ? '' : `<div class="ft-foot"><button class="btn secondary sm" data-act="cpAdd">${ic('plus', 15)}Add a line at the playhead</button>${h.foot ? h.foot() : ''}</div>`;
-    return `<div class="cp${on ? '' : ' off'}">${head}${rebuild}${body}${foot}</div>`;
+    // nothing to add a line to or re-transcribe before the video is in (a source says so with `ready`)
+    const foot = ro || (!lines.length && h.ready && !h.ready()) ? '' : `<div class="ft-foot"><button class="btn secondary sm" data-act="cpAdd">${ic('plus', 15)}Add a line at the playhead</button>${h.foot ? h.foot() : ''}</div>`;
+    return `<div class="cap-pane${on ? '' : ' off'}">${head}${rebuild}${body}${foot}</div>`; // not `cp`: the colour picker owns .cp (a fixed popover)
   }
   function drawn() { lastRow = null; rehilite(); }
   VS.panel('captions', render, drawn);
@@ -569,11 +570,17 @@ export function installCaptionPanels(ctx, VS) {
   const apiFn = ctx.api;
   function scriptRender(d) {
     const ro = !can(), has = linesOf(d).length > 0, wait = needsVideo(d);
-    return `<div class="cp sc"><div class="cp-head"><h3>Script</h3></div>
-      <label class="label" for="scText">Paste your script</label>
-      <textarea class="inp" id="scText" data-sc-text dir="auto" rows="8" spellcheck="false" ${ro || wait ? 'readonly' : ''}>${esc(scriptText)}</textarea>
-      ${ro ? '' : `<div class="ft-foot"><button class="btn primary sm" data-act="scMake" ${busy || wait ? 'disabled' : ''}>${ic('type', 15)}Make captions</button>${wait ? `<span class="xs-t muted">${NEEDS_VIDEO}</span>` : ''}</div>`}
-      <div class="ft-foot">${ro ? '' : `<button class="btn secondary sm" data-act="scOpen">${ic('upload', 15)}Open SRT or VTT</button>`}<button class="btn secondary sm" data-act="scSave" ${has ? '' : 'disabled'}>${ic('download', 15)}Download SRT</button></div>
+    // no video yet: one clear next step instead of a read-only box and a disabled button (the script is timed to the speech)
+    const paste = wait
+      ? `<div class="sc-lock"><span class="sc-lock-i">${ic('upload', 18)}</span><span class="sc-lock-t"><b>${NEEDS_VIDEO}</b><small>Your script is timed to its speech.</small></span>${ro ? '' : `<button class="btn secondary sm" data-act="ftPick">Add video</button>`}</div>`
+      : `<section class="sc-sec"><label class="sc-h" for="scText">${ic('type', 15)}<span>Paste your script</span></label>
+        <p class="xs-t muted">The words said in your video. Each one is timed to the speech.</p>
+        <textarea class="inp" id="scText" data-sc-text dir="auto" rows="8" spellcheck="false" placeholder="Paste or type the script" ${ro ? 'readonly' : ''}>${esc(scriptText)}</textarea>
+        ${ro ? '' : `<button class="btn primary sm sc-make" data-act="scMake" ${busy ? 'disabled' : ''}>${ic('type', 15)}Make captions</button>`}</section>`;
+    const files = `<section class="sc-sec"><span class="sc-h">${ic('doc', 15)}<span>Subtitle files</span></span>
+        <div class="sc-files">${ro ? '' : `<button class="btn secondary sm" data-act="scOpen">${ic('upload', 15)}Open SRT or VTT</button>`}${has ? `<button class="btn secondary sm" data-act="scSave">${ic('download', 15)}Download SRT</button>` : ''}</div>
+        ${has ? '' : '<p class="xs-t muted">Download appears once your video has captions.</p>'}</section>`;
+    return `<div class="cap-pane sc"><div class="cp-head"><h3>Script</h3></div>${paste}${files}
       <input type="file" accept=".srt,.vtt" data-sc-file hidden></div>`;
   }
   VS.panel('script', scriptRender);

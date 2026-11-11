@@ -2,11 +2,14 @@ import { describe, it, expect, vi } from 'vitest';
 import { blockSchedule, isFootageDesign, SCHEDULE_VIDEO, closeAction, READY_IN_STUDIO, UPLOAD_STOPPED, canStart } from './footage.js';
 
 describe('schedule guard', () => {
-  it('refuses a footage design with the exact message, lets other designs through', () => {
+  it('lets videos through (they are scheduled like images), refuses only a clip without its file', () => {
     const toast = vi.fn();
-    expect(blockSchedule({ id: 'd1', footage: { src: 'a' } }, toast)).toBe(true);
-    expect(toast).toHaveBeenCalledWith("Scheduling videos isn't available yet. Download the video and post it from your phone.");
-    expect(SCHEDULE_VIDEO).toBe("Scheduling videos isn't available yet. Download the video and post it from your phone.");
+    expect(blockSchedule({ id: 'd1', footage: { src: 'a' } }, toast)).toBe(false);
+    expect(blockSchedule({ id: 'd3', motion: {} }, toast)).toBe(false);
+    expect(toast).not.toHaveBeenCalled();
+    expect(blockSchedule({ id: 'd4', footage: { src: null } }, toast)).toBe(true);
+    expect(toast).toHaveBeenCalledWith('Add your video first, then schedule it.');
+    expect(SCHEDULE_VIDEO).toBe('Add your video first, then schedule it.');
     toast.mockClear();
     expect(blockSchedule({ id: 'd2', pages: [] }, toast)).toBe(false);
     expect(blockSchedule(null, toast)).toBe(false);

@@ -1,5 +1,6 @@
+import { readRange, sleep } from "./video-file";
 import { ApiError, request } from "../http";
-import { blob, Env, expiresIn, Linked, OAuthProvider, PublishInput, TokenSet } from "./types";
+import { blob, Env, expiresIn, Linked, OAuthProvider, PublishInput, PublishVideo, TokenSet } from "./types";
 
 /** X (Twitter): OAuth 2.0 with PKCE, v2 media upload + POST /2/tweets. Up to 4 images. */
 export function x(env: Env): OAuthProvider {
@@ -47,6 +48,7 @@ export function x(env: Env): OAuthProvider {
     async publish(link: Linked, input: PublishInput) {
       const auth = { Authorization: `Bearer ${link.tokens.accessToken}` };
       const mediaIds: string[] = [];
+      if (input.video) mediaIds.push(await uploadVideo(api(), auth, input.video));
       for (const im of input.images.slice(0, 4)) {
         const f = new FormData();
         f.append("media", blob(im.buffer, im.mime), "slide.jpg");
@@ -59,7 +61,30 @@ export function x(env: Env): OAuthProvider {
       const r = await request(`${api()}/2/tweets`, { method: "POST", headers: auth, json: { text: input.text, ...(mediaIds.length ? { media: { media_ids: mediaIds } } : {}) } });
       const tid = r.data?.id;
       const handle = String(link.account.handle || "").replace(/^@/, "");
-      return { id: tid, url: `https://x.com/${handle || "i/web"}/status/${tid}`, warning: input.images.length > 4 ? "X shows up to 4 images: the first 4 slides were posted" : undefined };
+      return { id: tid, url: `https://x.com/${handle || "i/web"}/status/${tid}`, warning: !input.video && input.images.length > 4 ? "X shows up to 4 images: the first 4 slides were posted" : undefined };
     },
   };
+}
+
+/** X's chunked upload: initialize (JSON) → append 4 MB segments → finalize → wait while X processes the video */
+async function uploadVideo(base: string, auth: Record<string, string>, v: PublishVideo): Promise<string> {
+  const api = () => base;
+  const init = await request(`${api()}/2/media/upload/initialize`, { method: "POST", headers: auth, json: { media_type: "video/mp4", total_bytes: v.size, media_category: "tweet_video" } });
+  const id = String(init.data?.id ?? "");
+  if (!id) throw new ApiError("X did not accept the video");
+  const SEG = 4 * 1024 * 1024;
+  for (let i = 0, at = 0; at < v.size; i++, at += SEG) {
+    const f = new FormData();
+    f.append("media", blob(await readRange(v.path, at, Math.min(v.size, at + SEG) - 1), "video/mp4"), "video.mp4");
+    f.append("segment_index", String(i));
+    await request(`${api()}/2/media/upload/${id}/append`, { method: "POST", headers: auth, body: f, timeoutMs: 120_000 });
+  }
+  let info = (await request(`${api()}/2/media/upload/${id}/finalize`, { method: "POST", headers: auth })).data?.processing_info;
+  for (let n = 0; info && info.state !== "succeeded"; n++) {
+    if (info.state === "failed") throw new ApiError(`X could not process the video${info.error?.message ? `: ${info.error.message}` : ""}`);
+    if (n >= 60) throw new ApiError("X is still processing the video. Try again in a few minutes.");
+    await sleep(Number(process.env.X_POLL_MS || (info.check_after_secs || 3) * 1000));
+    info = (await request(`${api()}/2/media/upload?${new URLSearchParams({ command: "STATUS", media_id: id })}`, { headers: auth })).data?.processing_info;
+  }
+  return id;
 }

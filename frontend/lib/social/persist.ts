@@ -20,6 +20,15 @@ import { findDataImages, replaceDataImages, uploadDataImages } from "./assets";
  *
  * Designs are versioned: each one sent carries the revision it is based on, and the API refuses it when
  * another tab or user saved that design meanwhile. The engine then keeps both (see onConflict).
+ * Each design sent also carries a write id, and the ids of this tab's writes the API hasn't confirmed
+ * yet (`mine`): a save whose answer was lost (keepalive on page exit, reload or tab closed mid-request)
+ * leaves the tab one revision behind its own write, which must not read as someone else's edit.
+ * After a reload those ids are only claimed for a design whose local copy is the content they wrote
+ * (localStorage is shared by every tab: another tab's newer write must stay a conflict).
+ * For the same reason the stored synced state and revisions are stamped with the tab that wrote them, and the
+ * local copy names the tab that staged it (OWNER): a resumed copy only adopts the synced state of the tab it
+ * came from. A copy whose base can't be told (another tab wrote it, or an older client) is sent based on
+ * revision 0, so every design saved meanwhile comes back as a conflict instead of being overwritten.
  * Images in the designs sent are uploaded as hosted assets first (see assets.ts).
  *
  * Requests use the admin session (Bearer token from the login page). Local copies are kept
@@ -43,9 +52,12 @@ let CACHE = "boga.studio.v2";
 let PENDING = "boga.studio.pending";
 let BASE = "boga.studio.synced";
 let REVS = "boga.studio.revs";
+let SENT = "boga.studio.sent";
+let OWNER = "boga.studio.owner";
 const DEBOUNCE_MS = 600;
 const WATCH_MS = 2000;
 const KEEPALIVE_MAX = 60_000; // browsers cap keepalive bodies at 64 KB
+const SENT_MAX = 20; // unconfirmed write ids kept per design
 
 const ls = {
   get(k: string) {
@@ -127,6 +139,14 @@ const hash = (str: string) => {
 /** "<brandId>|<designId>" → revision on the API */
 type Revs = Map<string, number>;
 type Conflict = { brandId: string; item: any; rev: number };
+/**
+ * "<brandId>|<designId>" → writes sent since the revision the API last confirmed: their ids, the content
+ * hash of the last one (`h`, a resumed copy claims the ids only when it holds that content) and when (`t`)
+ */
+type SentEntry = { ids: string[]; h: string; t: number };
+type Sent = Map<string, SentEntry>;
+const SENT_TTL = 7 * 24 * 3600_000;
+const writeId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 
 /** Takes the revisions the API adds to its designs out of a workspace (the engine never sees them) */
 function takeRevs(w: Workspace): Revs {
@@ -170,19 +190,64 @@ function toModel(w: Workspace): Model {
   return m;
 }
 
-const saveBase = (m: Model) =>
-  ls.set(BASE, JSON.stringify({ items: [...m.items], brandOrder: m.brandOrder, designOrder: m.designOrder, postOrder: m.postOrder, ws: m.ws }));
-
-const saveRevs = (r: Revs) => ls.set(REVS, JSON.stringify([...r]));
-const loadRevs = (): Revs => {
+/** The synced state and revisions of one tab, stamped with it (`tab`) */
+const saveSynced = (tab: string, m: Model | null, r: Revs) => {
+  if (m) ls.set(BASE, JSON.stringify({ tab, items: [...m.items], brandOrder: m.brandOrder, designOrder: m.designOrder, postOrder: m.postOrder, ws: m.ws }));
+  else ls.del(BASE);
+  ls.set(REVS, JSON.stringify({ tab, revs: [...r] }));
+};
+/** The stored revisions, with the tab that wrote them (none for an older client's list) */
+const loadRevs = (): { tab?: string; revs: Revs } => {
   try {
-    return new Map(JSON.parse(ls.get(REVS) || "[]"));
+    const v = JSON.parse(ls.get(REVS) || "[]");
+    return Array.isArray(v) ? { revs: new Map(v) } : { tab: typeof v?.tab === "string" ? v.tab : undefined, revs: new Map(v?.revs || []) };
   } catch {
-    return new Map();
+    return { revs: new Map() };
   }
 };
+/** Revision 0 for every design of a local copy whose base is unknown: the API refuses it wherever a design was saved */
+const unknownRevs = (local: Workspace | null): Revs => {
+  const out: Revs = new Map();
+  Object.entries(local?.data || {}).forEach(([brandId, d]) => (d?.designs || []).forEach((x: any) => x && x.id && out.set(`${brandId}|${x.id}`, 0)));
+  return out;
+};
+/** Stored write ids, malformed or week-old entries dropped. One map for every tab of this user: change it per design. */
+const loadSent = (): Sent => {
+  const out: Sent = new Map();
+  try {
+    const v = JSON.parse(ls.get(SENT) || "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+    for (const [k, e] of Object.entries(v as Record<string, any>)) {
+      const ok = e && typeof e === "object" && Array.isArray(e.ids) && e.ids.length > 0 && e.ids.every((x: unknown) => typeof x === "string")
+        && typeof e.h === "string" && typeof e.t === "number" && Date.now() - e.t < SENT_TTL;
+      if (ok) out.set(k, { ids: e.ids.slice(-SENT_MAX), h: e.h, t: e.t });
+    }
+  } catch {}
+  return out;
+};
+/** Sets (or, with null, removes) one design's entry, keeping the other tabs' entries */
+const putSent = (k: string, e: SentEntry | null, onlyIfOurs?: string[]) => {
+  const all = loadSent();
+  const cur = all.get(k);
+  if (!e && (!cur || (onlyIfOurs && !cur.ids.some((id) => onlyIfOurs.includes(id))))) return;
+  if (e) all.set(k, e);
+  else all.delete(k);
+  ls.set(SENT, JSON.stringify(Object.fromEntries(all)));
+};
+const designHash = (d: unknown) => hash(stable(d));
+/** The stored write ids a resumed local copy may claim: only for designs whose local content is what they wrote */
+function claimSent(stored: Sent, local: Workspace | null): Sent {
+  const out: Sent = new Map();
+  if (!local) return out;
+  stored.forEach((e, k) => {
+    const [brandId, id] = k.split("|");
+    const d = (local.data?.[brandId]?.designs || []).find((x: any) => x && x.id === id);
+    if (d && designHash(d) === e.h) out.set(k, e);
+  });
+  return out;
+}
 
-const loadBase = (): Model | null => {
+const loadBase = (): (Model & { tab?: string }) | null => {
   try {
     const v = JSON.parse(ls.get(BASE) || "null");
     return v && { ...v, items: new Map(v.items), values: new Map() };
@@ -190,13 +255,22 @@ const loadBase = (): Model | null => {
     return null;
   }
 };
+/**
+ * The synced state and revisions a resumed local copy is based on: those of the tab that staged it. When that
+ * can't be told, no base (nothing is deleted) and revision 0 for its designs (any design saved since is a conflict).
+ */
+function resumeSynced(local: Workspace | null): { base: Model | null; revs: Revs } {
+  const owner = ls.get(OWNER), base = loadBase(), { tab, revs } = loadRevs();
+  if (owner && tab === owner && (!base || base.tab === owner)) return { base, revs };
+  return { base: null, revs: unknownRevs(local) };
+}
 
 type Delta = {
   active?: string;
   set?: Record<string, unknown>;
   brandOrder?: string[];
   brands?: { id: string; kit: any; content: any }[];
-  designs?: { brandId: string; item: any; rev?: number }[];
+  designs?: { brandId: string; item: any; rev?: number; wid?: string; mine?: string[] }[];
   posts?: { brandId: string; item: any }[];
   designOrder?: Record<string, string[]>;
   postOrder?: Record<string, string[]>;
@@ -245,6 +319,7 @@ function diff(base: Model | null, cur: Model, ws: Workspace): Delta | null {
 }
 
 function createPersist() {
+  const tab = writeId(); // this page: stamps the local copy and the synced state it writes
   let base: Model | null = null; // last state confirmed by the API (null = unknown)
   let latest = ""; // last snapshot staged by the engine
   let lastSynced = "";
@@ -260,6 +335,7 @@ function createPersist() {
   let getState: (() => Workspace) | null = null;
   let exit: (() => void) | null = null;
   let revs: Revs = new Map(); // revisions of the designs this browser last synced
+  let sent: Sent = new Map(); // writes sent since then, answer not read yet (stored before each request)
   let onConflict: ((list: Conflict[]) => void) | undefined;
   /**
    * Tab hidden: the page is still alive, so save normally and record the revisions the API answers.
@@ -273,10 +349,37 @@ function createPersist() {
     void push();
   };
 
-  /** Each design carries the revision it is based on (none for a design the API hasn't confirmed yet) */
-  const send = (delta: Delta, keepalive = false) => {
-    if (delta.designs) delta = { ...delta, designs: delta.designs.map((u) => ({ ...u, rev: revs.get(`${u.brandId}|${u.item.id}`) })) };
-    return authFetch("/workspace", { method: "PATCH", body: JSON.stringify(delta), keepalive });
+  /**
+   * Each design carries the revision it is based on (none for a design the API hasn't confirmed yet), a new
+   * write id, and the ids of this tab's writes since that revision. `stamp` builds that body; `post` records
+   * the ids (in memory and in localStorage) before the request leaves: when its answer is lost (keepalive,
+   * reload, closed tab), the next save still tells the API the newer stored revision is its own write.
+   */
+  const stamp = (delta: Delta) => {
+    const entries: [string, SentEntry][] = [];
+    if (delta.designs) {
+      delta = {
+        ...delta,
+        designs: delta.designs.map((u) => {
+          const k = `${u.brandId}|${u.item.id}`, wid = writeId(), mine = [...(sent.get(k)?.ids || []), wid].slice(-SENT_MAX);
+          entries.push([k, { ids: mine, h: designHash(u.item), t: Date.now() }]);
+          return { ...u, rev: revs.get(k), wid, mine };
+        }),
+      };
+    }
+    return { body: JSON.stringify(delta), entries };
+  };
+  const post = ({ body, entries }: ReturnType<typeof stamp>, keepalive = false) => {
+    entries.forEach(([k, e]) => (sent.set(k, e), putSent(k, e)));
+    return authFetch("/workspace", { method: "PATCH", body, keepalive });
+  };
+  const send = (delta: Delta) => post(stamp(delta));
+  /** A confirmed revision (or a conflict) ends this tab's unanswered writes for that design */
+  const forget = (k: string) => {
+    const mine = sent.get(k);
+    if (!mine) return;
+    sent.delete(k);
+    putSent(k, null, mine.ids);
   };
 
   /**
@@ -296,10 +399,12 @@ function createPersist() {
 
   /** Revisions the API confirmed; designs it refused take the API's version as the synced state */
   function settle(out: { revs?: Record<string, number>; conflicts?: Conflict[] }, cur: Model) {
-    Object.entries(out.revs || {}).forEach(([k, r]) => revs.set(k, r));
+    // a confirmed revision includes every earlier write of this browser
+    Object.entries(out.revs || {}).forEach(([k, r]) => (revs.set(k, r), forget(k)));
     const conflicts = (out.conflicts || []).filter((c) => c && c.item && c.item.id);
     conflicts.forEach((c) => {
       revs.set(`${c.brandId}|${c.item.id}`, c.rev);
+      forget(`${c.brandId}|${c.item.id}`);
       cur.items.set(`d|${c.brandId}|${c.item.id}`, hash(stable(c.item)));
     });
     if (conflicts.length) onConflict?.(conflicts);
@@ -338,9 +443,11 @@ function createPersist() {
       }
       base = cur;
       lastSynced = snapshot;
-      saveBase(cur);
-      saveRevs(revs);
-      if (snapshot === latest) ls.del(PENDING);
+      // another tab staged its copy since: the stored synced state stays the one that copy is based on
+      if (ls.get(OWNER) === tab) {
+        saveSynced(tab, cur, revs);
+        if (snapshot === latest) ls.del(PENDING);
+      }
     } catch (e) {
       console.warn("[persist] could not save to the API", e);
       if (localFailed) onFail?.();
@@ -351,6 +458,8 @@ function createPersist() {
     if (readOnly || resetting || json === latest) return;
     latest = json;
     localFailed = !(ls.set(CACHE, json) && ls.set(PENDING, "1"));
+    // the local copy is this tab's now: store the synced state it is based on with it
+    if (ls.get(OWNER) !== tab) ls.set(OWNER, tab), saveSynced(tab, base, revs);
     clearTimeout(timer);
     timer = setTimeout(() => void push(), DEBOUNCE_MS);
   }
@@ -361,8 +470,8 @@ function createPersist() {
     try {
       const ws = JSON.parse(latest) as Workspace;
       const delta = diff(base, toModel(ws), ws);
-      const body = delta && JSON.stringify(delta);
-      if (body && body.length <= KEEPALIVE_MAX) send(delta!, true).catch(() => {});
+      const out = delta && stamp(delta); // sized as sent: revisions and write ids included
+      if (out && out.body.length <= KEEPALIVE_MAX) post(out, true).catch(() => {});
       // Larger changes stay "pending" in localStorage and are pushed on the next load.
     } catch {}
   }
@@ -378,11 +487,14 @@ function createPersist() {
         latest = lastSynced = "";
         resetting = false;
         revs = new Map();
+        sent = new Map();
       }
       CACHE = `boga.studio.v2:${id}`;
       PENDING = `boga.studio.pending:${id}`;
       BASE = `boga.studio.synced:${id}`;
       REVS = `boga.studio.revs:${id}`;
+      SENT = `boga.studio.sent:${id}`;
+      OWNER = `boga.studio.owner:${id}`;
       readOnly = !["admin", "editor"].includes(String(user.role));
     },
 
@@ -399,6 +511,8 @@ function createPersist() {
         if (isWorkspace(v)) local = v;
       } catch {}
       const pending = ls.get(PENDING) === "1" && !!local;
+      // read with the local copy, before any await: another tab may write these meanwhile
+      const synced = resumeSynced(local), localSent = claimSent(loadSent(), local);
 
       try {
         const res = await authFetch("/workspace", { cache: "no-store" });
@@ -409,24 +523,27 @@ function createPersist() {
           // Unsaved local edits win; watch() pushes what changed since this browser's last sync.
           // Without a fingerprint nothing is deleted, only upserted. The edits are based on the
           // revisions this browser synced, so a design saved elsewhere meanwhile comes back as a conflict.
-          base = isWorkspace(workspace) ? loadBase() : null; // empty server: send everything
-          revs = base ? loadRevs() : new Map();
+          base = isWorkspace(workspace) ? synced.base : null; // empty server: send everything
+          revs = isWorkspace(workspace) ? synced.revs : new Map();
+          sent = isWorkspace(workspace) ? localSent : new Map();
           return local;
         }
         if (isWorkspace(workspace)) {
           base = toModel(workspace);
           revs = serverRevs;
-          saveBase(base);
-          saveRevs(revs);
+          sent = new Map(); // the API's revisions already include every write this tab made
           ls.set(CACHE, JSON.stringify(workspace));
+          ls.set(OWNER, tab);
+          saveSynced(tab, base, revs);
           return workspace;
         }
         base = null;
         return local; // empty database: keep local data if any, otherwise the demo is seeded
       } catch (e) {
         console.warn("[persist] API unreachable, using the local copy", e);
-        base = loadBase();
-        revs = loadRevs();
+        base = synced.base;
+        revs = synced.revs;
+        sent = localSent;
         return local;
       }
     },
@@ -500,7 +617,10 @@ function createPersist() {
       ls.del(PENDING);
       ls.del(BASE);
       ls.del(REVS);
+      ls.del(SENT);
+      ls.del(OWNER);
       revs = new Map();
+      sent = new Map();
       return true;
     },
 

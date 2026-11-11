@@ -16,6 +16,7 @@ export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
   private log = new Logger("SocialScheduler");
   private timer?: NodeJS.Timeout;
   private busy = false;
+  private ticks = 0;
 
   constructor(private publisher: PublisherService, private live: LiveRenderService, private automations: AutomationsService, private notion: NotionService) {}
 
@@ -26,6 +27,8 @@ export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
     if (this.busy) return;
     this.busy = true;
     try {
+      // about once an hour: video files no post uses any more
+      if (this.ticks++ % Math.max(1, Math.round(3600_000 / TICK_MS)) === 0) await this.publisher.sweepVideos().catch((e) => this.log.warn(`Video sweep: ${e?.message || e}`));
       // recurring posts: the coming week's runs, and the ones due soon rendered and armed
       await this.automations.tick().catch((e) => this.log.warn(`Automations: ${e?.message || e}`));
       for (const p of await this.publisher.due()) {

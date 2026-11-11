@@ -131,6 +131,14 @@ export function fitPeaks(peaks, w) {
 /* the caption rows' helpers live in caption-panels.js (the shared Captions panel) */
 export { textCommit, rangeLabel, lineText } from './caption-panels.js';
 
+/* ---- Scenes panel (the uploaded video's first rail item): the clip, then its Look, under one title ---- */
+const inner = (h) => { const m = /^\s*<div class="body ([^"]*)">\s*<h3>[^<]*<\/h3>([\s\S]*)<\/div>\s*$/.exec(h || ''); return m ? { cls: m[1], body: m[2] } : null; };
+/** The Scenes panel from the clip pane and the Look pane (each `<div class="body …"><h3>…</h3>…</div>`); no Look pane yet: the clip alone */
+export function scenesPane(clipHTML, lookHTML) {
+  const c = inner(clipHTML), l = inner(lookHTML); if (!c) return null;
+  return `<div class="body ft-scenes"><h3>Scenes</h3><div class="${c.cls}">${c.body}</div>${l ? `<span class="label ft-scenes-l">Look</span><div class="${l.cls}">${l.body}</div>` : ''}</div>`;
+}
+
 /* ---- Look panel: grade sliders and brand looks (the caption style edits are caption-inspector.js's setStyleField) ---- */
 const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
 /** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
@@ -268,7 +276,7 @@ export function installFootageEditor(ctx, FT) {
     if (VS.captionInspector) VS.captionInspector.stopRef(d); // a reference read for another design stops
     if (prepareOpen(d)) save();
     const old = $('#ftStage'); if (old) old.remove(); // a new video in the same design: the stage is made again (its size observer too)
-    if (!d.footage.src && !FT.upload(d)) ED.tab = 'media'; // an empty video opens on Media (the stage shows the drop zone)
+    if (!d.footage.src && !FT.upload(d)) ED.tab = 'scenes'; // an empty video opens on Scenes (the stage shows the drop zone)
     F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false, musicMuted: false, mel: null, aLive: null, aBusy: false, spans: null, spansOf: null };
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
@@ -466,9 +474,12 @@ export function installFootageEditor(ctx, FT) {
       : `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>`;
     return [
       { id: 'video', icon: ic('vsFilm', 14), label: 'Video', html: () => clip },
-      { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
+      // a track with nothing on it leaves the timeline for the shell's "+ Track" row (dock.js); the voice is the clip's own sound
+      { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })),
+        empty: !(caps.lines || []).length, add: { label: 'Captions', act: 'edTab', k: 'captions' } },
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
-      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: !!F.musicMuted, html: musicClipHTML },
+      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: !!F.musicMuted, html: musicClipHTML,
+        empty: !ftAudioOf(ED.d.footage).music, add: { label: 'Music', act: 'ftAudioOpen' } },
     ];
   }
   /** The Music track: the bed over the whole video (it loops), or "+ Add music"; both open the Audio panel */
@@ -554,14 +565,14 @@ export function installFootageEditor(ctx, FT) {
   /** Captions without speech to listen to: paste the script or open a subtitle file instead (both in the Script panel) */
   const altHTML = () => {
     if (!can()) return '';
-    const wait = !F || !F.id; // no video yet: a pasted script would land every word at 0 ms
-    return `<div class="ft-alt"><button class="btn secondary sm" data-act="ftScript" ${wait ? `disabled title="${NEEDS_VIDEO}"` : ''}>${ic('type', 15)}Paste script</button><button class="btn secondary sm" data-act="ftSrt">${ic('upload', 15)}Open SRT or VTT</button></div>${wait ? `<span class="xs-t muted">Paste script: ${NEEDS_VIDEO.toLowerCase()}.</span>` : ''}`;
+    const wait = !F || !F.id; // no video yet: a pasted script would land every word at 0 ms, so only the subtitle file is offered
+    return `<div class="ft-alt">${wait ? '' : `<button class="btn secondary sm" data-act="ftScript">${ic('type', 15)}Paste script</button>`}<button class="btn secondary sm" data-act="ftSrt">${ic('upload', 15)}Open SRT or VTT</button></div>`;
   };
   /** An empty video's Captions panel: 1. Add your video, 2. Add captions */
   function stepsHTML() {
     const up = FT.upload(ED.d), busy = !!(up && !up.err);
     return `<ol class="ft-steps"><li class="${busy ? '' : 'on'}"><b>Add your video</b><span class="xs-t muted">${busy ? esc(up.phase === 'uploading' ? 'Uploading your video…' : upText(up)) : 'MP4 or MOV, up to 10 min'}</span>${busy || !can() ? '' : `<button class="btn primary sm" data-act="ftPick">${ic('upload', 15)}Choose a file</button>`}</li>
-      <li><b>Add captions</b><span class="xs-t muted">Auto from speech once your video is in, or paste a script, or open an SRT or VTT file.</span>${altHTML()}</li></ol>`;
+      <li><b>Add captions</b><span class="xs-t muted">They’re made from the speech once your video is in. You can also open an SRT or VTT file.</span>${altHTML()}</li></ol>`;
   }
 
   /* ---------- the empty video: "Add your video" (stage and Media), the upload's progress ---------- */
@@ -614,7 +625,8 @@ export function installFootageEditor(ctx, FT) {
   const retxHTML = () => { const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe); return `<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`; };
 
   /* ---------- Look panel ---------- */
-  const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft-rg"><span>${label}</span><input type="range" ${attr}="${key}" min="${min}" max="${max}" step="${step}" value="${val}" style="--p:${((val - min) / (max - min)) * 100}%" ${dis}><output>${val}</output></label>`;
+  // a slider that goes below zero fills from its centre (.ctr), so −13 reads as a little below neutral, not as 43 % full
+const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft-rg"><span>${label}</span><input type="range"${min < 0 ? ' class="ctr"' : ''} ${attr}="${key}" min="${min}" max="${max}" step="${step}" value="${val}" style="--p:${((val - min) / (max - min)) * 100}%" ${dis}><output>${val > 0 && min < 0 ? '+' + val : val}</output></label>`;
   const brandLooks = () => (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
 
   function gradeHTML(ft, A, src, dis) {
@@ -624,11 +636,14 @@ export function installFootageEditor(ctx, FT) {
     const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut), gone = !own && !!F.cubeGone[ft.look.lut];
     const msg = own && F.cube ? `The colours match ${src}. Use <b>Before / After</b> under the video to compare.`
       : gone ? esc(LOOK_DELETED)
-      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(!ft.look.lut && A.grade.state === 'skipped' ? NO_GRADE_YET : F.note || 'No colour grade yet.');
+      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : null;
     const L = ft.look, g = (k) => gradeToSlider(k, L[k]);
+    // no grade file, but the sliders were moved: say so, rather than "no colour grade yet" above non-zero values
+    const msg2 = msg != null ? msg : ['exposure', 'temp', 'sat'].some((k) => g(k)) ? 'Adjusted by hand. Match a reference or apply a brand look for a full grade.'
+      : esc(A.grade.state === 'skipped' ? NO_GRADE_YET : F.note || 'No colour grade yet.');
     // a brand look is applied (or was, and is gone): the footage's own matched grade is one click away
     const back = !dis && canUseMatched(ft, A.grade, F.id) ? `<button class="btn ${gone ? 'primary' : 'secondary'} sm ft-matched" data-act="ftUseMatched">${ic('refresh', 14)}Use the matched grade</button>` : '';
-    return `${gone ? `<div class="note warn" role="alert">${ic('alert', 15)}<span>${msg}</span></div>${back}` : `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg}</p>${back}`}
+    return `${gone ? `<div class="note warn" role="alert">${ic('alert', 15)}<span>${msg2}</span></div>${back}` : `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg2}</p>${back}`}
       ${rgHTML('data-ft-g', 'strength', 'Strength', 0, 100, 1, g('strength'), dis)}${rgHTML('data-ft-g', 'exposure', 'Exposure', -100, 100, 1, g('exposure'), dis)}
       ${rgHTML('data-ft-g', 'temp', 'Temperature', -100, 100, 1, g('temp'), dis)}${rgHTML('data-ft-g', 'sat', 'Saturation', -100, 100, 1, g('sat'), dis)}
       ${dis ? '' : `<button class="btn ghost sm ft-reset" data-act="ftGradeReset">${ic('refresh', 14)}Reset grade</button>`}`;
@@ -759,9 +774,9 @@ export function installFootageEditor(ctx, FT) {
     },
     player,
     tracks: tlTracks,
-    panel: (k) => (!F || F.d !== ED.d ? null : k === 'media' ? mediaHTML() : k === 'look' ? lookPanelHTML() : k === 'audio' ? audioPanelHTML() : null),
+    panel: (k) => (!F || F.d !== ED.d ? null : k === 'scenes' ? scenesPane(mediaHTML(), F.id ? lookPanelHTML() : null) : k === 'audio' ? audioPanelHTML() : null),
     captions: {
-      body: noLinesHTML, foot: retxHTML, light: () => sync(),
+      body: noLinesHTML, foot: retxHTML, light: () => sync(), ready: () => !!(F && F.id),
       /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
       preview: (style) => { if (!F || !F.player) return; if (style) F.player.setCaptions({ ...capsOf(ED.d), style }); else sync(); },
     },
@@ -782,7 +797,7 @@ export function installFootageEditor(ctx, FT) {
     ftSaveLook: () => saveLook(),
     ftApplyLook: (a) => applyLook(a.dataset.id),
     ftUseMatched: () => useMatched(),
-    ftPick: () => { const i = $('[data-ft-add-file]'); if (i) i.click(); else ACT.edTab({ dataset: { k: 'media' } }); },
+    ftPick: () => { const i = $('[data-ft-add-file]'); if (i) i.click(); else ACT.edTab({ dataset: { k: 'scenes' } }); },
     ftStopUp: () => { if (ED.d) { FT.stopUpload(ED.d); toast('Upload stopped. Drop the same file again to pick up where it stopped.'); } },
     ftReplace: () => {
       if (!F || !can() || FT.upload(ED.d) && !FT.upload(ED.d).err) return;
@@ -819,7 +834,7 @@ export function installFootageEditor(ctx, FT) {
   });
   /* ---- Look panel (grade): live preview on `input`, one mutate() on `change` (release) ---- */
   const setOut = (el) => {
-    const o = el.closest('.ft-rg') && el.closest('.ft-rg').querySelector('output'); if (o) o.textContent = el.value;
+    const o = el.closest('.ft-rg') && el.closest('.ft-rg').querySelector('output'); if (o) o.textContent = +el.min < 0 && +el.value > 0 ? '+' + el.value : el.value;
     if (el.type === 'range') el.style.setProperty('--p', ((el.value - el.min) / (el.max - el.min)) * 100 + '%');
   };
   function gradePreview(el) {
@@ -1004,7 +1019,7 @@ export function installFootageEditor(ctx, FT) {
         const done = (url) => {
           st.url = url; bar(1); msg('Your video is ready.');
           const name = exportName(d, st.size), href = apiUrl(url) + '&dl=' + encodeURIComponent(name);
-          // no Schedule here: the publisher posts images only, a video would go out as a black still (see footage.js blockSchedule)
+          // Schedule is in the top bar: the post prepares its own MP4 (post-video.js)
           $b('[data-ft-ef]').innerHTML = `<button class="btn ghost" data-close>Close</button><a class="btn primary" href="${esc(href)}" download="${esc(name)}">${ic('download', 16)}Download</a>`;
         };
         const fail = (e) => { lock(false); msg((e && e.message) || 'The export failed. Try again.'); const g = $b('[data-ft-go]'); if (g) g.innerHTML = `${ic('refresh', 16)}Try again`; };

@@ -1,3 +1,4 @@
+import { readRange, sleep } from "./video-file";
 import { ApiError, request } from "../http";
 import { Env, expiresIn, Linked, OAuthProvider, PublishInput } from "./types";
 
@@ -67,6 +68,7 @@ export function linkedin(env: Env): OAuthProvider {
     async publish(link: Linked, input: PublishInput) {
       if (link.tokens.expiresAt && link.tokens.expiresAt < Date.now()) throw new ApiError("The LinkedIn connection expired. Reconnect LinkedIn in Settings.");
       const h = rest(link.tokens.accessToken), author = link.extra.author;
+      if (input.video) return postVideo(api(), input, h, author);
       const imageUrns: string[] = [];
       for (const im of input.images.slice(0, 20)) {
         const init = await request(`${api()}/rest/images?action=initializeUpload`, { method: "POST", headers: h, json: { initializeUploadRequest: { owner: author } } });
@@ -99,4 +101,50 @@ export function linkedin(env: Env): OAuthProvider {
       return { id: urn, url: `https://www.linkedin.com/feed/update/${urn}`, warning };
     },
   };
+}
+
+/**
+ * A LinkedIn video post: initializeUpload (the file's size) → PUT each part to its upload URL (keeping the ETags) →
+ * finalizeUpload → wait until the video is AVAILABLE → the post, with the video as its media.
+ */
+async function postVideo(base: string, input: PublishInput, h: Record<string, string>, author: string) {
+  const api = () => base;
+  const v = input.video!;
+  const init = await request(`${api()}/rest/videos?action=initializeUpload`, {
+    method: "POST", headers: h, json: { initializeUploadRequest: { owner: author, fileSizeBytes: v.size, uploadCaptions: false, uploadThumbnail: false } },
+  });
+  const { video, uploadToken = "", uploadInstructions = [] } = init.value || {};
+  if (!video || !uploadInstructions.length) throw new ApiError("LinkedIn did not accept the video");
+  const etags: string[] = [];
+  for (const part of uploadInstructions as { uploadUrl: string; firstByte: number; lastByte: number }[]) {
+    const body = await readRange(v.path, part.firstByte, part.lastByte);
+    const up = await fetch(part.uploadUrl, { method: "PUT", headers: { Authorization: h.Authorization, "Content-Type": "application/octet-stream" }, body: new Uint8Array(body), signal: AbortSignal.timeout(5 * 60_000) });
+    if (!up.ok) throw new ApiError(`LinkedIn video upload failed (${up.status})`);
+    etags.push(String(up.headers.get("etag") || "").replace(/"/g, ""));
+  }
+  await request(`${api()}/rest/videos?action=finalizeUpload`, { method: "POST", headers: h, json: { finalizeUploadRequest: { video, uploadToken, uploadedPartIds: etags } } });
+  for (let i = 0; ; i++) {
+    const s = await request(`${api()}/rest/videos/${encodeURIComponent(video)}`, { headers: h });
+    if (s.status === "AVAILABLE") break;
+    if (s.status === "PROCESSING_FAILED") throw new ApiError("LinkedIn could not process the video");
+    if (i >= 100) throw new ApiError("LinkedIn is still processing the video. Try again in a few minutes.");
+    await sleep(Number(process.env.LINKEDIN_POLL_MS || 3000));
+  }
+  const r = await request(`${api()}/rest/posts`, {
+    method: "POST", headers: h,
+    json: {
+      author, commentary: littleText(input.text), visibility: "PUBLIC",
+      distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      content: { media: { id: video } }, lifecycleState: "PUBLISHED", isReshareDisabledByAuthor: false,
+    },
+  });
+  const urn = (r as any).__headers?.get("x-restli-id") || r.id;
+  if (!urn) throw new ApiError("LinkedIn did not return the post id");
+  let warning: string | undefined;
+  if (input.firstComment?.trim()) {
+    await request(`${api()}/rest/socialActions/${encodeURIComponent(urn)}/comments`, {
+      method: "POST", headers: h, json: { actor: author, object: urn, message: { text: input.firstComment.trim() } },
+    }).catch((e) => { warning = `Posted, but the first comment failed: ${e.message}`; });
+  }
+  return { id: urn, url: `https://www.linkedin.com/feed/update/${urn}`, warning };
 }

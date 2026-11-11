@@ -21,8 +21,14 @@ import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
+import { exportPayload, exportSizes } from './footage-editor.js';
+import { isVideoPost, videoProblem, videoKey, videoLength, prepareVideo, overall, STEPS } from './post-video.js';
+import { buildPalette, gifWriter, gifSize, gifEstimate, GIF_FPS, GIF_SIZES, GIF_LONG_MS } from './gif.js';
 import { installVideoStudio } from './video-studio.js';
 import { installReelSource } from './reel-source.js';
+import { installStillSource } from './still-source.js';
+import { createBlockHTML, promptBlockHTML, promptBarHTML, promptSize, promptNote, promptName, promptGreeting, PROMPT_IDEAS } from './home.js';
+import { agentExtras, lintSlide, lintText, tidySystem, mergeRules, LIMITS, patternWire, MAX_INSPIRATION, gatherSources, hasSources, gatheredSig, tidyGuideDesign, guideForRequest, withGuideRules, sourcesPhrase } from './design-system.js';
 import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
 import { installCaptionInspector } from './caption-inspector.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
@@ -90,6 +96,8 @@ let renderSlide = null;
 let LIVE = null;
 /** Price alert and news templates (set by the market data section): panel, attach, build */
 let FEEDS = null;
+let IMPORT_FILE = null; // importDesign(file): an image, SVG or HTML file becomes layers of the open design (set by the live-data block), for the top bar's Import menu
+let AGAPI = null; // the Studio Agent's models and loop, for the Overview's prompt box (set by the v25 block)
 /** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
 let NOTION = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
@@ -100,6 +108,8 @@ let textHTML = (l) => esc(l.text);
 const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false, applyStyles: () => {} }; // tree hooks: v31, styles: v33
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
+/** A video design's hash (what its prepared MP4 shows), set with the publishing helpers */
+let videoHash = () => '';
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
 const CONN = {
   brand: null, list: null, pending: null, pendingBrand: null,
@@ -317,23 +327,14 @@ function brandAv(b, size) {
   }
   return `<span class="${cls}" style="background:${b.avatarBg || (b.colors[0] ? b.colors[0].hex : '#fd0e35')}">${esc(b.initials)}</span>`;
 }
-/** "All brands" mode (Settings: S.set.allBrands): overview, planner and studio show every brand together */
-const allOn = () => !!(S.set && S.set.allBrands) && S.brands.length > 1;
+/** "All brands" mode is no longer offered: one brand at a time (the mode's views stay below, unreachable) */
+const allOn = () => false;
 /** "All brands" avatar: the first brands side by side, overlapping, and "+N" for the others */
 const allAv = (size) => `<span class="bgrp ${size || 'md'}" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}${S.brands.length > 3 ? `<span class="bgrp-n">+${S.brands.length - 3}</span>` : ''}</span>`;
-/** The sidebar's workspace button always names the workspace (Social Media Admin), like the Blog Admin's; brands switch in the top bar */
-const wsBtn = () => `<span class="ws-ico" aria-hidden="true">${ic('globe', 18)}</span><span class="t"><b>Social Media Admin</b><small>Social &amp; Publishing</small></span>${ic('chevD', 16)}`;
-const pillHTML = () => allOn() ? `${allAv('sm')}<span class="hide-sm">All brands</span>${ic('chevD', 16)}` : `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
-function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
-function brandMenu() {
-  const all = allOn();
-  return `<div class="div"></div><div class="cap">Switch brand</div>`
-    + (S.brands.length > 1 ? `<button class="it ${all ? 'on' : ''}" data-act="allBrands">${allAv('sm')}<span class="grow"><b>All brands</b><small>Every brand in one workspace</small></span>${all ? ic('check', 14, 'faint') : ''}</button>` : '')
-    // many brands: a search box, and the list scrolls (about five rows show)
-    + (S.brands.length > 5 ? `<label class="bm-q">${ic('search', 15)}<input type="search" id="bmQ" placeholder="Search ${S.brands.length} brands" aria-label="Search brands" autocomplete="off"></label>` : '')
-    + `<div class="bm-list">${S.brands.map((b) => `<button class="it ${!all && b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}" data-name="${esc((b.name + ' ' + (b.industry || '')).toLowerCase())}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${!all && b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')}<p class="bm-none" hidden>No brand matches.</p></div>`
-    + `<div class="div"></div><button class="it addb" data-act="addBrand"><span class="ico">${ic('plus', 16)}</span><span class="grow"><b>Add brand</b><small>New workspace &amp; brand kit</small></span></button><button class="it" data-act="manageBrands"><span class="ico">${ic('layers', 16)}</span><span class="grow"><b>Manage brands</b><small>${S.brands.length} brands</small></span></button>`;
-}
+/** The sidebar's workspace button names the workspace, like the Blog Admin's (company logo, "Boğa", the workspace); the top bar's brand button opens the brands list */
+const wsBtn = () => `<img src="/logo.png" alt="" width="36" height="36"><span class="t"><b>Boğa</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
+const pillHTML = () => brandAv(brand(), 'sm');
+function refreshChrome() { const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
 /* Brand templates are stored by the API, one document each (social_templates) */
 const tplApi = (b, path, o) => api(`/social/brands/${encodeURIComponent(b.id)}/templates${path}`, o);
 /** Disables a button and shows a spinner while a request runs */
@@ -478,7 +479,7 @@ function pathHTML(l, o = {}) {
   const sh = o.shadow === false ? [] : shadowsOf(l).filter((e) => e.k !== 'inner');
   const st = sh.length ? ` style="filter:${sh.map((e) => `drop-shadow(${e.x}px ${e.y}px ${e.b / 2}px ${shadowColor(e.c, e.o)})`).join(' ')}"` : '';
   // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="ly-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
 }
 const layerHTML = (l) => (l.type === 'group' ? '' : `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`);
 const posterHTML = (pg) => withTree(pg, () => pg.layers.map(layerHTML).join('')); // frames clip their content (v31)
@@ -558,7 +559,6 @@ function renderSide() {
       <button class="it" data-act="goWs" data-href="/"><span class="ico">${ic('doc', 16)}</span><span class="grow"><b>Blog Admin</b><small>Content &amp; Articles</small></span></button>
       <button class="it" data-act="goWs" data-href="/bot/overview"><span class="ico">${ic('chat', 16)}</span><span class="grow"><b>Chatbot Admin</b><small>AI &amp; Conversations</small></span><span class="soon">Soon</span></button>
       <button class="it on" data-act="ws"><span class="ico">${ic('globe', 16)}</span><span class="grow"><b>Social Media Admin</b><small>Social &amp; Publishing</small></span>${ic('check', 14, 'faint')}</button>
-      <div id="brandMenu">${brandMenu()}</div>
     </div>
   </div>
   <nav class="nav" id="nav">${NAV.map(([k, l, i]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}</a>`).join('')}</nav>
@@ -584,11 +584,7 @@ ACT.me = () => { const m = $('#meMenu'); m.hidden = !m.hidden; };
 ACT.goUsage = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/usage') route(); else location.hash = '#/usage'; };
 ACT.goProfile = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/profile') route(); else location.hash = '#/profile'; };
 ACT.signOut = () => { persist.signOut(); navigate('/login'); };
-ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; if (!m.hidden) { const on = m.querySelector('.bm-list .it.on'); on && on.scrollIntoView({ block: 'nearest' }); } };
-document.addEventListener('input', (e) => {
-  if (e.target.id !== 'bmQ') return; const q = e.target.value.trim().toLowerCase(), L = e.target.closest('#brandMenu').querySelector('.bm-list'); let n = 0;
-  L.querySelectorAll('.it').forEach((b) => { const hit = !q || b.dataset.name.includes(q); b.hidden = !hit; n += hit; }); L.querySelector('.bm-none').hidden = n > 0;
-});
+ACT.ws = () => { const m = $('#wsMenu'); m.hidden = !m.hidden; };
 ACT.noop = (a, e) => { e.preventDefault(); toast('Not part of this demo'); $('#wsMenu') && ($('#wsMenu').hidden = true); };
 ACT.menu = () => { $('#side').classList.add('open'); $('#scrim').hidden = false; };
 ACT.theme = () => { setTheme(S.theme === 'dark' ? 'light' : 'dark'); route(); };
@@ -604,7 +600,7 @@ function route() {
   $$('#nav a[data-k]').forEach((a) => a.classList.toggle('on', a.dataset.k === (PAGES[page] ? page : 'overview')));
   closeDrawer();
   $('#top').innerHTML = `<button class="btn secondary icon" data-act="menu" title="Menu" style="display:${innerWidth > 1024 ? 'none' : 'inline-flex'}">${ic('menu')}</button>
-    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="Switch brand">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
+    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="${esc(brand().name)}: your brands" aria-label="Your brands">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
     <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>${p.themeFirst && p.actions ? p.actions() : ''}`;
   $('#view').innerHTML = `<div class="page">${p.view()}</div>`; scrollTo(0, 0);
   sbUsageLoad();
@@ -628,12 +624,42 @@ function agoOf(d) {
   if (days === 1) return 'Yesterday'; if (days < 7) return days + ' days ago';
   return fmt(t, { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
 }
+/* A carousel's card previews every slide: arrows on the preview (or the arrow keys while it has focus) step through them,
+   the dots say where you are. A single design shows its one page. The slide shown is remembered while the studio is open. */
+const DC_AT = new Map(); // design id -> slide shown on its card
+const dcDots = (n, i) => n > 8 ? `<b>${i + 1} / ${n}</b>` : Array.from({ length: n }, (_, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
+/** A card's artwork: the slide shown in front and, for a carousel, its other slides stacked behind it in order (the next one first).
+    At most DC_BACK slides are drawn behind, so a long carousel stays light. */
+const DC_BACK = 7;
+function dcArt(d, i) {
+  const n = d.pages.length, m = Math.min(n - 1, DC_BACK), step = m ? Math.min(12, 30 / m) : 0;
+  const back = Array.from({ length: m }, (_, k) => `<span class="dc-back" style="--k:${k + 1}" aria-hidden="true">${thumb(d.pages[(i + k + 1) % n], d.ratio, 190, 215)}</span>`).reverse().join('');
+  return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}</span>`;
+}
 function designCard(d, extra = '') {
-  const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
+  const dd = getD(d.id), [w, h] = RATIOS[d.ratio], n = dd.pages.length, i = Math.min(DC_AT.get(d.id) || 0, n - 1);
+  const nav = n > 1 ? `<button type="button" class="dc-nav prev" data-act="dcSlide" data-n="-1" aria-label="Previous slide"${i ? '' : ' disabled'}>${ic('chevL', 16)}</button><button type="button" class="dc-nav next" data-act="dcSlide" data-n="1" aria-label="Next slide"${i < n - 1 ? '' : ' disabled'}>${ic('chevR', 16)}</button><span class="dc-dots" aria-hidden="true">${dcDots(n, i)}</span>` : '';
   return `<div class="card dc" data-id="${d.id}">
-    <button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>
+    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
     <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
 }
+/** Shows another slide on a carousel's card, in place */
+function dcShow(card, step) {
+  const d = card && getD(card.dataset.id); if (!d || d.pages.length < 2) return;
+  const n = d.pages.length, i = Math.max(0, Math.min(n - 1, (DC_AT.get(d.id) || 0) + step)); if (i === (DC_AT.get(d.id) || 0)) return;
+  DC_AT.set(d.id, i);
+  const pv = card.querySelector('.pv'), art = pv.querySelector('.dc-art'); if (art) art.outerHTML = dcArt(d, i);
+  pv.setAttribute('aria-label', `Open ${d.name}, carousel, slide ${i + 1} of ${n}`);
+  const [prev, next] = [card.querySelector('.dc-nav.prev'), card.querySelector('.dc-nav.next')], had = document.activeElement;
+  prev.disabled = !i; next.disabled = i === n - 1; card.querySelector('.dc-dots').innerHTML = dcDots(n, i);
+  if (had === prev && prev.disabled) next.focus(); else if (had === next && next.disabled) prev.focus(); // the arrow at an end goes away: keep the keyboard on the card
+}
+ACT.dcSlide = (a, e) => { e && (e.preventDefault(), e.stopPropagation()); dcShow(a.closest('.card.dc'), +a.dataset.n); };
+document.addEventListener('keydown', (e) => {
+  if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const pv = e.target.closest && e.target.closest('.card.dc .pv'); if (!pv || !pv.parentNode.querySelector('.dc-nav')) return;
+  e.preventDefault(); dcShow(pv.closest('.card.dc'), e.key === 'ArrowRight' ? 1 : -1);
+});
 
 /* ---------- Designs: create / open / rename / duplicate / status / delete ----------
    Changes go to the in-memory workspace, then persist.flush() sends them to the API
@@ -656,6 +682,43 @@ function designMenu(btn, d) {
   m.addEventListener('click', (e) => { if (e.target.closest('[data-act]')) m.remove(); });
   const f = m.querySelector('button'); f && f.focus();
 }
+/* ---------- top bar: one Import button, a menu with the sources (Figma, an image or a file) ---------- */
+function importBtn() {
+  return `<button class="btn secondary imp-btn" data-act="impMenu" aria-haspopup="menu" title="Import a design">${ic('upload')}<span class="hide-sm">Import</span></button>`;
+}
+function importMenu(btn) {
+  const open = $('.dmenu-imp') || importWasOpen; importWasOpen = false; $$('.dmenu').forEach((m) => m.remove()); if (open) return; // a second press closes it
+  const m = document.createElement('div'); m.className = 'dmenu dmenu-imp'; m.setAttribute('role', 'menu'); m.setAttribute('aria-label', 'Import');
+  const it = (act, icon, label, line) => `<button type="button" role="menuitem" data-act="${act}"><span class="imp-i">${ic(icon, 18)}</span><span class="grow"><b>${label}</b><small>${line}</small></span></button>`;
+  m.innerHTML = it('figma', 'figma', 'From Figma', 'Frames become editable layers') + it('impImage', 'image', 'Image or file', 'PNG, JPG, SVG or HTML, rebuilt as layers');
+  document.body.append(m);
+  const r = btn.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + 'px'; // the menu's right edge under the button's
+  m.style.top = (r.bottom + 8 + mh > innerHeight - 8 ? Math.max(8, r.top - mh - 8) : r.bottom + 8) + 'px';
+  m.addEventListener('click', (e) => { if (e.target.closest('[data-act]')) m.remove(); });
+  m.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { m.remove(); btn.isConnected && btn.focus(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const b = [...m.querySelectorAll('button')], n = b.indexOf(document.activeElement); b[(n + (e.key === 'ArrowDown' ? 1 : b.length - 1)) % b.length].focus(); }
+  });
+  const f = m.querySelector('button'); f && f.focus();
+}
+let importWasOpen = false; // menus close on any press outside them, before the click: remember that the press was on the open menu's own button
+document.addEventListener('mousedown', (e) => { importWasOpen = !!(e.target.closest && e.target.closest('.imp-btn') && $('.dmenu-imp')); }, true);
+let importPending = null; // { id, file }: the file waits for its new design to open in the editor
+Object.assign(ACT, {
+  impMenu: (a, e) => { e && e.stopPropagation(); importMenu(a); },
+  /** Image or file: pick it, then a new design opens and the file becomes its layers (the design takes the picture's shape) */
+  impImage: () => {
+    if (!canEdit()) return;
+    const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,.svg,text/html,.html,.htm';
+    i.addEventListener('change', () => {
+      const f = i.files && i.files[0]; if (!f) return;
+      const d = createDesign({ name: f.name.replace(/\.[^.]+$/, '').slice(0, 44) || 'Imported design', ratio: brand().defaultRatio || '4:5', source: 'Import' });
+      importPending = { id: d.id, file: f }; location.hash = '#/editor/' + d.id;
+    });
+    i.click();
+  },
+});
 Object.assign(ACT, {
   dMore: (a, e) => { e && e.stopPropagation(); const d = getD(a.dataset.id); if (d) designMenu(a, d); },
   dRename: (a) => {
@@ -872,7 +935,7 @@ function ovSchedule() {
 
 PAGES.overview = {
   t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.', themeFirst: true,
-  actions: () => `<button class="btn secondary hide-sm" data-act="figma">${ic('figma')}Import from Figma</button><a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
+  actions: () => `${importBtn()}<a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
   view: () => {
     if (!OV.day) { OV.day = iso(new Date()); OV.start = iso(addD(new Date(), -2)); }
     const who = esc(allOn() ? 'your brands' : brand().name);
@@ -958,7 +1021,7 @@ const ST = { tab: 0, q: '', page: 0 };
 const ST_PER = 12;
 PAGES.studio = {
   t: 'Studio', s: 'Design posts for every platform, or bring them in from Figma.',
-  actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
+  actions: () => `${importBtn()}<button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
   view: () => {
     const tile = (r, n, s, w, h, sl) => `<button class="tile" data-act="newDesign" data-ratio="${r}" data-slides="${sl || 1}"><span class="shape"><i style="width:${w}px;height:${h}px"></i></span><span><b>${n}</b><small>${s}</small></span></button>`;
     // two libraries: the brand's designs and the templates saved from them (in All brands, every brand's)
@@ -978,7 +1041,7 @@ PAGES.studio = {
       <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page + 1}" ${ST.page < pages - 1 ? '' : 'disabled'} aria-label="Next page">${ic('chevR', 16)}</button></nav>`;
     let body;
     if (ST.tab === 1) body = ts.length ? `<div class="cards">${shown.map(tplCard).join('')}</div>${pager}` : q && tpls.length ? miss()
-      : none('layout', 'No templates yet', 'Open a design and choose “Save slide as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
+      : none('layout', 'No templates yet', 'Open a design and choose “Save page as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     else body = ds.length ? `<div class="cards">${shown.map((d) => designCard(d)).join('')}</div>${pager}` : q && S.designs.length ? miss()
       : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
@@ -994,7 +1057,7 @@ document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = 
 
 /* ---------- Brand kit (one per brand workspace) ---------- */
 const BK = { tab: 'info' };
-const BKTABS = [['info', 'Info & guidelines', 'doc'], ['logos', 'Logos & assets', 'image'], ['colors', 'Colors', 'palette'], ['type', 'Typography', 'type'], ['tpl', 'Templates', 'layout'], ['set', 'Settings', 'settings']];
+const BKTABS = [['info', 'Info & guidelines', 'doc'], ['logos', 'Logos & assets', 'image'], ['colors', 'Colors', 'palette'], ['type', 'Typography', 'type'], ['tpl', 'Templates', 'layout'], ['ds', 'Design system', 'wand'], ['set', 'Settings', 'settings']];
 function setupItems() {
   const b = brand();
   return [
@@ -1010,7 +1073,6 @@ function setupCard() {
   const it = setupItems(), n = it.filter((x) => x.d).length; if (n === it.length) return '';
   return `<div class="widget"><div class="wtitle">${brandAv(brand(), 'sm')}Set up ${esc(brand().name)}<span class="sp"></span><span class="xs-t muted">${n} of ${it.length} done</span></div><div class="prog-w"><div class="prog" role="progressbar" aria-label="Setup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(n / it.length * 100)}"><i style="width:${Math.round(n / it.length * 100)}%"></i></div><b class="prog-pct">${Math.round(n / it.length * 100)}%</b></div><div>${it.map((x) => `<button class="todo" style="width:100%;text-align:left" data-act="bkGo" ${x.tab ? `data-tab="${x.tab}"` : `data-href="${x.href}"`}><span class="cbx ${x.d ? 'on' : ''}">${x.d ? ic('check', 12) : ''}</span><span class="grow ${x.d ? 'muted' : ''}" style="${x.d ? 'text-decoration:line-through' : ''}">${x.l}</span>${x.d ? '' : ic('chevR', 16, 'faint')}</button>`).join('')}</div></div>`;
 }
-const bkPreview = () => `<div class="row" style="gap:16px;flex-wrap:wrap">${tplThumb('launch', '4:5', 200, 250)}${tplThumb('quote', '4:5', 200, 250)}${tplThumb('stat', '1:1', 200, 250)}</div>`;
 const ta = (key, ph, h) => `<textarea class="inp ta" data-b="${key}" placeholder="${ph || ''}" style="min-height:${h || 90}px">${esc(brand()[key])}</textarea>`;
 const ip = (key, ph) => `<input class="inp" data-b="${key}" value="${esc(brand()[key])}" placeholder="${ph || ''}">`;
 const LANGS = ['English', 'French', 'Spanish', 'German', 'Arabic', 'Italian', 'Portuguese'];
@@ -1036,8 +1098,7 @@ const BKP = {
   colors: () => {
     const b = brand(), role = (i) => ['Primary: buttons, accents', 'Dark: backgrounds', 'Light: backgrounds'][i] || '';
     return `<div class="phead"><div><h2>Brand colors</h2><p>The first three colors drive starter templates: primary, dark and light.</p></div><button class="btn secondary sm" data-act="addColor" ${b.colors.length >= 12 ? 'disabled' : ''}>${ic('plus', 16)}Add color</button></div>
-      <div style="display:flex;flex-direction:column;gap:8px">${b.colors.map((c, i) => `<div class="crow"><input type="color" data-ci="${c.id}" value="${hex(c.hex)}"><div class="grow"><input class="inp" style="padding:6px 10px" data-cn="${c.id}" value="${esc(c.name)}"><p class="xs-t faint" style="margin-top:3px">${role(i)}</p></div><code class="sm-t muted">${c.hex.toUpperCase()}</code><button class="btn ghost icon sm" data-act="delColor" data-id="${c.id}" ${b.colors.length <= 3 ? 'disabled' : ''} title="Remove">${ic('trash', 16)}</button></div>`).join('')}</div>
-      <div><span class="label">Live preview on starter templates</span><div id="bkPreview">${bkPreview()}</div></div>`;
+      <div style="display:flex;flex-direction:column;gap:8px">${b.colors.map((c, i) => `<div class="crow"><input type="color" data-ci="${c.id}" value="${hex(c.hex)}"><div class="grow"><input class="inp" style="padding:6px 10px" data-cn="${c.id}" value="${esc(c.name)}"><p class="xs-t faint" style="margin-top:3px">${role(i)}</p></div><code class="sm-t muted">${c.hex.toUpperCase()}</code><button class="btn ghost icon sm" data-act="delColor" data-id="${c.id}" ${b.colors.length <= 3 ? 'disabled' : ''} title="Remove">${ic('trash', 16)}</button></div>`).join('')}</div>`;
   },
   type: () => {
     const b = brand(), sel = (key, label, list) => `<div class="fld"><label>${label}</label><select class="field" data-bf="${key}">${list.map((f) => `<option ${f === b.fonts[key] ? 'selected' : ''}>${f}</option>`).join('')}</select></div>`;
@@ -1049,7 +1110,7 @@ const BKP = {
   tpl: () => {
     const b = brand();
     return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Open in Studio</a></div>
-      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save slide as brand template”.</p></div>`}`;
+      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save page as brand template”.</p></div>`}`;
   },
   set: () => {
     const b = brand(), connected = Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]);
@@ -1060,6 +1121,474 @@ const BKP = {
       + `<div><span class="label">Brand actions</span><div class="acts"><button class="btn secondary" data-act="dupBrand">${ic('copy')}Duplicate brand</button><button class="btn secondary" data-act="delBrand" style="color:var(--neg)" ${S.brands.length < 2 ? 'disabled' : ''}>${ic('trash')}Delete brand</button></div>${S.brands.length < 2 ? '<p class="hint">You need at least one brand.</p>' : ''}</div>`;
   },
 };
+/* ---------- Brand kit · Design system: Claude reads the brand's templates and approved designs and writes its style sheet ----------
+   The system lives on the brand (brand().designSystem) and goes through tidySystem on every write, so the limits always hold.
+   Analysis runs only when the user presses Analyze; DSRUN remembers which brands are being analysed (not stored). */
+const DSRUN = new Map(); // brand id → { n: designs and pictures being studied, guide: whether the brand guide is read too }
+const DSGUIDE = new Map(); // brand id → the current step while its brand guide is read (not stored)
+const DS = { aiWait: false, aiTried: false };
+const DS_BUDGET = 20_000_000; // characters of image data in one analysis request
+const DS_PIC_TYPE = /^image\/(png|jpeg|webp)$/;
+const DS_PIC_URL = /^data:image\/(png|jpeg|webp);base64,/;
+const DS_TYPE = { headline: 'Headline', subhead: 'Subhead', body: 'Body', label: 'Label', caption: 'Caption' };
+const DS_CORNERS = [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right'], ['none', 'No logo']];
+const DS_REF_ID = /^[A-Za-z0-9_-]{1,80}$/;
+const DS_IMAGE_MAX = 2_500_000;
+const DS_LAYERS_MAX = 40_000;
+const dsCap = (s) => String(s || '').charAt(0).toUpperCase() + String(s || '').slice(1);
+const dsDesigns = (n) => n + (n === 1 ? ' design' : ' designs');
+/** "3 designs", "3 designs, 2 pictures and the brand guide", "2 pictures" or "the brand guide"; "0 designs" for nothing */
+const dsWhat = (designs, pictures, guide) => sourcesPhrase({ designs, pictures, guide }) || dsDesigns(0);
+const dsFont = (f) => String(f || '').replace(/[^\p{L}\p{N} _-]/gu, '');
+const dsOnTab = (bid) => S.active === bid && location.hash === '#/brand' && BK.tab === 'ds';
+const dsDraw = (bid) => { if (dsOnTab(bid)) rerender(); };
+/** "just now", "3 days ago", "yesterday", or "on 12 Nov" */
+function dsWhen(at) {
+  const r = agoOf({ at: at || 0 });
+  if (!r) return '';
+  return /^(Just now|Yesterday)$|ago$/.test(r) ? r.charAt(0).toLowerCase() + r.slice(1) : 'on ' + r;
+}
+/** Is a Claude key set? null while the AI settings are loading (the tab redraws when they arrive). */
+function dsKey() {
+  if (AIS.view) return !!(AIS.view.anthropic && AIS.view.anthropic.hasKey);
+  if (DS.aiTried) return false;
+  if (!DS.aiWait) {
+    DS.aiWait = true;
+    const bid = S.active;
+    Promise.resolve(aiLoad()).finally(() => { DS.aiWait = false; DS.aiTried = true; dsDraw(bid); });
+  }
+  return null;
+}
+const dsSourceIds = (sys) => ((sys && sys.sources) || []).map((s) => s.id);
+/** Stores a system on a brand, always through tidySystem. */
+function dsStore(b, sys) { b.designSystem = tidySystem(sys, dsSourceIds(sys)); save(); return b.designSystem; }
+const dsCount = (sys) => [sys.type.length, sys.layout.patterns.length, sys.rules.length].join('|');
+
+/* ----- reading a reference: one JPEG (long side at most 1000 px) and its compact layer list ----- */
+const dsDataUrl = (blob) => new Promise((ok) => { if (!blob) return ok(''); const f = new FileReader(); f.onload = () => ok(String(f.result || '')); f.onerror = () => ok(''); f.readAsDataURL(blob); });
+/** A picture (data URL) re-encoded as JPEG (quality q) at k times its size, its long side at most `max`: { image, w, h }, or null when it cannot be read.
+    Transparent parts become white, as JPEG has no transparency. */
+function dsJpeg(url, k = 1, max = Infinity, q = 0.8) {
+  return new Promise((ok) => {
+    if (!url) return ok(null);
+    const im = new Image();
+    im.onload = () => {
+      const W = im.naturalWidth, H = im.naturalHeight;
+      if (!W || !H) return ok(null);
+      const s = Math.min(k, max / Math.max(W, H)), w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
+      try {
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+        ok({ image: c.toDataURL('image/jpeg', q), w, h });
+      } catch (e) { ok(null); }
+    };
+    im.onerror = () => ok(null);
+    im.src = url;
+  });
+}
+/** The inspiration picture sent with an analysis or shown to the agent: shrunk until it is under DS_IMAGE_MAX; null when it is not. */
+async function dsPicImage(src) {
+  let image = typeof src === 'string' ? src : '';
+  for (let k = 0; k < 4 && image.length > DS_IMAGE_MAX; k++) { const r = await dsJpeg(image, 0.75); if (!r) return null; image = r.image; }
+  return DS_PIC_URL.test(image) && image.length <= DS_IMAGE_MAX ? image : null;
+}
+async function dsRef(b, designs, s) {
+  if (!renderSlide || !DS_REF_ID.test(String(s.id))) return null;
+  let t;
+  if (s.kind === 'template') t = (b.templates || []).find((x) => x.id === s.id);
+  else { t = designs.find((x) => x.id === s.id); if (t && !t.pages) t.pages = buildPages(t); }
+  if (!t) return null;
+  const ratio = ensureRatio(t.ratio), dims = RATIOS[ratio];
+  if (!dims) return null;
+  const [w, h] = dims;
+  const pg = t.pages ? t.pages[0] : { id: t.id, bg: t.bg, layers: t.layers };
+  if (!pg) return null;
+  const design = t.pages ? t : { id: t.id, ratio, pages: [pg] };
+  let scale = Math.min(1, 1000 / Math.max(w, h)), image = '';
+  for (let k = 0; k < 4 && !image; k++) {
+    const url = await dsDataUrl(await renderSlide(design, 0, scale, 'jpeg'));
+    if (url.startsWith('data:image/') && url.length <= DS_IMAGE_MAX) image = url;
+    scale *= 0.6; // too heavy: once more, smaller
+  }
+  if (!image) return null;
+  const cmp = (AGAPI && AGAPI.compact) || ((l) => l);
+  const list = (pg.layers || []).map(cmp);
+  let layers = JSON.stringify(list);
+  while (layers.length > DS_LAYERS_MAX && list.length) { list.pop(); layers = JSON.stringify(list); }
+  const clampPx = (n) => Math.min(8000, Math.max(100, Math.round(n)));
+  return {
+    kind: s.kind, id: s.id, name: String(t.name || s.name || 'Untitled').slice(0, 120), ratio: String(ratio).slice(0, 20),
+    w: clampPx(w), h: clampPx(h), live: !!s.live, image, layers: layers.slice(0, DS_LAYERS_MAX),
+  };
+}
+function dsKit(b) {
+  const cut = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+  const kit = { name: cut(b.name, 120) || 'Brand', colors: (b.colors || []).slice(0, 12).map((c) => ({ name: cut(c.name, 60), hex: cut(c.hex, 20) })), fonts: {} };
+  const industry = cut(b.industry, 200), voice = cut(b.voice, 2000);
+  if (industry) kit.industry = industry;
+  if (voice) kit.voice = voice;
+  ['heading', 'body', 'arabic'].forEach((k) => { const f = cut(b.fonts && b.fonts[k], 80); if (f) kit.fonts[k] = f; });
+  kit.logos = (b.logos || []).map((l) => String(l.name || '').slice(0, 60)).filter(Boolean).slice(0, 12);
+  return kit;
+}
+const dsConfirm = (designs, pictures, guide) => new Promise((ok) => {
+  let yes = false;
+  modal(`<div class="mh"><h2>Re-analyze this brand?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><p class="sm-t">The design system is rewritten from ${dsWhat(designs, pictures, guide)}. Values you edited are replaced. Rules you wrote are kept.</p></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="dsGo">Re-analyze</button></div>`, {
+    onMount: (bg, close) => { const g = $('#dsGo', bg); g.addEventListener('click', () => { yes = true; close(); }); setTimeout(() => g.focus(), 30); },
+    onClose: () => ok(yes),
+  });
+});
+
+/* ----- the tab ----- */
+function dsSources(b, src) {
+  return `<ul class="ds-srcs" aria-label="Designs Claude studies">${src.map((s) => {
+    let pv = '';
+    try {
+      if (s.kind === 'template') { const t = (b.templates || []).find((x) => x.id === s.id); if (t) { ensureRatio(t.ratio); pv = btThumb(t, 84, 62); } }
+      else { const d = getD(s.id); if (d && d.pages && d.pages[0]) { ensureRatio(d.ratio); pv = thumb(d.pages[0], d.ratio, 84, 62); } }
+    } catch (e) { pv = ''; }
+    return `<li class="ds-src"><div class="ds-src-pv">${pv}</div><b title="${esc(s.name)}">${esc(s.name || 'Untitled')}</b><small>${s.kind === 'template' ? 'Template' : 'Design'}</small></li>`;
+  }).join('')}</ul>`;
+}
+const dsProg = (bid) => { const r = DSRUN.get(bid); return r ? `<span class="spin" aria-hidden="true"></span>Claude is studying ${dsWhat(r.designs, r.pictures, r.guide)}…` : ''; };
+const dsLive = (bid) => `<p class="ds-prog" role="status" aria-live="polite">${dsProg(bid)}</p>`;
+const dsKeyNote = () => `<div class="ds-note">${ic('lock', 16)}<span class="grow">Add a Claude key in Settings → AI to analyze this brand's designs.</span><button class="btn secondary sm" data-act="agModelSetup">Set up AI</button></div>`;
+const dsSec = (title, body, aside = '') => `<section class="ds-sec"><div class="ds-sh"><h3 class="ds-h">${title}</h3>${aside}</div>${body}</section>`;
+const dsNum = (path, val, label, o = {}) => `<input class="inp ds-num" type="number" inputmode="numeric" data-ds="${path}" value="${esc(val)}" min="${o.min ?? 0}" max="${o.max ?? 400}" step="${o.step ?? 1}" aria-label="${esc(label)}">`;
+const dsPics = (b) => (Array.isArray(b.inspiration) ? b.inspiration : []).filter((p) => p && typeof p.src === 'string' && DS_PIC_URL.test(p.src) && typeof p.id === 'string');
+/** A file picker that looks like a small button: a label around a hidden input, reachable with Tab and opened with Enter or Space. */
+const dsFileBtn = (id, label, icon, accept, o = {}) => `<label class="btn secondary sm ds-src-file${o.off ? ' ds-src-off' : ''}" role="button" ${o.off ? 'aria-disabled="true"' : 'tabindex="0"'}${o.title ? ` title="${esc(o.title)}"` : ''}>${ic(icon, 16)}${label}<input type="file" id="${id}" accept="${accept}"${o.multi ? ' multiple' : ''} hidden${o.off ? ' disabled' : ''}></label>`;
+
+/** Sources: the brand's own designs, its inspiration pictures and its brand guide. `note` shows the Claude key note in the guide row
+    (only where the page shows it nowhere else). */
+function dsSourcesHTML(b, g, ro, note = false) {
+  const key = ro ? true : dsKey(), pics = dsPics(b).slice(0, MAX_INSPIRATION), full = pics.length >= MAX_INSPIRATION;
+  const reading = DSGUIDE.has(b.id), gd = tidyGuideDesign(b.guideDesign);
+  const head = (title, aside = '', act = '') => `<div class="ds-src-gh"><h4 class="ds-src-t">${title}</h4>${aside ? `<small class="ds-src-n">${aside}</small>` : ''}${act ? `<span class="ds-src-act">${act}</span>` : ''}</div>`;
+  const own = `<div class="ds-src-g">${head('Your designs', g.own.length ? String(g.own.length) : '')}${g.own.length ? dsSources(b, g.own) : '<p class="ds-src-none">No templates or approved designs yet.</p>'}</div>`;
+  const cards = pics.map((p, i) => {
+    const name = String(p.name || '').trim() || 'Picture';
+    return `<li class="ds-src ds-src-card"><div class="ds-src-pv"><img src="${esc(p.src)}" alt="" loading="lazy" decoding="async">${ro ? '' : `<button type="button" class="ds-src-del" data-act="dsInspDel" data-id="${esc(p.id)}" title="Remove picture" aria-label="Remove ${esc(name)}">${ic('x', 12)}</button>`}</div>`
+      + (ro ? `<b title="${esc(name)}">${esc(name)}</b>` : `<input class="inp ds-src-name" data-ds-insp="${esc(p.id)}" value="${esc(name)}" maxlength="40" aria-label="Picture ${i + 1} name">`) + '</li>';
+  }).join('');
+  const add = ro ? '' : dsFileBtn('dsInspUp', 'Add pictures', 'upload', 'image/png,image/jpeg,image/webp', { multi: true, off: full, title: full ? 'Inspiration is full (8 pictures). Remove one to add another.' : '' });
+  const insp = `<div class="ds-src-g">${head('Inspiration', `${pics.length} of ${MAX_INSPIRATION}`, add)}
+    <p class="ds-src-help">Other brands' work you like. Claude learns layout and mood from it, never colors, fonts or logos.</p>
+    ${pics.length ? `<ul class="ds-srcs" aria-label="Inspiration pictures">${cards}</ul>` : ''}</div>`;
+  const off = reading || !key, offTitle = !key ? 'Add a Claude key in Settings → AI first.' : '';
+  let doc;
+  if (gd) {
+    doc = `<div class="ds-src-doc">${ic('doc', 18)}<div class="ds-src-dm"><b title="${esc(gd.name)}">${esc(gd.name || 'Brand guide')}</b>${gd.at ? `<small>read ${esc(dsWhen(gd.at))}</small>` : ''}</div>`
+      + (ro ? '' : `<div class="ds-src-acts">${dsFileBtn('dsGuideUp', 'Replace', 'refresh', 'application/pdf,.pdf', { off, title: offTitle })}<button type="button" class="btn ghost sm" data-act="dsGuideDel" ${reading ? 'disabled' : ''}>${ic('trash', 16)}Remove</button></div>`) + '</div>';
+  } else {
+    doc = ro ? '<p class="ds-src-none">No brand guide.</p>' : `<div>${dsFileBtn('dsGuideUp', 'Add your brand guide (PDF)', 'doc', 'application/pdf,.pdf', { off, title: offTitle })}</div>`;
+  }
+  const prog = ro ? '' : `<p class="ds-prog" id="dsGuideProg" role="status" aria-live="polite">${reading ? `<span class="spin" aria-hidden="true"></span>Reading the brand guide…<span class="ds-src-step">${esc(DSGUIDE.get(b.id) || '')}</span>` : ''}</p>`;
+  const guide = `<div class="ds-src-g">${head('Brand guide')}${doc}${prog}${note && !ro && !key ? dsKeyNote() : ''}</div>`;
+  return `<section class="ds-src-sec" aria-labelledby="dsSrcH"><h3 class="ds-h" id="dsSrcH">Sources</h3>${own}${insp}${guide}</section>`;
+}
+
+function dsView() {
+  const b = brand(), ro = !!persist.readOnly, sys = b.designSystem ? tidySystem(b.designSystem, dsSourceIds(b.designSystem)) : null;
+  const g = gatherSources(b, S.designs, S.posts), running = DSRUN.has(b.id), some = hasSources(g);
+  const key = ro ? true : dsKey();
+  if (key === null) return `<div class="phead"><div><h2>Design system</h2><p>Loading the AI settings…</p></div></div><div class="ds-sk"><div class="skel" style="height:22px;width:60%"></div><div class="skel" style="height:96px"></div></div>`;
+  if (!sys) {
+    if (!some) {
+      return `<div class="empty ds-empty">${ic('wand', 28)}<b>Nothing to learn from yet</b><p>Save a template, approve a design, add inspiration pictures or add your brand guide.</p>${ro ? '' : `<button class="btn secondary sm" data-act="bkTab" data-k="tpl">${ic('layout', 16)}Open templates</button>`}</div>
+        ${ro ? '' : dsSourcesHTML(b, g, ro, true)}`;
+    }
+    if (ro) return `<div class="empty ds-empty">${ic('wand', 28)}<b>No design system yet</b><p>An admin or editor can analyze this brand's designs to write one.</p></div>${dsSourcesHTML(b, g, ro)}`;
+    const n = g.own.length + g.inspiration.length;
+    const what = n ? (n === 1 ? 'this design' : `these ${n} designs`) + (g.guide ? ' and the brand guide' : '') : 'the brand guide';
+    return `<div class="phead"><div><h2>Teach the agent how ${esc(b.name)} designs</h2><p>Claude studies ${what} and writes the brand's design system: type, colors, spacing, layouts and rules. You can edit everything afterwards.</p></div></div>
+      ${dsSourcesHTML(b, g, ro)}
+      ${key ? `<div class="ds-go"><button class="btn primary" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>${ic('wand', 16)}Analyze</button>${dsLive(b.id)}</div>` : dsKeyNote()}`;
+  }
+  const stale = some && gatheredSig(g) !== sys.sig;
+  const nPics = (sys.sources || []).filter((s) => s.kind === 'inspiration').length, nDes = (sys.sources || []).length - nPics, usedMore = !!(nPics || sys.guide);
+  return `<div class="phead"><div><h2>Design system</h2><p>How ${esc(b.name)} designs, written by Claude from ${usedMore ? 'its sources' : 'its templates and approved designs'}. The Studio Agent follows it.</p></div></div>
+    ${stale ? `<div class="ds-note ds-stale">${ic('alert', 16)}<span class="grow">${g.inspiration.length || g.guide || sys.guide || (sys.sources || []).some((s) => s.kind === 'inspiration') ? 'Sources changed since this was analyzed.' : 'Templates or designs changed since this was analyzed.'}</span>${ro || !key ? '' : `<button class="btn secondary sm" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>Re-analyze</button>`}</div>` : ''}
+    ${dsSourcesHTML(b, g, ro)}
+    <div class="ds">
+      ${dsSec('Summary', ro ? `<p class="ds-sum">${esc(sys.summary) || '<span class="muted">No summary.</span>'}</p>` : `<textarea class="inp ta ds-sum" data-ds="summary" maxlength="600" rows="3" aria-label="Summary" placeholder="Two or three sentences on the overall look">${esc(sys.summary)}</textarea>`)}
+      ${dsSec('Type', dsTypeHTML(sys, ro))}
+      ${dsSec('Colors', dsColorHTML(sys))}
+      ${dsSec('Layout', dsLayoutHTML(sys, ro), '<small class="ds-aside">Sizes are for a 1080 px wide canvas.</small>')}
+      ${dsSec('Patterns', dsPatternHTML(sys, ro))}
+      ${dsSec('Rules', dsRulesHTML(sys, ro))}
+    </div>
+    <div class="ds-foot"><span class="ds-when">Analyzed ${esc(dsWhen(sys.at))} from ${dsWhat(nDes, nPics, !!sys.guide)}</span>${ro ? '' : key ? `${dsLive(b.id)}<button class="btn secondary sm" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>${ic('refresh', 16)}Re-analyze</button>` : ''}</div>
+    ${!ro && !key ? dsKeyNote() : ''}`;
+}
+function dsTypeHTML(sys, ro) {
+  if (!sys.type.length) return '<p class="sm-t muted">No type roles found.</p>';
+  return `<div class="ds-types">${sys.type.map((t, i) => {
+    const name = DS_TYPE[t.role] || dsCap(t.role), font = dsFont(t.font);
+    RT.loadFont && RT.loadFont(font, t.weight);
+    const px = Math.max(14, Math.min(40, Math.round(t.sizeMax * 0.36)));
+    const look = `font-family:'${esc(font)}',sans-serif;font-weight:${t.weight};font-size:${px}px;${t.upper ? 'text-transform:uppercase;' : ''}letter-spacing:${Math.max(-2, Math.min(4, t.ls / 10))}px`;
+    const meta = `${esc(t.font)} · line height ${t.lh}${t.upper ? ' · uppercase' : ''} · ${t.align}`;
+    const fields = ro
+      ? `<span class="ds-val">${t.sizeMin}–${t.sizeMax} px</span><span class="ds-val">Weight ${t.weight}</span>`
+      : `<span class="ds-f"><span class="ds-fl">Size</span>${dsNum(`type.${i}.sizeMin`, t.sizeMin, name + ' smallest size in px', { min: 8, max: 400 })}<span class="ds-dash" aria-hidden="true">–</span>${dsNum(`type.${i}.sizeMax`, t.sizeMax, name + ' largest size in px', { min: 8, max: 400 })}<span class="ds-unit">px</span></span>
+         <span class="ds-f"><span class="ds-fl">Weight</span>${dsNum(`type.${i}.weight`, t.weight, name + ' font weight', { min: 100, max: 900, step: 100 })}</span>`;
+    return `<div class="ds-type"><div class="ds-type-s" style="${look}">${esc(name)}</div><div class="ds-type-m"><small class="ds-meta">${meta}</small><div class="ds-fields">${fields}</div></div></div>`;
+  }).join('')}</div>`;
+}
+const dsSafeGrad = (g) => typeof g === 'string' && /^(linear|radial)-gradient\([#%.,\s\w()-]+\)$/.test(g);
+function dsColorHTML(sys) {
+  const c = sys.colors;
+  const roles = c.roles.length ? `<ul class="ds-roles">${c.roles.map((r) => `<li class="ds-role"><i style="background:${r.hex}" aria-hidden="true"></i><div class="grow"><b>${esc(dsCap(r.role))}</b> <code>${r.hex}</code>${r.usage ? `<small>${esc(r.usage)}</small>` : ''}</div></li>`).join('')}</ul>` : '<p class="sm-t muted">No color roles found.</p>';
+  const pairs = c.pairs.length ? `<div><span class="ds-sub">Pairs</span><div class="ds-pairs">${c.pairs.map((p) => `<span class="ds-pair" style="background:${p.bg};color:${p.text}" role="img" aria-label="Text ${p.text} on ${p.bg}${p.accent ? ', accent ' + p.accent : ''}" title="${p.text} on ${p.bg}${p.accent ? ' · accent ' + p.accent : ''}"><span>Aa</span>${p.accent ? `<i style="background:${p.accent}"></i>` : ''}</span>`).join('')}</div></div>` : '';
+  const grads = c.gradients.filter(dsSafeGrad);
+  const gr = grads.length ? `<div><span class="ds-sub">Gradients</span><div class="ds-grads">${grads.map((g) => `<span style="background:${esc(g)}" title="${esc(g)}" role="img" aria-label="Gradient"></span>`).join('')}</div></div>` : '';
+  return roles + pairs + gr;
+}
+function dsLayoutHTML(sys, ro) {
+  const L = sys.layout, sh = sys.shapes, corner = (DS_CORNERS.find(([k]) => k === L.logo.corner) || DS_CORNERS[4])[1];
+  const f = (label, inner) => `<div class="ds-lf"><span class="ds-fl">${label}</span>${inner}</div>`;
+  const px = (path, v, label, max) => (ro ? `<span class="ds-val">${v} px</span>` : `<span class="ds-px">${dsNum(path, v, label, { max })}<span class="ds-unit">px</span></span>`);
+  const fields = f('Margin', px('layout.margin', L.margin, 'Margin in px', 300)) + f('Gap', px('layout.gap', L.gap, 'Gap in px', 200))
+    + f('Logo corner', ro ? `<span class="ds-val">${corner}</span>` : `<select class="field ds-sel" data-ds="layout.logo.corner" aria-label="Logo corner">${DS_CORNERS.map(([k, l]) => `<option value="${k}" ${k === L.logo.corner ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
+    + f('Logo width', px('layout.logo.width', L.logo.width, 'Logo width in px', 600));
+  const facts = [['Alignment', dsCap(L.align)], ['Corner radius', sh.radius + ' px'], ['Stroke', sh.stroke ? sh.stroke + ' px' : 'None'], ['Shadow', dsCap(sh.shadow)], sh.motifs && ['Motifs', sh.motifs], sys.imagery && ['Imagery', sys.imagery]].filter(Boolean);
+  return `<div class="ds-lgrid">${fields}</div><dl class="ds-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`;
+}
+function dsPatternHTML(sys, ro) {
+  const P = sys.layout.patterns;
+  if (!P.length) return '<p class="sm-t muted">No recurring layouts found.</p>';
+  const pics = dsPics(brand());
+  // a picture's current name when it is still there (it can be renamed), else the name it had when the system was analyzed
+  const from = (id) => { const pic = pics.find((x) => x.id === id), s = (sys.sources || []).find((x) => x.id === id); return pic && s && s.kind === 'inspiration' ? String(pic.name || '').trim() || 'Picture' : s ? s.name : ''; };
+  return `<ul class="ds-pats">${P.map((p, i) => {
+    const label = p.name || 'Pattern ' + (i + 1), src = p.sourceId && from(p.sourceId), insp = p.origin === 'inspiration';
+    return `<li class="ds-pat"><div class="ds-pat-pv">${patternWire(p, { esc })}${p.ratio ? `<span class="ds-ratio">${esc(p.ratio)}</span>` : ''}</div>
+      <div class="ds-pat-m">${ro ? `<b>${esc(label)}</b>${p.when ? `<p>${esc(p.when)}</p>` : ''}`
+        : `<input class="inp ds-pn" data-ds="patterns.${i}.name" value="${esc(p.name)}" maxlength="60" placeholder="Name" aria-label="Pattern ${i + 1} name">
+           <textarea class="inp ds-pw" data-ds="patterns.${i}.when" maxlength="200" rows="2" placeholder="When to use it" aria-label="When to use ${esc(label)}">${esc(p.when)}</textarea>`}
+        <div class="ds-pat-f">${insp ? '<span class="ds-tag" title="Learned from an inspiration picture">Inspiration</span>' : ''}${src ? `<small class="grow" title="From ${esc(src)}">From ${esc(src)}</small>` : '<span class="grow"></span>'}${ro ? '' : `<button class="btn ghost icon sm" data-act="dsPatDel" data-id="${esc(p.id)}" title="Delete pattern" aria-label="Delete ${esc(label)}">${ic('trash', 16)}</button>`}</div></div></li>`;
+  }).join('')}</ul>`;
+}
+function dsRulesHTML(sys, ro) {
+  const full = sys.rules.length >= LIMITS.rules;
+  const list = (kind, title) => {
+    const items = sys.rules.map((r, i) => [r, i]).filter(([r]) => r.kind === kind);
+    const li = items.map(([r, i]) => `<li class="ds-rule">${ic(kind === 'do' ? 'check' : 'x', 14)}${ro ? `<span class="grow">${esc(r.text)}</span>`
+      : `<input class="inp ds-rt" data-ds="rules.${i}.text" value="${esc(r.text)}" maxlength="160" aria-label="${title} rule ${items.findIndex(([, j]) => j === i) + 1}">`}${r.by === 'user' ? '<span class="ds-you" title="Written by you">You</span>' : r.by === 'guide' ? '<span class="ds-tag" title="From the brand guide">Guide</span>' : ''}${ro ? '' : `<button class="btn ghost icon sm" data-act="dsRuleDel" data-i="${i}" title="Delete rule" aria-label="Delete rule: ${esc(r.text)}">${ic('trash', 14)}</button>`}</li>`).join('');
+    const add = ro ? '' : `<li class="ds-rule ds-add">${ic('plus', 14)}<input class="inp ds-rt" data-ds-new="${kind}" maxlength="160" placeholder="${full ? 'Up to ' + LIMITS.rules + ' rules' : 'Add a rule'}" aria-label="New ${title.toLowerCase()} rule" ${full ? 'disabled' : ''}><button class="btn secondary sm" data-act="dsRuleAdd" data-k="${kind}" ${full ? 'disabled' : ''}>Add</button></li>`;
+    return `<div class="ds-rl ds-${kind}"><span class="ds-sub">${title}</span><ul>${li || (ro ? '<li class="ds-rule ds-none">None</li>' : '')}${add}</ul></div>`;
+  };
+  return `<div class="ds-rls">${list('do', 'Do')}${list('dont', 'Don’t')}</div>`;
+}
+BKP.ds = dsView;
+
+/* ----- analysis: canEdit, sources, confirm, progress, render, call, store (or keep the old system on failure) ----- */
+ACT.dsAnalyze = async () => {
+  if (!canEdit()) return;
+  const b = brand(), bid = b.id, designs = S.designs;
+  if (DSRUN.has(bid)) return;
+  const g = gatherSources(b, designs, S.posts), src = g.own, gd = g.guide ? tidyGuideDesign(b.guideDesign) : null;
+  if (!hasSources(g)) { dsDraw(bid); return; }
+  if (b.designSystem && !(await dsConfirm(src.length, g.inspiration.length, !!g.guide))) return;
+  if (DSRUN.has(bid)) return; // pressed again while the confirmation was open
+  DSRUN.set(bid, { designs: src.length, pictures: g.inspiration.length, guide: !!g.guide }); dsDraw(bid);
+  try {
+    const references = [];
+    for (const s of src) { try { const r = await dsRef(b, designs, s); if (r) references.push(r); } catch (e) { /* skipped: cannot be rendered */ } }
+    // inspiration pictures, in the gathered order; one that cannot be sent within the limits is skipped
+    const inspiration = [];
+    for (const s of g.inspiration) {
+      const p = dsPics(b).find((x) => x.id === s.id), w = Math.round(p ? p.w : 0), h = Math.round(p ? p.h : 0);
+      if (!p || !DS_REF_ID.test(p.id) || !(w >= 100 && w <= 8000 && h >= 100 && h <= 8000)) continue;
+      const image = await dsPicImage(p.src);
+      if (image) inspiration.push({ id: p.id, name: String(p.name || '').trim().slice(0, 120) || 'Picture', w, h, image });
+    }
+    // the request carries at most DS_BUDGET characters of pictures: inspiration shrinks first, then goes from the end
+    const total = () => references.concat(inspiration).reduce((t, x) => t + x.image.length, 0);
+    for (let k = 0; k < 4 && inspiration.length && total() > DS_BUDGET; k++) {
+      for (const x of inspiration) { const r = await dsJpeg(x.image, 0.75); if (r && r.image.length < x.image.length) x.image = r.image; }
+    }
+    while (inspiration.length && total() > DS_BUDGET) inspiration.pop();
+    while (references.length && total() > DS_BUDGET) references.pop();
+    const guide = gd ? guideForRequest(gd) : undefined;
+    if (guide && !guide.name) guide.name = 'Brand guide';
+    if (!references.length && !inspiration.length && !guide) {
+      toast(src.length ? 'These designs could not be rendered. Open one and try again.' : 'These pictures could not be read. Remove them and add them again.');
+      return;
+    }
+    const body = { kit: dsKit(b), references };
+    if (inspiration.length) body.inspiration = inspiration;
+    if (guide) body.guide = guide;
+    const r = await api('/social/brands/' + encodeURIComponent(bid) + '/design-system/analyze', { method: 'POST', body });
+    const ids = references.map((x) => x.id), inspIds = inspiration.map((x) => x.id), fresh = tidySystem(r && r.system, ids, inspIds);
+    if (!fresh) throw new Error('Claude’s answer could not be used. Try again.');
+    const target = S.brands.find((x) => x.id === bid);
+    if (!target) return; // the brand was deleted meanwhile
+    const old = target.designSystem;
+    const rules = mergeRules(old && old.rules, withGuideRules(fresh.rules.map((x) => ({ ...x, by: 'ai' })), guide ? gd : null));
+    const sources = src.filter((x) => ids.includes(x.id)).map(({ kind, id, name, ratio }) => ({ kind, id, name, ratio }))
+      .concat(inspiration.map((x) => ({ kind: 'inspiration', id: x.id, name: x.name, ratio: x.w + 'x' + x.h })));
+    target.designSystem = tidySystem({ ...fresh, rules, v: 1, at: Date.now(), model: r.model, sig: gatheredSig(g), sources, ...(guide ? { guide: { name: guide.name } } : {}) }, ids);
+    save();
+    toast('Design system updated');
+  } catch (e) {
+    toast((e && e.message) || 'The analysis failed. Try again.');
+  } finally {
+    DSRUN.delete(bid); dsDraw(bid);
+  }
+};
+
+/* ----- edits: data-ds="<path>" fields, written on change; the tab redraws only when the structure changed ----- */
+function dsWrite(sys, path, raw) {
+  // an empty or non-numeric number field keeps the old value (tidySystem would turn NaN into the lower bound)
+  const p = path.split('.'), n = (v, old) => { const x = String(v).trim() === '' ? NaN : Number(v); return Number.isFinite(x) ? x : old; };
+  if (p[0] === 'summary') sys.summary = raw;
+  else if (p[0] === 'type' && sys.type[+p[1]] && ['sizeMin', 'sizeMax', 'weight'].includes(p[2])) sys.type[+p[1]][p[2]] = n(raw, sys.type[+p[1]][p[2]]);
+  else if (p[0] === 'layout' && (p[1] === 'margin' || p[1] === 'gap')) sys.layout[p[1]] = n(raw, sys.layout[p[1]]);
+  else if (p[0] === 'layout' && p[1] === 'logo' && p[2] === 'corner') sys.layout.logo.corner = raw;
+  else if (p[0] === 'layout' && p[1] === 'logo' && p[2] === 'width') sys.layout.logo.width = n(raw, sys.layout.logo.width);
+  else if (p[0] === 'patterns' && sys.layout.patterns[+p[1]] && (p[2] === 'name' || p[2] === 'when')) sys.layout.patterns[+p[1]][p[2]] = raw;
+  else if (p[0] === 'rules' && sys.rules[+p[1]] && p[2] === 'text') Object.assign(sys.rules[+p[1]], { text: raw, by: 'user' });
+  else return false;
+  return true;
+}
+function dsRead(sys, path) {
+  const p = path.split('.');
+  if (p[0] === 'patterns') return ((sys.layout.patterns[+p[1]] || {})[p[2]]);
+  if (p[0] === 'rules') return ((sys.rules[+p[1]] || {})[p[2]]);
+  return p.reduce((o, k) => (o == null ? o : o[/^\d+$/.test(k) ? +k : k]), sys);
+}
+/** Applies fn to a copy of the brand's system, stores it tidied, and redraws if rules, patterns or type roles came or went */
+function dsEdit(fn) {
+  const b = brand(); if (!b.designSystem) return;
+  const before = tidySystem(b.designSystem, dsSourceIds(b.designSystem)), copy = JSON.parse(JSON.stringify(before));
+  if (fn(copy) === false) return;
+  const after = dsStore(b, copy);
+  if (dsCount(after) !== dsCount(before)) { rerender(); return after; }
+  // same structure: leave the DOM alone, only show values tidySystem corrected (clamped, swapped)
+  $$('[data-ds]').forEach((el) => { if (el === document.activeElement) return; const v = dsRead(after, el.dataset.ds); const s = v == null ? '' : String(v); if (el.value !== s) el.value = s; });
+  return after;
+}
+document.addEventListener('change', (e) => {
+  const t = e.target, path = t.dataset && t.dataset.ds;
+  if (!path || persist.readOnly) return;
+  dsEdit((sys) => dsWrite(sys, path, t.value));
+});
+ACT.dsRuleAdd = (a) => {
+  if (!canEdit()) return;
+  const k = a.dataset.k === 'do' ? 'do' : 'dont', inp = $(`[data-ds-new="${k}"]`), text = inp ? inp.value.trim() : '';
+  if (!text) { inp && inp.focus(); return; }
+  const b = brand(); if (!b.designSystem) return;
+  if ((b.designSystem.rules || []).length >= LIMITS.rules) { toast(`A design system holds up to ${LIMITS.rules} rules.`); return; }
+  if ((b.designSystem.rules || []).some((r) => r.text.toLowerCase() === text.toLowerCase())) { toast('That rule is already in the list.'); return; }
+  dsEdit((sys) => { sys.rules.push({ text, kind: k, by: 'user' }); });
+  const n = $(`[data-ds-new="${k}"]`); n && !n.disabled && n.focus();
+};
+ACT.dsRuleDel = (a) => {
+  if (!canEdit()) return;
+  const i = +a.dataset.i;
+  dsEdit((sys) => { if (!sys.rules[i]) return false; sys.rules.splice(i, 1); });
+};
+ACT.dsPatDel = (a) => {
+  if (!canEdit()) return;
+  const id = a.dataset.id;
+  const done = dsEdit((sys) => { const i = sys.layout.patterns.findIndex((p) => p.id === id); if (i < 0) return false; sys.layout.patterns.splice(i, 1); });
+  if (done) toast('Pattern deleted');
+};
+document.addEventListener('keydown', (e) => {
+  const k = e.target && e.target.dataset && e.target.dataset.dsNew;
+  if (k && e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ACT.dsRuleAdd({ dataset: { k } }); }
+  // the Sources file pickers are labels: Enter or Space opens them like a button
+  const f = e.target && e.target.closest && e.target.closest('label.ds-src-file');
+  if (f && (e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); const inp = $('input[type=file]', f); if (inp && !inp.disabled) inp.click(); }
+});
+
+/* ----- sources: inspiration pictures and the brand guide. Adding either never starts an analysis; it only marks the system out of date. ----- */
+const dsBrandById = (bid) => S.brands.find((x) => x.id === bid); // the brand by id, as it is now (null when deleted)
+async function dsAddPictures(files) {
+  if (!canEdit()) return;
+  const bid = brand().id;
+  let added = 0, bad = false, full = false;
+  for (const f of files) {
+    if (!DS_PIC_TYPE.test(f.type || '')) { bad = true; continue; }
+    const now = dsBrandById(bid);
+    if (!now) return;
+    if (dsPics(now).length >= MAX_INSPIRATION) { full = true; break; }
+    const pic = await dsJpeg(await dsDataUrl(f), 1, 1080, 0.72);
+    if (!pic || pic.w < 100 || pic.h < 100) { bad = true; continue; }
+    const b = dsBrandById(bid);
+    if (!b) return;
+    if (dsPics(b).length >= MAX_INSPIRATION) { full = true; break; } // filled up while this one was read
+    const id = ('i' + uid()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+    const name = String(f.name || '').replace(/\.[^.]+$/, '').trim().slice(0, 40) || 'Picture';
+    b.inspiration = dsPics(b).concat({ id, name, src: pic.image, w: pic.w, h: pic.h, at: Date.now() });
+    added++;
+  }
+  if (added) save();
+  dsDraw(bid);
+  if (full) toast('Inspiration is full (8 pictures). Remove one to add another.');
+  else if (bad) toast('Choose PNG, JPG or WebP pictures');
+  else if (added) toast(added === 1 ? 'Picture added' : added + ' pictures added');
+}
+async function dsAddGuide(file) {
+  if (!canEdit()) return;
+  const bid = brand().id;
+  if (DSGUIDE.has(bid)) return; // a guide is already being read for this brand
+  DSGUIDE.set(bid, ''); dsDraw(bid);
+  try {
+    const { guide } = await readBrandGuide(file, (i, t) => {
+      DSGUIDE.set(bid, t);
+      const el = dsOnTab(bid) && $('#dsGuideProg .ds-src-step');
+      if (el) el.textContent = t;
+    });
+    if (!guide || !guide.isBrandGuide) { toast('This does not look like a brand guide.'); return; }
+    const gd = tidyGuideDesign({ ...(guide.design || {}), name: file.name, at: Date.now() });
+    if (!gd) { toast('This document says nothing about layout, imagery or logo use.'); return; }
+    const b = dsBrandById(bid);
+    if (!b) return; // the brand was deleted meanwhile
+    b.guideDesign = gd; // the brand kit (colors, fonts, voice, logos) is left as it is
+    save();
+    toast('Brand guide added');
+  } catch (e) {
+    toast((e && e.message) || 'Could not read this PDF');
+  } finally {
+    DSGUIDE.delete(bid); dsDraw(bid);
+  }
+}
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (!t || persist.readOnly) return;
+  if (t.id === 'dsInspUp' && t.files && t.files.length) { const files = [...t.files]; t.value = ''; dsAddPictures(files); return; }
+  if (t.id === 'dsGuideUp' && t.files && t.files.length) { const f = t.files[0]; t.value = ''; dsAddGuide(f); return; }
+  const pid = t.dataset && t.dataset.dsInsp;
+  if (!pid || !canEdit()) return;
+  // a name is not part of the signature: renaming never marks the system out of date, and nothing is redrawn
+  const p = dsPics(brand()).find((x) => x.id === pid);
+  if (!p) return;
+  const name = t.value.trim().slice(0, 40) || 'Picture';
+  t.value = name;
+  if (name !== p.name) { p.name = name; save(); }
+});
+ACT.dsInspDel = (a) => {
+  if (!canEdit()) return;
+  const b = brand(), list = dsPics(b), next = list.filter((p) => p.id !== a.dataset.id);
+  if (next.length === list.length) return;
+  b.inspiration = next; save(); rerender();
+  const add = $('#dsInspUp'); add && add.closest('label').focus();
+  toast('Picture removed');
+};
+ACT.dsGuideDel = () => {
+  if (!canEdit()) return;
+  const b = brand();
+  if (DSGUIDE.has(b.id) || !b.guideDesign) return;
+  delete b.guideDesign; save(); rerender();
+  const add = $('#dsGuideUp'); add && add.closest('label').focus();
+  toast('Brand guide removed');
+};
+
 PAGES.brand = {
   t: 'Brand kit', get s() { return 'Colors, fonts, logos and templates for ' + brand().name + '. Nothing here is shared with your other brands.'; },
   actions: () => `<button class="btn secondary hide-sm" data-act="manageBrands">${ic('layers')}Manage brands</button><button class="btn primary" data-act="addBrand">${ic('plus')}New brand</button>`,
@@ -1087,7 +1616,6 @@ function openBrands() {
   const view = () => `<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
     <div class="mb" style="gap:12px">
       <div class="br-list">${S.brands.map(row).join('')}</div>
-      ${S.brands.length > 1 ? `<button class="br-all ${allOn() ? 'on' : ''}" data-act="allBrands">${allAv('md')}<span class="grow"><b>All brands in one workspace</b><small>Overview, planner and designs of every brand together</small></span>${allOn() ? '<span class="badge b-Published">On</span>' : ic('chevR', 16)}</button>` : ''}
     </div>
     <div class="mf"><button class="btn secondary" data-close>Close</button><button class="btn primary" data-act="addBrand">${ic('plus', 18)}Add brand</button></div>`;
   let bg = null, from = null;
@@ -1335,6 +1863,8 @@ function openGuideImport(file) {
       logos: st.logos.filter((l) => l.on).map((l) => ({ id: 'l' + uid(), name: l.name.slice(0, 40), kind: l.kind, src: l.src })),
     });
     if (cols.length) b.colors = mkColors(cols.map((c) => [c.name, c.hex]));
+    const gd = tidyGuideDesign({ ...(g.design || {}), name: file.name, at: Date.now() });
+    if (gd) b.guideDesign = gd; // what the guide says about layout, imagery and logo use, for the Design system tab
     closeAll(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; renderSide(); toast('“' + b.name + '” created from its brand guide');
     location.hash === '#/brand' ? route() : (location.hash = '#/brand');
   };
@@ -1361,7 +1891,6 @@ Object.assign(ACT, {
     S.active = a.dataset.id; save(); ST.q = ''; ST.tab = 0; P.tray = 'designs'; renderSide(); route(); toast('Switched to ' + brand().name);
   },
   addBrand: () => { closeModals(); closeDrawer(); openAddBrand(); },
-  allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
   brandPhoto: (a) => { const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (b && canEdit()) openBrandPhoto(b); },
   brMove: (a) => { const i = S.brands.findIndex((x) => x.id === a.dataset.id), j = i + +a.dataset.n; if (i < 0 || j < 0 || j >= S.brands.length) return; const [m] = S.brands.splice(i, 1); S.brands.splice(j, 0, m); save(); renderSide(); BR.paint && BR.paint(); },
   manageBrands: () => { closeModals(); closeDrawer(); openBrands(); },
@@ -1491,7 +2020,7 @@ document.addEventListener('change', (e) => {
   const t = e.target, d = t.dataset || {};
   if (d.b === 'name') { const b = brand(); b.name = t.value.trim() || b.name; t.value = b.name; b.initials = initialsOf(b.name); const h = $('#bkName'); h && (h.textContent = b.name); refreshChrome(); save(); }
   else if (d.b) { const sub = $('.bk-head .sm-t'); if (sub && (d.b === 'industry' || d.b === 'website')) sub.textContent = [brand().industry, brand().website].filter(Boolean).join(' · ') || 'Add your brand details below'; save(); }
-  if (d.ci) { refreshChrome(); const pv = $('#bkPreview'); pv && (pv.innerHTML = bkPreview()); save(); }
+  if (d.ci) { refreshChrome(); save(); }
   if (d.bf) { brand().fonts[d.bf] = t.value; save(); rerender(); }
   if (t.id === 'logoUp' && t.files.length) {
     const kind = $('#logoKind').value, files = [...t.files]; let n = 0;
@@ -2241,7 +2770,7 @@ function edPanel() {
   if (isAg) return agPanel(p);
   if (t === 'templates') {
     const bt = brand().templates;
-    h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save slide as brand template</button>
+    h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save page as brand template</button>
     <span class="label" style="margin-top:6px">${esc(brand().name)} templates</span>
     ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="edBTpl" data-id="${x.id}">${btThumb(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}`;
   }
@@ -2254,7 +2783,7 @@ function edPanel() {
     const fg = ED.d.pages.map((pg, i) => ({ pg, i, f: pg.figma || (i === 0 && ED.d.figma) })).filter((x) => x.f);
     FIGSYNC && FIGSYNC.check(ED.d); // flags slides whose Figma file changed since the import (not defined yet when the editor opens at startup)
     h = `<h3 class="row" style="color:var(--text-2)">${ic('figma', 20)}<span style="color:var(--text-1)">Figma</span></h3><p class="sm-t muted">Bring frames from your Figma files in as editable slides.</p><button class="btn secondary" data-act="edFigmaImport">${ic('link')}Paste link &amp; import</button>
-      <span class="label" style="margin-top:6px">Linked frames</span>${fg.length ? fg.map(({ f, i }) => `<div class="idea"><div class="row sp"><b class="sm-t">Slide ${i + 1} · ${esc(f.file || 'Figma')}</b><span class="badge ${f.sync === 'Changed in Figma' ? 'b-warn' : 'b-Published'}">${f.sync || 'In sync'}</span></div><button class="btn secondary sm" data-act="edResync" data-i="${i}">${ic('refresh', 16)}Re-sync from Figma</button></div>`).join('') : '<p class="sm-t muted">No linked frames in this design yet.</p>'}
+      <span class="label" style="margin-top:6px">Linked frames</span>${fg.length ? fg.map(({ f, i }) => `<div class="idea"><div class="row sp"><b class="sm-t">Page ${i + 1} · ${esc(f.file || 'Figma')}</b><span class="badge ${f.sync === 'Changed in Figma' ? 'b-warn' : 'b-Published'}">${f.sync || 'In sync'}</span></div><button class="btn secondary sm" data-act="edResync" data-i="${i}">${ic('refresh', 16)}Re-sync from Figma</button></div>`).join('') : '<p class="sm-t muted">No linked frames in this design yet.</p>'}
       <div class="note">${ic('figma', 16)}<span>Edit here like in Figma: drag, resize, rotate, change text. Re-sync pulls updated frames and keeps your caption and schedule.</span></div>`;
   }
   if (t === 'brand') {
@@ -2268,10 +2797,10 @@ function edPanel() {
   }
   if (t === 'data') {
     const live = ED.d.tpl === 'calendar';
-    h = `<h3>Live data</h3><p class="sm-t muted">Economic calendar feed. ${live ? 'Changes update the slide instantly.' : 'Apply it to build a calendar slide.'}</p>
+    h = `<h3>Live data</h3><p class="sm-t muted">Economic calendar feed. ${live ? 'Changes update the page instantly.' : 'Apply it to build a calendar page.'}</p>
       <div class="seg"><button class="${ED.lang === 'en' ? 'on' : ''}" data-act="edLang" data-l="en">English</button><button class="${ED.lang === 'ar' ? 'on' : ''}" data-act="edLang" data-l="ar">العربية</button></div>
       ${EVENTS.map((e) => `<button class="evrow" data-act="edEv" data-id="${e.id}"><span class="cbx ${e.on ? 'on' : ''}">${e.on ? ic('check', 12) : ''}</span><span class="cur" style="background:${CUR_COLOR[e.cur]}">${e.cur}</span><span class="grow" style="text-align:left">${ED.lang === 'ar' ? e.ar : e.en}</span><span class="xs-t muted">${e.t}</span></button>`).join('')}
-      ${live ? '' : `<button class="btn primary" data-act="edApplyCal">Replace slide with calendar</button>`}<p class="xs-t muted">Times are GMT. Source: Forex Factory feed (as in the current Calendar Studio).</p>`;
+      ${live ? '' : `<button class="btn secondary" data-act="edApplyCal">Replace page with calendar</button>`}<p class="xs-t muted">Times are GMT. Source: Forex Factory feed (as in the current Calendar Studio).</p>`;
   }
   p.innerHTML = h;
 }
@@ -2361,7 +2890,7 @@ Object.assign(ACT, {
   edResync: (a) => FIGSYNC.resync(ED.d, +a.dataset.i),
   edLang: (a) => { ED.lang = a.dataset.l; ED.d.tpl === 'calendar' ? rebuildCalendar() : edPanel(); },
   edEv: (a) => { const e = EVENTS.find((x) => x.id === a.dataset.id); e.on = e.on ? 0 : 1; ED.d.tpl === 'calendar' ? rebuildCalendar() : edPanel(); },
-  edApplyCal: () => { ED.d.tpl = 'calendar'; rebuildCalendar(); toast('Calendar slide built from the live feed'); },
+  edApplyCal: () => { ED.d.tpl = 'calendar'; rebuildCalendar(); toast('Calendar page built from the live feed'); },
   edPage: (a) => { ED.pi = +a.dataset.i; ED.sel = null; edAll(); },
   edAddPage: () => { const [w, h] = dim(); mutate(() => { ED.d.pages.push({ id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = ED.d.pages.length - 1; ED.sel = null; }); },
   edDupPage: () => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(curP()))); c.id = uid(); ED.d.pages.splice(ED.pi + 1, 0, c); ED.pi++; ED.sel = null; }),
@@ -2829,8 +3358,8 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     [['heading', 'h', 'T'], ['subheading', 's'], ['body text', 'b']].forEach(([t, x, s]) => a('Create', 'Add ' + t, () => ACT.edText({ dataset: { k: x } }), s));
     Object.entries(SHAPES).forEach(([x, n]) => a('Create', 'Add shape: ' + n.toLowerCase(), () => ACT.edShape({ dataset: { k: x } })));
     Object.keys(RATIOS).forEach((r) => a('Canvas', 'Resize to ' + r, () => magicResize(r)));
-    a('Slides', 'Add slide', () => ACT.edAddPage()); a('Slides', 'Duplicate slide', () => ACT.edDupPage());
-    RAIL.forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
+    a('Pages', 'Add page', () => ACT.edAddPage()); a('Pages', 'Duplicate page', () => ACT.edDupPage());
+    (ED.d && VS.source() ? VS.rail() : RAIL).forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
     k.colors.forEach((c) => a('Brand color', 'Apply ' + c + ' to selection', () => ACT.edColor({ dataset: { c } }), '', c));
     [['Undo', doUndo, 'Ctrl Z'], ['Redo', doRedo, 'Ctrl Shift Z'], ['Duplicate layer', dupSel, 'Ctrl D'], ['Delete layer', delSel, 'Del'], ['Fit to screen', () => ACT.edFit(), 'Ctrl 0'], ['Zoom to selection', () => zoomToSelection(), 'Shift 2'], ['Show or hide rulers', () => toggleRulers(), 'Shift R'], ['Toggle safe zones', () => ACT.edSafe()], ['Export', () => openExport(ED.d, ED.pi), 'Ctrl E'], ['Schedule post', () => openSchedule(ED.d)], ['Switch light / dark theme', () => setTheme(S.theme === 'dark' ? 'light' : 'dark')], ['Keyboard shortcuts', kbd, '?']].forEach(([t, fn, s]) => a('Action', t, fn, s));
     return C;
@@ -3039,11 +3568,11 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
       <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
-      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
+      <label class="lab">Pages<select class="field" id="exP"><option value="cur">Current page (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} pages</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
-        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
+        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in page order.` : 'Same layout, fonts and images as the canvas.'; };
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
@@ -3708,7 +4237,7 @@ Object.assign(IC, {
   }
   PAGES.planner = {
     t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.', themeFirst: true,
-    actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
+    actions: () => `${importBtn()}<button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
     view: () => {
       const days = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date());
       const title = P.view === 'month' ? fmt(P.mo, { month: 'long', year: 'numeric' }) : P.view === 'list' ? 'All posts' : `${fmt(days[0], { day: 'numeric', month: 'long' })} – ${fmt(days[6], { day: 'numeric', month: 'long', year: 'numeric' })}`;
@@ -3863,7 +4392,7 @@ Object.assign(IC, {
     // footage designs are videos: the publisher only posts images (see footage.js blockSchedule)
     if (blockSchedule(d0 || (o.post ? getD(o.post.d) : null), toast)) return;
     const ed = o.post || null, inEd = document.body.classList.contains('in-editor'), c0 = conn();
-    const st = { d: d0 || (ed ? getD(ed.d) : null), pf: new Set(ed ? ed.pf : c0.slice(0, 3)), cap: ed ? ed.cap || '' : '', caps: ed && ed.caps ? clone(ed.caps) : {}, tab: 'all', fc: ed ? ed.fc || '' : '', fcOpen: !!(ed && ed.fc), link: ed ? ed.link || '' : '', utm: !!(ed && ed.utm), now: false, date: '', time: '', pv: null, pvi: 0, tags: false };
+    const st = { igStory: !!(ed && ed.igStory), d: d0 || (ed ? getD(ed.d) : null), pf: new Set(ed ? ed.pf : c0.slice(0, 3)), cap: ed ? ed.cap || '' : '', caps: ed && ed.caps ? clone(ed.caps) : {}, tab: 'all', fc: ed ? ed.fc || '' : '', fcOpen: !!(ed && ed.fc), link: ed ? ed.link || '' : '', utm: !!(ed && ed.utm), now: false, date: '', time: '', pv: null, pvi: 0, tags: false };
     const tomorrow = iso(addD(new Date(), 1));
     st.date = ed ? ed.date : o.date || tomorrow;
     const defTime = (k) => { const bt = bestTimes([...st.pf], k, 3), n = new Date(), nm = n.getHours() * 60 + n.getMinutes() + 15, f = k === iso(n) ? bt.find((b) => tmin(b.t) > nm) : bt[0]; return (f || bt[bt.length - 1]).t; };
@@ -3897,7 +4426,7 @@ Object.assign(IC, {
       function drawDes() {
         const d = st.d, el = R('cDes');
         if (!d) { el.innerHTML = `<span class="label" style="margin:0">Choose a design</span><div class="dpick7">${S.designs.map((x) => { const dd = getD(x.id); return `<button class="dp7" data-c="pick" data-id="${x.id}"><div class="thumbbox" style="width:64px;height:76px;background:transparent">${thumb(dd.pages[0], dd.ratio, 64, 76)}</div><span>${esc(x.name)}</span></button>`; }).join('')}</div>`; return; }
-        el.innerHTML = `<div class="row" style="gap:12px"><div class="strip7">${d.pages.slice(0, 4).map((pg) => `<div class="thumbbox" style="width:54px;height:66px;background:transparent">${thumb(pg, d.ratio, 54, 66)}</div>`).join('')}${d.pages.length > 4 ? `<span class="more7b">+${d.pages.length - 4}</span>` : ''}</div><div class="grow"><b class="sm-t" style="display:block">${esc(d.name)}</b><span class="xs-t muted">${d.ratio} · ${d.pages.length > 1 ? 'Carousel, ' + d.pages.length + ' slides' : 'Single image'}</span></div><button class="btn ghost sm" data-c="chg">Change</button>${inEd ? '' : `<a class="btn ghost sm" href="#/editor/${d.id}" data-close>Edit design</a>`}</div>`;
+        el.innerHTML = `<div class="row" style="gap:12px"><div class="strip7">${d.pages.slice(0, 4).map((pg) => `<div class="thumbbox" style="width:54px;height:66px;background:transparent">${thumb(pg, d.ratio, 54, 66)}</div>`).join('')}${d.pages.length > 4 ? `<span class="more7b">+${d.pages.length - 4}</span>` : ''}</div><div class="grow"><b class="sm-t" style="display:block">${esc(d.name)}</b><span class="xs-t muted">${d.ratio} · ${isVideoPost(d) ? `Video${videoLength(d, MO.timeline) ? ' · ' + fmtDur(videoLength(d, MO.timeline)) : ''}` : d.pages.length > 1 ? 'Carousel, ' + d.pages.length + ' pages' : 'Single image'}</span>${isVideoPost(d) && d.ratio === '9:16' && st.pf.has('ig') ? `<div class="seg c7ig" role="radiogroup" aria-label="On Instagram"><button role="radio" aria-checked="${!st.igStory}" class="${st.igStory ? '' : 'on'}" data-c="igs" data-v="0">Reel</button><button role="radio" aria-checked="${st.igStory}" class="${st.igStory ? 'on' : ''}" data-c="igs" data-v="1">Story</button></div>` : ''}</div><button class="btn ghost sm" data-c="chg">Change</button>${inEd ? '' : `<a class="btn ghost sm" href="#/editor/${d.id}" data-close>Edit design</a>`}</div>`;
       }
       function drawNets() { R('cNets').innerHTML = Object.entries(PLATFORMS).map(([k, v]) => { const on = st.pf.has(k), c = S.platforms[k]; return `<button class="c7net ${on ? 'on' : ''} ${c ? '' : 'off'}" style="--c:${v.c}" data-c="net" data-k="${k}" aria-pressed="${on}" title="${c ? v.n : v.n + ' is not connected'}"><span class="ci">${ic('net_' + k, 20)}${on ? `<i class="ck">${ic('check', 10)}</i>` : ''}${c ? '' : `<i class="pl">${ic('plus', 10)}</i>`}</span><span class="nm">${v.n}</span></button>`; }).join(''); }
       function drawTabBar() {
@@ -3929,8 +4458,18 @@ Object.assign(IC, {
         if (ns.length && ns.some((n) => !capFor(n).trim())) out.push(['warn', 'Some networks have no caption. Posts with text get more engagement']);
         if (st.pf.has('ig') && capFor('ig').trim() && !tagsOf(capFor('ig') + ' ' + st.fc).length) out.push(['warn', 'Instagram: add 3 to 5 hashtags to be found']);
         if (st.d && st.d.ratio === '9:16' && ns.some((n) => ['li', 'x', 'fb'].includes(n))) out.push(['warn', '9:16 is cropped in LinkedIn, X and Facebook feeds']);
-        if (st.d && st.pf.has('ig') && st.d.ratio !== '9:16') { const [rw, rh] = RATIOS[st.d.ratio], a = rw / rh; if (a < 0.8 - 1e-3 || a > 1.91 + 1e-3) out.push(['err', 'Instagram only accepts images from 4:5 (portrait) to 1.91:1 (landscape)']); }
-        if (st.d && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
+        const vid = isVideoPost(st.d);
+        if (st.d && !vid && st.pf.has('ig') && st.d.ratio !== '9:16') { const [rw, rh] = RATIOS[st.d.ratio], a = rw / rh; if (a < 0.8 - 1e-3 || a > 1.91 + 1e-3) out.push(['err', 'Instagram only accepts images from 4:5 (portrait) to 1.91:1 (landscape)']); }
+        if (st.d && !vid && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
+        if (vid) {
+          // a video: each network's length limit, how Instagram shows it, and what preparing it takes
+          const len = videoLength(st.d, MO.timeline), sz = ed && ed.media && ed.media.video ? ed.media.video.size : 0;
+          ns.forEach((n) => { const p = videoProblem(n, { durationMs: len, size: sz }); if (p) out.push(['err', p]); });
+          if (st.d.footage && !st.d.footage.src) out.push(['err', 'Add your video first, then schedule it']);
+          if (st.pf.has('ig')) out.push(st.d.ratio === '9:16' ? (st.igStory ? ['warn', 'Instagram: a video Story doesn’t show the caption'] : ['ok', 'Instagram: posts as a Reel, shown in the feed too']) : ['warn', 'Instagram: Reels look best in 9:16']);
+          if (ed && ed.media && ed.media.video && ed.media.hash && ed.media.hash !== videoHash(st.d)) out.push(['warn', 'The video changed since it was prepared. Schedule again to update it']);
+          if (st.d.motion) out.push(['ok', `The video is recorded in this tab when you confirm${len ? ` (about ${fmtDur(len)})` : ''}. Keep it open until it’s ready`]);
+        }
         if (st.link && st.pf.has('ig')) out.push(['warn', 'Links in Instagram captions are not clickable. Use link in bio']);
         if (!st.now && st.d) {
           if (!st.date || !st.time) out.push(['err', 'Pick a date and time']); else if (zonedToUtc(st.date, st.time, schedTz()) < now) out.push(['err', 'This time is in the past']);
@@ -3959,7 +4498,7 @@ Object.assign(IC, {
         R('cSt').innerHTML = ed ? badge(ed.status) : '';
       }
       const afterCap = () => { drawTabBar(); drawCnt(); drawTags(); drawPv(); drawChk(); drawFoot(); };
-      const afterNets = () => { drawNets(); drawTabBar(); loadCap(); drawCnt(); drawTags(); drawFc(); drawPv(); drawWhen(); drawLink(); drawChk(); drawPub(); drawFoot(); };
+      const afterNets = () => { drawNets(); drawDes(); drawTabBar(); loadCap(); drawCnt(); drawTags(); drawFc(); drawPv(); drawWhen(); drawLink(); drawChk(); drawPub(); drawFoot(); };
       const setCap = (v) => { if (st.tab === 'all') st.cap = v; else st.caps[st.tab] = v; R('cCap').value = v; afterCap(); };
       const addTxt = (t) => { const cur = st.tab === 'all' ? st.cap : capFor(st.tab); setCap(cur + (cur && !/\s$/.test(cur) ? ' ' : '') + t); };
       /* Write with AI: a real caption from the slides' content, in the brand voice (provider from Settings → AI) */
@@ -3985,7 +4524,7 @@ Object.assign(IC, {
       }
       function commit(kind) {
         const d = st.d; if (!d) return; const tz = schedTz(), n = nowIn(tz), status = kind === 'draft' ? 'Draft' : 'Scheduled';
-        const rec = { d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
+        const rec = { igStory: isVideoPost(d) && d.ratio === '9:16' && st.pf.has('ig') && st.igStory, d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
         const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close();
         // publishing goes through the API: "now" sends it right away, "schedule" uploads the rendered slides for the scheduler
         if (kind === 'now') PUB.publishNow(post);
@@ -3997,6 +4536,7 @@ Object.assign(IC, {
         const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c;
         if (c === 'pick') { if (blockSchedule(getD(b.dataset.id), toast)) return; st.d = getD(b.dataset.id); st.pvi = 0; drawDes(); drawTags(); drawPv(); drawChk(); drawFoot(); }
         else if (c === 'chg') { st.d = null; drawDes(); drawPv(); drawChk(); drawFoot(); }
+        else if (c === 'igs') { st.igStory = b.dataset.v === '1'; drawDes(); drawChk(); } // a 9:16 video on Instagram: Reel or Story
         else if (c === 'net') { const k = b.dataset.k; if (!S.platforms[k]) return toast(PLATFORMS[k].n + ' is not connected. Add it in Settings, Connected accounts'); st.pf.has(k) ? st.pf.delete(k) : st.pf.add(k); if (st.tab === k && !st.pf.has(k)) st.tab = 'all'; afterNets(); }
         else if (c === 'tab') { st.tab = b.dataset.k; if (st.tab !== 'all') st.pv = st.tab; drawTabBar(); loadCap(); drawCnt(); drawTags(); drawPv(); }
         else if (c === 'reset') { delete st.caps[st.tab]; loadCap(); afterCap(); }
@@ -4084,12 +4624,24 @@ persist.watch(() => ({ brands: S.brands, data: S.data, active: S.active, set: S.
 /* Save conflicts: another tab or user saved a design after this copy was loaded. Nothing is lost: the design
    takes the saved version and this tab's version becomes "… (conflicted copy)". When the editor has it open,
    editing carries on in the copy (same layers, Undo kept). */
+/* Live designs refresh their data by themselves in every open tab, so two tabs "conflict" on a design nobody edited.
+   AUTO_LIVE keeps the design as the last automatic refresh left it: while this tab's version is still exactly that,
+   the saved version simply replaces it (no copy). */
+const AUTO_LIVE = new Map();
 persist.onConflict((list) => {
   let open = null;
+  list = list.filter(({ brandId, item }) => {
+    const D = S.data[brandId], mine = D && D.designs.find((x) => x.id === item.id);
+    if (!mine || AUTO_LIVE.get(mine.id) !== JSON.stringify(mine)) return true;
+    const saved = JSON.parse(JSON.stringify(item)); ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
+    Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved); AUTO_LIVE.delete(mine.id);
+    return false;
+  });
+  if (!list.length) { if (!document.body.classList.contains('in-editor')) route(); save(); return; }
   list.forEach(({ brandId, item }) => {
     const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
     const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
-    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
+    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design').replace(/( \(conflicted copy\))+$/, '') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
     if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
     ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     // same object, the saved content: posts and the planner keep pointing at it
@@ -4301,7 +4853,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** Slide title: the biggest visible text (the headline, not the footer URL); the strip shows it on one line with "…", the tooltip has it whole */
   const fullLabel = (pg) => {
     const ts = (pg.layers || []).filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim());
-    if (!ts.length) return 'Empty slide';
+    if (!ts.length) return 'Empty page';
     const t = ts.reduce((b, l) => ((l.size || 0) > (b.size || 0) ? l : b), ts[0]);
     return String(t.text).trim().replace(/\s+/g, ' ');
   };
@@ -4312,25 +4864,25 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const host = $1('#edPages'); if (!host) return; const d = ED.d, n = d.pages.length, old = $1('.pgs-track', host), sl = old ? old.scrollLeft : 0, stage = host.closest('.ed-stage');
     if (stage) stage.dataset.pgs = folded ? 'c' : 'o';
     const cards = d.pages.map((pg, i) => `<div class="pg ${i === ED.pi ? 'on' : ''}" role="tab" aria-selected="${i === ED.pi}" draggable="true">
-        <button class="pg-th" data-act="edPage" data-i="${i}" title="Slide ${i + 1} · ${E(label(pg))}" aria-label="Slide ${i + 1}: ${E(label(pg))}" tabindex="${i === ED.pi ? 0 : -1}">${thumb(pg, d.ratio, 100, 86)}</button>
+        <button class="pg-th" data-act="edPage" data-i="${i}" title="Page ${i + 1} · ${E(label(pg))}" aria-label="Page ${i + 1}: ${E(label(pg))}" tabindex="${i === ED.pi ? 0 : -1}">${thumb(pg, d.ratio, 100, 86)}</button>
         <span class="pg-n">${i + 1}</span>
-        <div class="pg-act"><button data-act="pgDup" data-i="${i}" title="Duplicate slide" aria-label="Duplicate slide ${i + 1}">${ic('copy', 13)}</button>${n > 1 ? `<button data-act="pgDel" data-i="${i}" title="Delete slide" aria-label="Delete slide ${i + 1}">${ic('trash', 13)}</button>` : ''}<button data-act="pgMore" data-i="${i}" title="More" aria-label="More actions for slide ${i + 1}" aria-haspopup="menu">${ic('more', 13)}</button></div>
-        <button class="pg-ins" data-act="pgAddAfter" data-i="${i}" title="Add slide after ${i + 1}" aria-label="Add slide after ${i + 1}">${ic('plus', 13)}</button>
+        <div class="pg-act"><button data-act="pgDup" data-i="${i}" title="Duplicate page" aria-label="Duplicate page ${i + 1}">${ic('copy', 13)}</button>${n > 1 ? `<button data-act="pgDel" data-i="${i}" title="Delete page" aria-label="Delete page ${i + 1}">${ic('trash', 13)}</button>` : ''}<button data-act="pgMore" data-i="${i}" title="More" aria-label="More actions for page ${i + 1}" aria-haspopup="menu">${ic('more', 13)}</button></div>
+        <button class="pg-ins" data-act="pgAddAfter" data-i="${i}" title="Add page after ${i + 1}" aria-label="Add page after ${i + 1}">${ic('plus', 13)}</button>
         <span class="pg-lab" title="${E(label(pg))}">${E(label(pg))}</span>
       </div>`).join('');
     host.innerHTML = `<div class="pgs-head">
-        <span class="ttl">${ic('slides', 16)}<span class="t">Slides</span><span class="cnt">${n}</span></span><span class="sp"></span>
-        <span class="pgs-pager"><button data-act="pgStep" data-n="-1" title="Previous slide (PageUp)" aria-label="Previous slide" ${ED.pi === 0 ? 'disabled' : ''}>${ic('chevL', 16)}</button><span aria-live="polite">${ED.pi + 1} / ${n}</span><button data-act="pgStep" data-n="1" title="Next slide (PageDown)" aria-label="Next slide" ${ED.pi >= n - 1 ? 'disabled' : ''}>${ic('chevR', 16)}</button></span>
-        <button class="add" data-act="edAddPage" title="Add slide">${ic('plus', 15)}<span>Add slide</span></button>
-        <button class="tb fold" data-act="pgFold" title="${folded ? 'Show slides' : 'Hide slides'}" aria-label="${folded ? 'Show slides' : 'Hide slides'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
+        <span class="ttl">${ic('slides', 16)}<span class="t">Pages</span><span class="cnt">${n}</span></span><span class="sp"></span>
+        <span class="pgs-pager"><button data-act="pgStep" data-n="-1" title="Previous page (PageUp)" aria-label="Previous page" ${ED.pi === 0 ? 'disabled' : ''}>${ic('chevL', 16)}</button><span aria-live="polite">${ED.pi + 1} / ${n}</span><button data-act="pgStep" data-n="1" title="Next page (PageDown)" aria-label="Next page" ${ED.pi >= n - 1 ? 'disabled' : ''}>${ic('chevR', 16)}</button></span>
+        <button class="add" data-act="edAddPage" title="Add page">${ic('plus', 15)}<span>Add page</span></button>
+        <button class="tb fold" data-act="pgFold" title="${folded ? 'Show pages' : 'Hide pages'}" aria-label="${folded ? 'Show pages' : 'Hide pages'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
       </div>
-      <div class="pgs-track" role="tablist" aria-label="Slides">${cards}<button class="pg-add" data-act="edAddPage" style="height:86px" title="Add slide">${ic('plus', 16)}<span>New slide</span></button></div>`;
+      <div class="pgs-track" role="tablist" aria-label="Pages">${cards}<button class="pg-add" data-act="edAddPage" style="height:86px" title="Add page">${ic('plus', 16)}<span>New page</span></button></div>`;
     const tr = $1('.pgs-track', host); if (tr) { tr.scrollLeft = sl; const on = $1('.pg.on', tr); if (on) { const a = on.offsetLeft - 24, b = on.offsetLeft + on.offsetWidth + 24; if (a < tr.scrollLeft) tr.scrollLeft = a; else if (b > tr.scrollLeft + tr.clientWidth) tr.scrollLeft = b - tr.clientWidth; } }
   };
 
   const addBlank = (at) => { const [w, h] = dim(); mutate(() => { ED.d.pages.splice(at, 0, { id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = at; ED.sel = null; }); };
   const dupAt = (i) => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; });
-  const delAt = (i) => { if (ED.d.pages.length < 2) return toast('A design needs at least one slide'); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(ED.pi > i ? ED.pi - 1 : Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); };
+  const delAt = (i) => { if (ED.d.pages.length < 2) return toast('A design needs at least one page'); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(ED.pi > i ? ED.pi - 1 : Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); };
   const moveAt = (i, to) => { if (to < 0 || to >= ED.d.pages.length) return; mutate(() => { const [x] = ED.d.pages.splice(i, 1); ED.d.pages.splice(to, 0, x); ED.pi = to; ED.sel = null; }); };
   const go = (i) => { i = clamp(i, 0, ED.d.pages.length - 1); if (i !== ED.pi) ACT.edPage({ dataset: { i } }); };
   const foldTo = (v) => { folded = v; try { localStorage.setItem('boga.pgsFolded', v ? '1' : '0'); } catch (e) {} edPages(); if (ED.fit) requestAnimationFrame(() => { fitZoom(); }); };
@@ -4338,7 +4890,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function slideMenu(btn) {
     const i = +btn.dataset.i, n = ED.d.pages.length, r = btn.getBoundingClientRect();
     $A('#ctx').forEach((x) => x.remove());
-    const rows = [['Duplicate', 'copy', () => dupAt(i)], ['Add slide after', 'plus', () => addBlank(i + 1)], '-', ['Move left', 'moveL', () => moveAt(i, i - 1), i === 0], ['Move right', 'moveR', () => moveAt(i, i + 1), i === n - 1], '-', ['Delete', 'trash', () => delAt(i), n < 2, 'dng']];
+    const rows = [['Duplicate', 'copy', () => dupAt(i)], ['Add page after', 'plus', () => addBlank(i + 1)], '-', ['Move left', 'moveL', () => moveAt(i, i - 1), i === 0], ['Move right', 'moveR', () => moveAt(i, i + 1), i === n - 1], '-', ['Delete', 'trash', () => delAt(i), n < 2, 'dng']];
     const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
     c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
     document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
@@ -4445,8 +4997,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     edMore: (a) => {
       const old = $1('#ctx'); if (old) old.remove(); if (moreWas) { moreWas = false; return; }
       const r = a.getBoundingClientRect(), rows = [
-        ['Zoom in', 'plus', clickSel('.ed-top [data-act=edZoom][data-n="0.1"]')], ['Zoom out', 'minus', clickSel('.ed-top [data-act=edZoom][data-n="-0.1"]')], ['Fit to screen', 'frame', () => ACT.edFit()], '-',
-        ['Safe zones', 'frame', clickSel('#edSafe')], ['Grid overlay', 'grid', clickSel('#edGrid')], ['Search actions', 'search', clickSel('.ed-top [data-act=cmdk]')], ['Preview on networks', 'eye', clickSel('.ed-top [data-act=edPreview]')], ['Schedule', 'clock', clickSel('.ed-top [data-act=edSchedule]')]
+        ['Zoom in', 'plus', clickSel('[data-act=edZoom][data-n="0.1"]')], ['Zoom out', 'minus', clickSel('[data-act=edZoom][data-n="-0.1"]')], ['Fit to screen', 'frame', () => ACT.edFit()], '-',
+        ...[['Version history', 'history', '#edHist'], ['Comments', 'cm36', '#edCm36']].filter((x) => $1(x[2])).map(([l, i, q]) => [l, i, clickSel(q)]),
+        ['Safe zones', 'frame', clickSel('#edSafe')], ['Grid overlay', 'grid', clickSel('#edGrid')], ...($1('#edRulers') ? [['Rulers', 'frame', clickSel('#edRulers')]] : []), ...($1('#edAll34') ? [['All pages side by side', 'slides', clickSel('#edAll34')]] : []), '-',
+        ['Search actions', 'search', clickSel('.ed-top [data-act=cmdk]')], ['Preview on networks', 'eye', clickSel('.ed-top [data-act=edPreview]')], ['Schedule', 'clock', clickSel('.ed-top [data-act=edSchedule]')]
       ];
       const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.dataset.owner = 'more'; c.setAttribute('role', 'menu');
       c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}"><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
@@ -5523,6 +6077,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* ---------- publishing ---------- */
   const fnv = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
   const designHash = (d) => fnv(d.ratio + JSON.stringify(d.pages.map((p) => [p.bg, p.layers])));
+  /** A video post's hash: what its MP4 shows (post-video.js videoKey) */
+  videoHash = (d) => fnv(videoKey(d));
   const toDataUrl = (blob) => new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
   const plain = (p) => { const { publish, media, ...rest } = p; return JSON.parse(JSON.stringify(rest)); };
   /** Slides for publishing: lossless PNG at the design's size (at most 2160 px), the API encodes the JPEG once */
@@ -5547,10 +6103,37 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return state === 'published' ? `Published to ${ok.join(', ')}` : state === 'partial' ? `Published to ${ok.join(', ')}. ${bad.join(', ')} failed: open the post to see why` : `Publishing failed${st.publish && st.publish.lastError ? ': ' + st.publish.lastError : ''}`;
   };
   const busy = new Set(), unready = new Set();
+  /* ---- video posts: the MP4 is prepared once, when the post is scheduled (post-video.js), with a progress panel ---- */
+  let vq = Promise.resolve(); // one video at a time: a recording uses this tab's canvas and audio
+  const postPath = (post) => `${brandPath()}/posts/${encodeURIComponent(post.id)}`;
+  function vpanel(d) {
+    const el = document.createElement('div'); el.className = 'vprep'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+    el.innerHTML = `<span class="vprep-i">${ic('play37', 16)}</span><div class="vprep-b"><b>Preparing “${esc(d.name || 'video')}” for publishing</b><small data-v>Starting…</small><div class="prog"><i style="width:0%"></i></div>${d.motion ? '<small class="vprep-keep">Keep this tab open: the video is recorded in it.</small>' : ''}</div><button class="btn ghost icon sm" data-vstop aria-label="Stop preparing the video" title="Stop">${ic('x', 15)}</button>`;
+    document.body.append(el);
+    return el;
+  }
+  async function prepareVideoPost(post, d) {
+    if (busy.has(post.id)) return null; busy.add(post.id);
+    const kind = d.footage ? 'footage' : 'motion', signal = { stop: false }, el = vpanel(d);
+    el.querySelector('[data-vstop]').addEventListener('click', () => { signal.stop = true; });
+    const show = (step, p) => { const t = overall(kind, step, p), b = el.querySelector('.prog i'), m = el.querySelector('[data-v]'); if (b) b.style.width = Math.round(t * 100) + '%'; if (m) m.textContent = `${STEPS[step] ? STEPS[step][1] : ''} ${Math.round(t * 100)}%`; };
+    const run = () => prepareVideo(d, {
+      api, postPath: postPath(post), post: plain(post), hash: videoHash(d), exportPayload, exportSizes, fps: (d.motion && d.motion.fps) || 30,
+      record: RT.motion && RT.motion.record, mimes: () => (RT.motion && RT.motion.mimes ? RT.motion.mimes() : []), onProgress: show, signal,
+    });
+    const job = vq.then(run, run); vq = job.catch(() => {});
+    try { const st = await job; if (merge(st)) save(); return st; }
+    catch (e) {
+      toast(e && e.stopped ? 'Stopped. The post has no video yet: open it and schedule it again.' : 'Could not prepare the video: ' + ((e && e.message) || 'unknown error'));
+      return null;
+    } finally { el.remove(); busy.delete(post.id); refreshViews(); }
+  }
   PUB = {
     renderPages,
-    /** Scheduled post: upload its slides so the API can publish it on time, even with the studio closed */
+    /** Scheduled post: upload its slides (or prepare its video) so the API can publish it on time, even with the studio closed */
     async prepare(post) {
+      const dv = getD(post.d);
+      if (dv && isVideoPost(dv)) { const st = await prepareVideoPost(post, dv); if (st) toast(`Video ready. It goes out ${dlabel(post.date)} at ${post.time}`); return; }
       const d = getD(post.d); if (!d || busy.has(post.id)) return; busy.add(post.id);
       try { const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/media`, { method: 'PUT', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } }); if (merge(st)) save(); }
       catch (e) { toast('Could not prepare the post for publishing: ' + e.message); }
@@ -5558,6 +6141,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     },
     async publishNow(post) {
       const d = getD(post.d); if (!d) return; if (busy.has(post.id)) return toast('Already publishing this post');
+      if (isVideoPost(d)) { // prepare the video, then publish it
+        const ready = await prepareVideoPost(post, d); if (!ready) return;
+        busy.add(post.id); toast(`Publishing to ${post.pf.map(net).join(', ')}…`);
+        try { const st = await api(`${postPath(post)}/publish`, { method: 'POST', body: { post: plain(post) } }); merge(st); save(); toast(summary(st)); }
+        catch (e) { toast('Publishing failed: ' + e.message); }
+        finally { busy.delete(post.id); refreshViews(); }
+        return;
+      }
       busy.add(post.id); toast(`Publishing to ${post.pf.map(net).join(', ')}…`);
       try {
         const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/publish`, { method: 'POST', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } });
@@ -5572,10 +6163,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       let changed = false; list.forEach((st) => { changed = merge(st) || changed; });
       if (changed) { save(); refreshViews(); }
       // automation runs are rendered and captioned by the API: the studio leaves their slides alone
-      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
+      // (a video is prepared only when the post is scheduled: recording or exporting it again on its own would be too heavy)
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && !isVideoPost(d) && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
       // scheduled posts without rendered slides (created before the API had them, or a failed upload): render once per session
       if (persist.readOnly) return;
-      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && !isVideoPost(getD(p.d)) && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
         .forEach((p) => { unready.add(p.id); PUB.prepare(p); });
     },
   };
@@ -6000,7 +6592,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -6628,6 +7220,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     } catch (e) { closeWait(); toast('Import failed: ' + e.message); }
   }
   document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('lv-imp')) { e.preventDefault(); ACT.lvPickFile(e.target, e); } });
+  IMPORT_FILE = importDesign;
   document.addEventListener('change', (e) => { const t = e.target; if (t.id === 'lvFile' && t.files && t.files[0]) { const f = t.files[0]; t.value = ''; importDesign(f); } });
   // drop a file on the Live data panel
   document.addEventListener('dragover', (e) => { const p = e.target.closest && e.target.closest('#edPanel.lv-panel'); if (p && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); p.classList.add('drop'); } }, true);
@@ -6952,7 +7545,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7369,6 +7962,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         colors: b.colors.map((c) => ({ name: c.name, hex: c.hex })), fonts: b.fonts,
         logos: (b.logos || []).filter((l) => l.src).map((l) => ({ id: l.id, kind: l.kind, name: l.name })), assets: (b.assets || []).map((a) => ({ id: a.id, name: a.name })),
         templates: (b.templates || []).map((t) => ({ id: t.id, name: t.name, format: t.ratio, live: !!t.live })),
+        ...agentExtras(b.designSystem),
       },
       slides: all ? d.pages.map(slideOf) : [slideOf(curP(), ED.pi)],
       otherSlides: all ? undefined : d.pages.map((pg, i) => (i === ED.pi ? null : { number: i + 1, texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden).slice(0, 4).map((l) => String(l.text).slice(0, 80)) })).filter(Boolean),
@@ -7511,14 +8105,37 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     async select_layer(a) { ED.sel = a.id && curP().layers.some((l) => l.id === a.id) ? a.id : null; drawSel(); edProps(); return ED.sel ? `Selected ${ED.sel}.` : 'Nothing selected.'; },
     async get_slide(a) { const i = pageIx(a.index); return JSON.stringify(slideOf(ED.d.pages[i], i)); },
     async view_slide(a) { const i = a.index == null ? ED.pi : pageIx(a.index), img = await picture(i); return img ? { text: `Picture of slide ${i + 1} attached.`, image: img } : 'The slide could not be rendered.'; },
+    async view_reference(a) {
+      const b = brand(), src = ((b.designSystem && b.designSystem.sources) || []).find((x) => x.id === (a && a.id));
+      if (src && src.kind === 'inspiration') {
+        // another brand's picture: no layer list, only the picture (smaller when it is too heavy to send)
+        const p = dsPics(b).find((x) => x.id === src.id), image = p && (await dsPicImage(p.src));
+        if (!p || !image) throw new Error('No such reference');
+        return { text: `Inspiration “${String(p.name || '').trim() || 'Picture'}” (${p.w}×${p.h}): another brand's work. Use its composition only, with this brand's colours, fonts and logo.`, image };
+      }
+      const t = src && (src.kind === 'template' ? (b.templates || []).find((x) => x.id === src.id) : getD(src.id));
+      if (!src || !t) throw new Error('No such reference');
+      const ratio = ensureRatio(t.ratio);
+      if (!RATIOS[ratio]) throw new Error('No such reference');
+      const [w, h] = RATIOS[ratio], pg = t.pages ? t.pages[0] : { id: t.id, bg: t.bg, layers: t.layers };
+      const text = `Reference \u201c${t.name}\u201d (${src.kind}, ${ratio}, ${w}\u00d7${h}):\n` + JSON.stringify((pg.layers || []).map(compact)).slice(0, 12000);
+      let img = null;
+      if (renderSlide) try { const blob = await renderSlide(t.pages ? t : { id: t.id, ratio, pages: [pg] }, 0, Math.min(1, 1000 / Math.max(w, h)), 'jpeg'); img = await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { img = null; }
+      return img ? { text, image: img } : { text };
+    },
+    async check_design(a) {
+      const i = a && a.page != null ? pageIx(a.page) : ED.pi, pg = ED.d.pages[i], [w, h] = dim(), b = brand(), sys = b.designSystem ? tidySystem(b.designSystem, dsSourceIds(b.designSystem)) : null;
+      return `Slide ${i + 1}: ` + lintText(lintSlide(pg, { w, h }, b, sys), (id) => (pg.layers.find((l) => l.id === id) || {}).name || '');
+    },
   };
   const n = (a, k) => ((a && a[k]) || []).length;
   const STEP = {
     update_layers: (a) => `Editing ${n(a, 'updates')} layer${n(a, 'updates') === 1 ? '' : 's'}`, add_layers: (a) => `Adding ${n(a, 'layers')} layer${n(a, 'layers') === 1 ? '' : 's'}`,
     delete_layers: (a) => `Deleting ${n(a, 'ids')} layer${n(a, 'ids') === 1 ? '' : 's'}`, duplicate_layers: () => 'Duplicating layers', arrange_layers: (a) => `Moving layers ${a.to || ''}`,
-    align_layers: (a) => `Aligning: ${a.align || ''}`, set_background: () => 'Changing the background', manage_slides: (a) => ({ add: 'Adding a slide', duplicate: 'Duplicating a slide', delete: 'Deleting a slide', move: 'Moving a slide', go: 'Opening a slide' }[a.action] || 'Slides'),
+    align_layers: (a) => `Aligning: ${a.align || ''}`, set_background: () => 'Changing the background', manage_slides: (a) => ({ add: 'Adding a page', duplicate: 'Duplicating a page', delete: 'Deleting a page', move: 'Moving a page', go: 'Opening a page' }[a.action] || 'Pages'),
     resize_canvas: (a) => `Resizing to ${a.ratio}`, rename_design: () => 'Renaming the design', apply_brand_template: () => 'Applying a brand template', build_live_slide: (a) => `Building a live ${a.kind || ''} slide`,
     write_caption: () => 'Writing the caption', select_layer: () => 'Selecting a layer', get_slide: (a) => `Reading slide ${a.index}`, view_slide: () => 'Looking at the slide',
+    view_reference: () => 'Looking at a reference', check_design: () => 'Checking the design',
   };
 
   /* ---------- the loop ---------- */
@@ -7530,7 +8147,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (snap() === run.pre) return;
     ED.undo.length = Math.min(run.startLen, ED.undo.length); ED.undo.push(run.pre); ED.redo = []; run.msg.after = ED.undo.length; touch(); edTop();
   }
-  async function agAI(text) {
+  /** note: words for the model only, not shown in the chat (the Overview's prompt box says the design is new) */
+  async function agAI(text, note) {
     const d = ED.d, model = current(); if (!d || !model) return;
     d.chat = d.chat || [];
     const msg = { r: 'a', steps: [], done: false, t: '', ai: true, model: modelName(model) };
@@ -7539,7 +8157,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const alive = () => id === ED.agRun && ED.d === d;
     const c = conv(); trim(c);
     try {
-      c.push({ role: 'user', text: ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text, image: await picture(ED.pi) || undefined });
+      c.push({ role: 'user', text: (ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text) + (note ? `\n\n(${note})` : ''), image: await picture(ED.pi) || undefined });
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         if (!alive()) return;
         const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, context: context(), messages: c } });
@@ -7602,6 +8220,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   });
   document.addEventListener('click', (e) => { if (AGM.open && e.target.isConnected && !e.target.closest('.ag-mw')) { AGM.open = false; agModelChip(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && AGM.open) { AGM.open = false; agModelChip(); } });
+  AGAPI = { list: () => AGM.list, load: loadModels, current, modelName, modelMenu, run: agAI, compact };
 }
 
 /* ============ v26 · Automations: recurring posts with live data ============ */
@@ -9804,7 +10423,7 @@ function clipCss(l, frames) {
 
   function historyHTML() {
     const L = H.list || [], edit = canEdit();
-    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn primary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
+    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn secondary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
       + '<p class="xs-t muted">Saved versions of this design. One is taken automatically when you open it; give it a name to keep it.</p>';
     if (H.loading && !H.list) return head + '<p class="sm-t muted">Loading…</p>';
     if (H.err) return head + `<div class="note warn"><span>${H.err} <button class="btn link sm" data-act="hv35Retry">Try again</button></span></div>`;
@@ -9948,8 +10567,8 @@ function clipCss(l, frames) {
   /* ---------- the Comments tab ---------- */
   function listHTML() {
     const ts = threads(), open = ts.filter((t) => !t.resolved), done = ts.filter((t) => t.resolved);
-    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · slide ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
-    return `<button class="btn ${C.mode ? 'secondary' : 'primary'} sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
+    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · page ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
+    return `<button class="btn secondary sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
       + (open.length ? `<div class="c36-l">${open.map(row).join('')}</div>` : '<p class="sm-t muted">No open comments on this design.</p>')
       + (done.length ? `<button class="btn link sm" data-act="cm36Done">${C.showDone ? 'Hide' : 'Show'} ${done.length} resolved</button>${C.showDone ? `<div class="c36-l">${done.map(row).join('')}</div>` : ''}` : '');
   }
@@ -10024,14 +10643,16 @@ function clipCss(l, frames) {
   PAGES.studio.view = function () {
     const html = _sv37.apply(this, arguments), m = /<div class="tiles">([\s\S]*?)<\/div>\s*<div class="lib-bar">/.exec(html);
     if (!m) return html;
-    const posts = m[1].replace('<b>Story / Reel</b><small>1080 × 1920</small>', '<b>Story</b><small>1080 × 1920 · still</small>');
-    const videos = MO.FORMATS.map((f) => `<button class="tile vt37" data-act="mo37New" data-f="${f.k}" title="${esc(f.n)} for ${esc(f.nets)}: opens an empty video"><span class="shape"><i style="${shapeOf(f.ratio)}">${ic('play37', 9)}</i></span><span><b>${f.n}</b><small>${f.s.split(' · ')[1]}</small></span></button>`).join('') + `<button class="tile vt37 ft-tile" data-act="ftNew" title="Upload a raw clip and a reference video: copies the reference's look and subtitles"><span class="shape"><i style="${shapeOf('9:16')}">${ic('play37', 9)}</i></span><span><b>Match a reference</b><small>Copy a video's look and captions</small></span></button>`
-      + `<button class="tile vt37 ft-tile" data-act="ftBlank" title="Opens an empty video: add your clip and get captions from its speech"><span class="shape"><i style="${shapeOf('9:16')}">${ic('vsCc', 9)}</i></span><span><b>Caption a video</b><small>Add captions to your clip</small></span></button>`;
-    const block = `<section class="cr37" aria-label="Create">
-      <div class="cr37-g"><div class="cr37-h"><b>Posts</b><small>Still images and carousels</small></div><div class="cr37-row">${posts}</div></div>
-      <div class="cr37-g"><div class="cr37-h"><b>Videos</b><span class="cr37-new">New</span><small>Intro, scenes and outro, animated with your brand kit</small></div><div class="cr37-row">${videos}</div></div></section>`;
+    // Unified Studio: a size or a starting point, never an editor (home.js); the old Posts and Videos rows are gone
+    const block = createBlockHTML({ ic, esc, shapeOf });
     return html.replace(m[0], block + '<div class="lib-bar">');
   };
+  /** A size: a blank still at that size (it becomes a carousel with pages, a video with Animate) */
+  ACT.crSize = (a) => { if (!canEdit() || !a) return; ACT.newDesign({ dataset: { ratio: ensureRatio(a.dataset.r), slides: a.dataset.n || '1' } }); };
+  /** Template: the Templates tab of the library, scrolled into view */
+  ACT.crTemplates = () => { ST.tab = 1; ST.page = 0; route(); const b = $('.lib-bar'); if (b) b.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+  /** Upload a video: an empty video, then the file picker (the empty video also says "Add your video") */
+  ACT.crUpload = () => { if (!canEdit() || !ACT.ftBlank) return; ACT.ftBlank(); setTimeout(() => { if (ACT.ftPick) ACT.ftPick(); }, 400); };
   /** A video tile opens the editor right away on an empty video: one blank scene in the brand's background color */
   ACT.mo37New = (a) => { if (canEdit()) createMotion(MO.formatOf(a && a.dataset.f)); };
   function createMotion(F) {
@@ -10153,7 +10774,7 @@ function clipCss(l, frames) {
     return tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
       return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${px(s.dur) < 130 ? ' sm' : ''}" style="left:${pos(s.start)};width:${pos(s.dur)}">
         <button class="mo-sc-b" data-act="mo37Scene" data-i="${s.i}" title="${esc(lab)} · ${secs(s.dur)}" aria-label="${esc(lab)}, ${secs(s.dur)}" aria-current="${s.i === ED.pi}">${thumb(d.pages[s.i], d.ratio, 34, 44)}<span class="mo-sc-l"><b>${esc(lab)}</b><small>${secs(s.dur)}${s.i && s.tr !== 'cut' ? ` · ${trIcon(s.tr)} ${MO.TRANSITIONS[s.tr]}` : ''}</small></span></button>
-        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${pos(s.start)}" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('');
+        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'scenes' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${pos(s.start)}" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('');
   }
   /** The layers of the open scene, top first, with their animation lane (same units as sceneBlocks; html(px) may give another px) */
   function layerLanes(pos, px0) {
@@ -10207,9 +10828,9 @@ function clipCss(l, frames) {
       (set by a + of the timeline). When the scene just before it is empty, the pick fills that scene instead. */
   let insAt = null;
   const target = () => { const at = insAt == null ? ED.pi + 1 : insAt, fill = at > 0 && ED.d.pages[at - 1] && isEmpty(ED.d.pages[at - 1]) ? at - 1 : -1; return { at, fill }; };
-  /** Opens the Motion sidebar on its library, aimed at `at` */
+  /** Opens the Scenes sidebar on its library, aimed at `at` */
   function openLibrary(at) {
-    insAt = at; ED.tab = 'motion'; ACT.edTab({ dataset: { k: 'motion' } }); edPages();
+    insAt = at; ACT.edTab({ dataset: { k: 'scenes' } }); edPages();
     requestAnimationFrame(() => { const lib = $('#mo37Lib'); if (!lib) return; lib.scrollIntoView({ block: 'start', behavior: 'smooth' }); lib.classList.remove('flash'); void lib.offsetWidth; lib.classList.add('flash'); });
   }
   function addScene(kind, key, at, fill = -1) {
@@ -10228,29 +10849,66 @@ function clipCss(l, frames) {
 
   /* ---------- targets of the animation controls: the selection ---------- */
   const targets = () => { const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; return curP().layers.filter((l) => ids.includes(l.id)); };
-  function setAnim(patch, opts = {}) {
-    const ls = targets(); if (!ls.length) return;
+  function setAnim(patch, opts = {}, given) {
+    const ls = given || targets(); if (!ls.length) return;
     mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), ...patch }; if (opts.stagger) l.anim.d = (patch.d ?? MO.anim(l).d) + i * opts.stagger; }));
     if (opts.preview) { const a = MO.anim(ls[ls.length - 1]); previewScene(ED.pi, a.d + a.t + 500); }
   }
 
-  /* ---------- left panel: Motion. A video: what it is, then the scene library (the + of the timeline aim it).
-     A still design: turn it into a video. ---------- */
+  /* ---------- left panels of Animate mode (video-studio.js): Scenes (the scene list, then the scene library the + of the
+     timeline aim) and Animation (presets for the selection, or for every layer of the open scene) ---------- */
   const ti = RAIL.findIndex((r) => r[0] === 'templates'); RAIL.splice(ti + 1, 0, ['motion', 'Motion', 'film37']);
+  /** The layers the Animation panel acts on: the selection, else every visible layer of the open scene */
+  const animOn = () => { const ls = targets(); return ls.length ? { ls, all: false } : { ls: curP().layers.filter((l) => !isBg(l) && !l.hidden && !l.pid), all: true }; };
+  const fxChipsP = (set, cur, key) => fxChips(set, cur, key).replaceAll('data-act="mo37Fx"', 'data-act="an40Fx"');
+  function animPanelHTML() {
+    const { ls, all } = animOn();
+    if (!ls.length) return `<h3>Animation</h3><div class="vs-soon an40-none"><p class="sm-t muted">Add a layer in Design to animate it.</p><button class="btn secondary sm" data-act="vsMode" data-v="design">${ic('layout', 15)}Open Design</button></div>`;
+    const same = (k) => { const v = MO.anim(ls[0])[k]; return ls.every((l) => MO.anim(l)[k] === v) ? v : null; };
+    const what = all ? 'Applies to every layer of this scene' : ls.length > 1 ? `Applies to ${ls.length} selected layers` : 'Applies to the selected layer';
+    return `<h3>Animation</h3>
+      <div class="an40">
+        <p class="xs-t muted an40-on" aria-live="polite">${what}</p>
+        <button class="btn secondary sm mo-magic" data-act="mo37Magic" data-all="0" ${canEdit37() ? '' : 'disabled'}>${ic('wand', 15)}Magic animate this scene</button>
+        <span class="label">Enter</span>${fxChipsP(MO.ENTER, same('in'), 'in')}
+        <span class="label">Exit</span>${fxChipsP(MO.EXIT, same('out'), 'out')}
+        <span class="label">Loop</span>${fxChipsP(MO.LOOP, same('loop'), 'loop')}
+      </div>`;
+  }
+  const canEdit37 = () => !persist.readOnly;
+  /** Draws the Animation panel when what it shows changed (`force`: always): the panel and the selection never disagree */
+  let anShown = null;
+  function drawAnim(p, force = true) { const h = animPanelHTML(); if (!force && anShown === h && p.querySelector('.an40, .an40-none')) return; anShown = h; p.innerHTML = h; }
+  function scenesListHTML(d) {
+    return `<ol class="sc40-list" aria-label="Scenes">${d.pages.map((pg, i) => `<li class="sc40-row${i === ED.pi ? ' on' : ''}">
+      <button class="sc40-go" data-act="sc40Go" data-i="${i}"${i === ED.pi ? ' aria-current="true"' : ''}>${thumb(pg, d.ratio, 44, 54)}<span class="sc40-n"><b>${esc(kindLabel(d, i))}</b><small>${secs(MO.sceneOf(pg).dur)}</small></span></button>
+      <button class="btn ghost icon sm" data-act="sc40Menu" data-i="${i}" aria-label="More for ${esc(kindLabel(d, i))}" data-tip="More">${ic('more', 16)}</button></li>`).join('')}</ol>`;
+  }
+  /** Moves scene i one place earlier (-1) or later (1) inside its part of the video (intro, scenes, outro stay grouped) */
+  const canMove = (i, by) => { const P = ED.d.pages, a = P[i], b = P[i + by]; return !!a && !!b && MO.sceneOf(a).k === MO.sceneOf(b).k; };
+  function moveScene(i, by) {
+    if (!canMove(i, by)) return;
+    exitPreview(true);
+    mutate(() => {
+      const P = ED.d.pages, pg = P[i], other = P[i + by], wasFirst = Math.min(i, i + by) === 0; P[i] = P[i + by]; P[i + by] = pg; ED.pi = i + by; ED.sel = null; ED.ms = [];
+      order(ED.d);
+      ED.d.pages.forEach((p, k) => { const sc = MO.sceneOf(p); p.scene = { ...sc, tr: !k ? 'cut' : wasFirst && sc.tr === 'cut' && (p === pg || p === other) ? 'fade' : sc.tr }; }); // the first scene opens on a cut; one moved off first place fades in
+    });
+  }
   const _pn37 = edPanel;
   edPanel = function () {
-    if (ED.tab !== 'motion') return _pn37.apply(this, arguments);
-    const p = $('#edPanel'), d = ED.d; p.classList.remove('agent');
-    if (!isMo(d)) {
-      p.innerHTML = `<h3>Motion</h3><div class="mo2-hero">${ic('film37', 22)}<b>Make it a video</b><span>Each slide becomes an animated scene.</span><button class="btn primary" data-act="mo37Make">${ic('play37', 14)}Animate this design</button></div>`;
-      return;
-    }
+    const d = ED.d;
+    if (!d || !isMo(d) || (ED.tab !== 'scenes' && ED.tab !== 'animation')) return _pn37.apply(this, arguments);
+    const p = $('#edPanel'); p.classList.remove('agent');
+    if (ED.tab === 'animation') { drawAnim(p); return; }
     const tl = TL(), [w, h] = dim(), o = look(), F = MO.formatOf(d.motion.fmt), n = tl.scenes.length, { at, fill } = target(), kind = S37.kind;
     const where = fill >= 0 ? `Fills ${esc(kindLabel(d, fill))}` : at >= n ? 'Adds at the end' : `Adds before ${esc(kindLabel(d, at))}`;
     const KINDS = [['all', 'layout', 'All'], ['intro', 'play37', 'Intro'], ['body', 'slides', 'Scene'], ['outro', 'stop38', 'Outro']];
     const cards = Object.entries(MO.STARTERS).filter(([k]) => kind === 'all' || kind === k).flatMap(([k, set]) => Object.entries(set).map(([v, st]) => `<button class="mo2-card" data-act="mo37Lib" data-k="${k}" data-v="${v}" title="${esc(st[0])} · ${MO.KINDS[k]}">${thumb({ bg: o.bg, layers: st[1](w, h, o) }, d.ratio, 76, 92)}<span><i class="mo2-dot k-${k}"></i>${esc(st[0])}</span></button>`)).join('');
-    p.innerHTML = `<div class="au2-head"><h3>Motion</h3><button type="button" class="btn ghost icon sm" data-act="mo37PanelMenu" data-tip="More" aria-label="More">${ic('more', 16)}</button></div>
+    p.innerHTML = `<div class="au2-head"><h3>Scenes</h3><button type="button" class="btn ghost icon sm" data-act="mo37PanelMenu" data-tip="More" aria-label="More">${ic('more', 16)}</button></div>
       <div class="mo2-info"><span data-tip="Format">${ic('film37', 14)}${esc(F.n)}</span><span data-tip="Length">${ic('clock', 14)}${MO.fmtTime(tl.total, false)}</span><span data-tip="Scenes">${ic('slides', 14)}${n}</span></div>
+      ${scenesListHTML(d)}
+      <span class="label sc40-add">Add a scene</span>
       <div class="mo-lib" id="mo37Lib">
         <div class="mo2-filter" role="tablist" aria-label="Scene types">${KINDS.map(([k, icon, l]) => `<button role="tab" aria-selected="${kind === k}" class="${kind === k ? 'on' : ''}" data-act="mo37Kind" data-k="${k}">${ic(icon, 14)}<span>${l}</span></button>`).join('')}</div>
         <div class="mo2-where">${ic(fill >= 0 ? 'layout' : 'plus', 13)}<span>${where}</span>${insAt != null ? `<button class="btn ghost icon sm" data-act="mo37Aim" aria-label="Add after the open scene instead" data-tip="Reset">${ic('x', 12)}</button>` : ''}</div>
@@ -10290,19 +10948,18 @@ function clipCss(l, frames) {
       <label class="lab">Length <output class="mo-out">${secs(s.dur)}</output><input type="range" min="500" max="20000" step="100" data-mo="dur" value="${s.dur}"></label>
       ${first ? '<p class="xs-t muted">The first scene opens the video: it has no transition.</p>' : `<div><span class="label">Transition in</span><div class="chips mo-trs">${Object.entries(MO.TRANSITIONS).map(([k, l]) => `<button class="chip ${s.tr === k ? 'on' : ''}" data-act="mo37SetTr" data-k="${k}"><span class="mo-tri">${trIcon(k)}</span>${l}</button>`).join('')}</div></div>
         ${s.tr !== 'cut' ? `<label class="lab">Transition length <output class="mo-out">${secs(s.trd)}</output><input type="range" min="200" max="1500" step="50" data-mo="trd" value="${s.trd}"></label>` : ''}`}
-      <button class="btn secondary sm mo-magic" data-act="mo37Magic" data-all="0">${ic('wand', 15)}Magic animate this scene</button>`,
+      <button class="btn link sm" data-act="edTab" data-k="animation">${ic('wand', 15)}Animate this scene</button>`,
       `<button class="btn ghost icon sm" data-act="mo37Dup" data-tip="Duplicate scene" aria-label="Duplicate scene">${ic('copy', 14)}</button>${n > 1 ? `<button class="btn ghost icon sm" data-act="mo37Del" data-tip="Delete scene" aria-label="Delete scene">${ic('trash', 14)}</button>` : ''}`);
   }
   function animSec(ls) {
     const a = MO.anim(ls[0]), s = MO.sceneOf(curP()), many = ls.length > 1;
     return sec('anim', many ? `Animation · ${ls.length} layers` : 'Animation', `
-      <span class="label">Enter</span>${fxChips(MO.ENTER, a.in, 'in')}
-      ${a.in !== 'none' ? `<div class="g2f">${numS('Start', 'd', a.d, s.dur / 1000)}${numS('Length', 't', a.t, 10)}</div>
+      <p class="sm-t an40-sum">${esc([MO.ENTER[a.in] ? MO.ENTER[a.in][0] : a.in, a.out !== 'none' && MO.EXIT[a.out] ? MO.EXIT[a.out][0] + ' out' : 'no exit', a.loop !== 'none' && MO.LOOP[a.loop] ? MO.LOOP[a.loop][0] + ' loop' : 'no loop'].join(' · '))}</p>
+      <button class="btn secondary sm" data-act="edTab" data-k="animation">${ic('wand', 15)}Change animation</button>
+      ${a.in !== 'none' ? `<span class="label">Enter timing</span><div class="g2f">${numS('Start', 'd', a.d, s.dur / 1000)}${numS('Length', 't', a.t, 10)}</div>
         <label class="lab">Easing<select class="field sm" data-mo="e">${Object.entries(MO.EASES).map(([k, [n]]) => `<option value="${k}" ${a.e === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         ${many ? `<button class="btn secondary sm" data-act="mo37Stagger">${ic('slides', 15)}Stagger, one after the other</button>` : ''}` : ''}
-      <span class="label">Exit</span>${fxChips(MO.EXIT, a.out, 'out')}
-      ${a.out !== 'none' ? `<div class="g2f">${numS('Length', 'ot', a.ot, 5)}</div>` : ''}
-      <span class="label">Loop</span>${fxChips(MO.LOOP, a.loop, 'loop')}`,
+      ${a.out !== 'none' ? `<span class="label">Exit timing</span><div class="g2f">${numS('Length', 'ot', a.ot, 5)}</div>` : ''}`,
       `<button class="btn ghost icon sm" data-act="mo37PlayScene" data-tip="Preview (K plays the video)" aria-label="Preview the animation">${ic('play37', 13)}</button>`);
   }
   const _ep37 = edProps;
@@ -10313,12 +10970,13 @@ function clipCss(l, frames) {
       if (blk && blk !== pb && blk.querySelector(':scope > .label')) blk.remove();
       const sw = pb.querySelector('.switch[data-act=edSafe]'), row = sw && sw.closest('.row'); if (row && row !== pb) row.remove();
     }
-    if (!ED.d || !isMo(ED.d) || ED.rtab !== 'design') return r;
+    // the Animation panel follows the selection (edProps runs on every selection change)
+    if (ED.d && isMo(ED.d) && ED.tab === 'animation') { const ap = $('#edPanel'); if (ap) drawAnim(ap, false); }
+    // the Animate tab: a selected layer's timing, else the scene's role, length and transition
+    if (!ED.d || !isMo(ED.d) || ED.rtab !== 'animate') return r;
     const b = $('#edProps .body'); if (!b) return r;
-    const ls = targets(), tmp = document.createElement('div');
-    tmp.innerHTML = ls.length ? animSec(ls) : sceneSec();
-    const after = ls.length && b.querySelector('.ps9[data-sec=pos]');
-    if (after) after.after(...tmp.children); else { const h = b.querySelector(':scope > .row'); h && ls.length ? h.after(...tmp.children) : b.prepend(...tmp.children); }
+    const ls = targets();
+    b.className = 'body vs-anim'; b.innerHTML = ls.length ? animSec(ls) : sceneSec();
     return r;
   };
   /* number, range and select inputs of the Motion panel and the Scene / Animation sections */
@@ -10356,6 +11014,15 @@ function clipCss(l, frames) {
     mo37SetKind: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), k: a.dataset.k }; order(ED.d); ED.d.pages.forEach((p, i) => { if (!i) p.scene = { ...MO.sceneOf(p), tr: 'cut' }; }); }); },
     mo37SetTr: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), tr: a.dataset.k }; }); if (a.dataset.k !== 'cut') { const s = TL().scenes[ED.pi]; play(Math.max(0, s.start - 600), s.start + s.trd + 400, true); } },
     mo37Fx: (a) => { const k = a.dataset.key, v = a.dataset.v; setAnim({ [k]: v }, { preview: v !== 'none' }); },
+    /* the Animation panel's presets: the selection, else every layer of the open scene */
+    an40Fx: (a) => { const k = a.dataset.key, v = a.dataset.v, { ls } = animOn(); exitPreview(true); setAnim({ [k]: v }, { preview: v !== 'none' }, ls); },
+    sc40Go: (a) => ACT.mo37Scene(a),
+    sc40Menu: (b) => { const i = +b.dataset.i, n = ED.d.pages.length; menu37(b, [
+      ['Duplicate', 'copy', () => dupScene(i)],
+      ['Move earlier', 'arrowUp', () => moveScene(i, -1), !canMove(i, -1)],
+      ['Move later', 'arrowDown', () => moveScene(i, 1), !canMove(i, 1)],
+      '-', ['Delete', 'trash', () => delScene(i), n < 2],
+    ]); },
     mo37Stagger: () => { const ls = targets().sort((x, y) => x.y - y.y || x.x - y.x); if (ls.length < 2) return; const base = MO.anim(ls[0]).d; mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), d: base + i * 150 }; if (l.anim.in === 'none') l.anim.in = 'fade'; })); previewScene(ED.pi); },
     mo37Magic: (a) => {
       const [w, h] = dim(), all = a.dataset.all === '1';
@@ -10394,6 +11061,7 @@ function clipCss(l, frames) {
   /* keyboard: K play / pause, comma / period previous / next scene (motion designs) */
   addEventListener('keydown', (e) => {
     if (!document.body.classList.contains('in-editor') || !ED.d || !isMo(ED.d) || ED.editing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (VS.mode() !== 'animate') return; // Design mode: the editor's own keys, nothing plays
     const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
     const k = e.key.toLowerCase();
     if (k === 'k') { e.preventDefault(); toggle(); }
@@ -10406,7 +11074,7 @@ function clipCss(l, frames) {
   openEditor = function () {
     pause(); PL.view = null; PL.cache.clear(); PL.t = 0;
     const r = _oe37.apply(this, arguments);
-    if (isMo(ED.d)) { order(ED.d); insAt = null; ED.tab = 'motion'; edRail(); edPanel(); edPages(); emptyCard(); requestAnimationFrame(fitZoom); }
+    if (isMo(ED.d)) { order(ED.d); insAt = null; ED.tab = 'scenes'; edRail(); edPanel(); edPages(); emptyCard(); requestAnimationFrame(fitZoom); }
     return r;
   };
   const _st37 = edStage;
@@ -10512,6 +11180,27 @@ function clipCss(l, frames) {
     rec.stop(); await stopped; stream.getTracks().forEach((x) => x.stop()); au && au.stop(); PAD.clear();
     return signal.stop ? null : new Blob(chunks, { type: mime.split(';')[0] });
   }
+  /** An animated GIF of the video: the same frames as the recording, rendered one by one (not in real time), no sound */
+  async function recordGif(d, { short, fps, onStep, signal }) {
+    const [W, H] = RATIOS[d.ratio], { w, h, s } = gifSize(W, H, short);
+    const prep = await prepare(d, s, (p) => onStep('prep', p)); if (signal.stop) return null;
+    const tl = MO.timeline(d.pages), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true }), n = Math.max(1, Math.round((tl.total / 1000) * fps));
+    const at = (i) => Math.min(tl.total - 1, (i * 1000) / fps), shot = (i) => { frame(ctx, d, prep, tl, at(i), s); return ctx.getImageData(0, 0, w, h).data; };
+    const breathe = () => new Promise((r) => setTimeout(r));
+    // the palette: colours of frames spread over the whole video
+    const samples = [], every = Math.max(1, Math.floor(n / 16));
+    for (let i = 0; i < n; i += every) { samples.push(shot(i)); if (signal.stop) return null; await breathe(); }
+    const gif = gifWriter({ width: w, height: h, fps, palette: buildPalette(samples) }); samples.length = 0;
+    for (let i = 0; i < n; i++) {
+      if (signal.stop) return null;
+      gif.add(shot(i)); onStep('gif', (i + 1) / n);
+      if (i % 2 === 1) await breathe();
+    }
+    PAD.clear();
+    return signal.stop ? null : new Blob([gif.done()], { type: 'image/gif' });
+  }
+  const mb = (bytes) => (bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB');
   const _ox37 = openExport;
   openExport = function (d, pi) {
     if (!isMo(d)) return _ox37.apply(this, arguments);
@@ -10522,19 +11211,46 @@ function clipCss(l, frames) {
     let job = null;
     modal(`<div class="mh"><h2>Export video</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb mo-ex"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 80, 100)}<div class="grow"><b class="sm-t">${esc(d.name)}</b><p class="xs-t muted">${tl.scenes.length} scene${tl.scenes.length > 1 ? 's' : ''} · ${MO.fmtTime(tl.total)} · ${W} × ${H}</p></div></div>
-        ${kinds.length ? `<div class="g2f"><label class="lab">Format<select class="field sm" id="mxF">${kinds.map(([e]) => `<option value="${e}">${e === 'mp4' ? 'MP4 (H.264)' : 'WebM'}</option>`).join('')}</select></label>
+        ${`<div class="g2f"><label class="lab">Format<select class="field sm" id="mxF">${kinds.map(([e]) => `<option value="${e}">${e === 'mp4' ? 'MP4 (H.264)' : 'WebM'}</option>`).join('')}<option value="gif">Animated GIF</option></select></label>
           <label class="lab">Frame rate<select class="field sm" id="mxR">${[24, 30, 60].map((f) => `<option value="${f}" ${(d.motion.fps || 30) === f ? 'selected' : ''}>${f} fps</option>`).join('')}</select></label></div>
           <label class="lab">Size<select class="field sm" id="mxS">${sizes.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
-          ${kinds.some(([e]) => e === 'mp4') ? '' : `<div class="note warn">${ic('alert', 16)}<span>This browser records WebM only. Instagram and TikTok need MP4: export from Chrome or Safari, or convert the file.</span></div>`}
+          ${!kinds.length ? `<div class="note warn" data-mx="video">${ic('alert', 16)}<span>This browser can’t record video, so only GIF is offered. Use a recent Chrome, Edge or Safari for MP4.</span></div>` : kinds.some(([e]) => e === 'mp4') ? '' : `<div class="note warn" data-mx="video">${ic('alert', 16)}<span>This browser records WebM only. Instagram and TikTok need MP4: export from Chrome or Safari, or convert the file.</span></div>`}
           <div class="mo-prog" id="mxP" hidden><div class="mo-bar2"><i></i></div><span class="xs-t muted" id="mxPt"></span></div>
-          <p class="xs-t muted">The video records in real time (${Math.ceil(tl.total / 1000)} s). Keep this tab open and visible until it finishes.</p>`
-        : `<div class="note warn">${ic('alert', 16)}<span>This browser can’t record video. Use a recent Chrome, Edge or Safari, or export the scenes as images.</span></div>`}</div>
-      <div class="mf"><button class="btn link sm" id="mxStill">Export still images instead</button><span class="grow"></span><button class="btn secondary" data-close>Cancel</button>${kinds.length ? `<button class="btn primary" id="mxGo">${ic('download', 16)}Export video</button>` : ''}</div>`, {
+          <p class="xs-t muted" id="mxNote"></p>`}</div>
+      <div class="mf"><button class="btn link sm" id="mxStill">Export still images instead</button><span class="grow"></span><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mxGo">${ic('download', 16)}<span id="mxGoL">Export video</span></button></div>`, {
       onClose: () => { if (job) job.stop = true; },
       onMount: (bg, close) => {
         $('#mxStill', bg).addEventListener('click', () => { close(); _ox37.call(this, d, pi); });
         const go = $('#mxGo', bg); if (!go) return;
+        /* the options follow the format: a video has 24 / 30 / 60 fps and full or 720 px; a GIF 10 / 12 / 15 fps and 360 / 540 / 720 px */
+        const fmt = $('#mxF', bg), rate = $('#mxR', bg), size = $('#mxS', bg), note = $('#mxNote', bg);
+        const videoRates = rate.innerHTML, videoSizes = size.innerHTML;
+        const gifNote = () => {
+          const g = gifSize(W, H, +size.value), est = gifEstimate(g.w, g.h, +rate.value, tl.total);
+          note.textContent = `About ${mb(est)}, no sound, 256 colours.${tl.total > GIF_LONG_MS ? ' A GIF this long is heavy: MP4 is smaller and sharper.' : ''}`;
+        };
+        const sync = () => {
+          const gif = fmt.value === 'gif';
+          if (gif && rate.dataset.f !== 'gif') {
+            rate.innerHTML = GIF_FPS.map((f) => `<option value="${f}" ${f === 12 ? 'selected' : ''}>${f} fps</option>`).join('');
+            size.innerHTML = GIF_SIZES.filter((px, i) => !i || px <= short).map((px) => { const g = gifSize(W, H, px); return `<option value="${px}" ${px === 540 ? 'selected' : ''}>${g.w} × ${g.h}</option>`; }).join('');
+          } else if (!gif && rate.dataset.f === 'gif') { rate.innerHTML = videoRates; size.innerHTML = videoSizes; }
+          rate.dataset.f = gif ? 'gif' : 'video';
+          $$('[data-mx=video]', bg).forEach((x) => (x.hidden = gif && !!kinds.length));
+          $('#mxGoL', bg).textContent = gif ? 'Export GIF' : 'Export video';
+          if (gif) gifNote(); else note.textContent = `The video records in real time (${Math.ceil(tl.total / 1000)} s). Keep this tab open and visible until it finishes.`;
+        };
+        [fmt, rate, size].forEach((x) => x.addEventListener('change', sync)); sync();
         go.addEventListener('click', async () => {
+          if (fmt.value === 'gif') {
+            const bar = $('#mxP i', bg), txt = $('#mxPt', bg); $('#mxP', bg).hidden = false; go.disabled = true; $$('select', bg).forEach((x) => (x.disabled = true));
+            job = { stop: false };
+            try {
+              const blob = await recordGif(d, { short: +size.value, fps: +rate.value, signal: job, onStep: (k, p) => { bar.style.width = (k === 'prep' ? p * 20 : 20 + p * 80).toFixed(1) + '%'; txt.textContent = k === 'prep' ? 'Preparing layers…' : `Drawing frames… ${Math.round(p * 100)}%`; } });
+              if (!blob) return; RT.download(blob, RT.fileBase(d) + '.gif'); job = null; close(); toast(`GIF exported (${mb(blob.size)})`);
+            } catch (e) { console.error('[motion] gif export failed', e); job = null; go.disabled = false; $$('select', bg).forEach((x) => (x.disabled = false)); txt.textContent = 'The GIF could not be made. Try a smaller size.'; }
+            return;
+          }
           const ext = $('#mxF', bg).value, mime = kinds.find(([e]) => e === ext)[1], fps = +$('#mxR', bg).value, s = +$('#mxS', bg).value;
           const bar = $('#mxP i', bg), txt = $('#mxPt', bg); $('#mxP', bg).hidden = false; go.disabled = true; $$('select', bg).forEach((x) => (x.disabled = true));
           job = { stop: false };
@@ -10546,7 +11262,7 @@ function clipCss(l, frames) {
       },
     });
   };
-  RT.motion = { play, pause, exitPreview, record }; // for the agent and tests
+  RT.motion = { play, pause, exitPreview, record, mimes }; // for the agent, tests and video posts (post-video.js)
   /* the Video Studio shell (reel-source.js) drives reels: the player under its transport, the scene blocks and the
      layer lanes in its timeline (in % of the video, the timeline zooms them), and onTime, set by the source */
   const pct = (ms) => { const t = TL().total; return (t ? Math.max(0, (ms / t) * 100) : 0).toFixed(3) + '%'; };
@@ -11070,13 +11786,15 @@ const wrapEd = (w) => {
 };
 const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() };
 /* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
-const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi });
+const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi, editable: () => !persist.readOnly });
 /* the shared caption panels (Captions, for videos and reels) */
 installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi }, VS);
 /* the caption style tabs on the right (a caption line selected, or Captions / Styles open), for videos and reels */
 installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi, api }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
 installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save, ed: edApi });
+/* stills: the shell's `still` source (the editor still draws their rail, panels, slide strip and properties) */
+installStillSource({ VS });
 const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
   wrapEd, ed: edApi, VS, pickMusic: (...a) => RT.pickMusic(...a) });
 /* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */
@@ -11146,7 +11864,7 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
     if (!/^#\/studio/.test(location.hash) || persist.readOnly) return;
     const chk = e.target.closest('[data-sel39]'), card = e.target.closest('.card.dc');
     if (chk) { e.preventDefault(); e.stopPropagation(); if (!canEdit()) return; SEL.on = true; return toggle(chk.dataset.sel39, e.shiftKey); }
-    if (SEL.on && card && !e.target.closest('.dc-more')) { e.preventDefault(); e.stopPropagation(); toggle(card.dataset.id, e.shiftKey); }
+    if (SEL.on && card && !e.target.closest('.dc-more,.dc-nav')) { e.preventDefault(); e.stopPropagation(); toggle(card.dataset.id, e.shiftKey); }
   }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && SEL.on && /^#\/studio/.test(location.hash) && !$('.modal-bg')) { exit(); redraw(); } });
   addEventListener('hashchange', () => { if (!/^#\/studio/.test(location.hash)) exit(); });
@@ -11174,6 +11892,73 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
 })();
 
  
+
+/* ============ Overview · Prompt box: describe it, the agent builds it ============ */
+/* The box sits at the top of the Overview (home.js draws it). Sending creates a new design at the chosen size
+   (Auto: the agent chooses), opens the editor on the Agent tab and runs the prompt there, so the work, Stop
+   and Undo are the editor's. The model is the Agent's own choice (same picker, same memory). */
+{
+  const HP = { text: '', size: 'auto', open: '', pending: null };
+  const h = { ic, esc };
+  const onHome = () => !!$('#hpBar');
+  /** null while the models load · { none } without a key · { name, menu } */
+  const model = () => { if (!AGAPI.list()) return null; const v = AGAPI.current(); return v ? { name: AGAPI.modelName(v), menu: AGAPI.modelMenu(v) } : { none: true }; };
+  const state = () => ({ text: HP.text, size: HP.size, open: HP.open, model: model(), greeting: promptGreeting(user && user.name, new Date().getHours()) });
+  const drawBar = () => { const b = $('#hpBar'); if (b) b.innerHTML = promptBarHTML(h, state()); };
+  const grow = (i) => { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 220) + 'px'; };
+  const syncSend = () => { const b = $('#hpSend'); if (b) b.disabled = !HP.text.trim(); };
+  let asked = 0;
+
+  /* the Overview is redrawn in the background (its data arrives, automations load): the box keeps its text, its focus and its caret */
+  const _svHP = PAGES.overview.view;
+  PAGES.overview.view = function () {
+    const html = _svHP.apply(this, arguments);
+    if (persist.readOnly || !html.includes('<div class="ov-wrap">')) return html;
+    // keys or models may have changed in Settings → AI: read again after a while, then redraw the row
+    if (!AGAPI.list() || Date.now() - asked > 120_000) { asked = Date.now(); AGAPI.load(!!AGAPI.list()).then(() => { if (onHome()) drawBar(); }); }
+    const was = $('#hpIn'), caret = was && document.activeElement === was ? [was.selectionStart, was.selectionEnd] : null;
+    if (!was) HP.open = '';
+    requestAnimationFrame(() => { const i = $('#hpIn'); if (!i) return; if (i.value) grow(i); if (caret) { i.focus({ preventScroll: true }); i.setSelectionRange(caret[0], caret[1]); } });
+    return html.replace('<div class="ov-wrap">', () => promptBlockHTML(h, state()) + '<div class="ov-wrap">');
+  };
+
+  async function send() {
+    const text = HP.text.trim(); if (!text || HP.sending || !canEdit()) return;
+    if (!AGAPI.list()) { HP.sending = true; try { await AGAPI.load(); } finally { HP.sending = false; } if (!onHome()) return; }
+    if (!AGAPI.current()) { drawBar(); return toast('Add a Claude or Groq key in Settings → AI to create with AI'); }
+    const s = promptSize(HP.size);
+    const d = createDesign({ name: promptName(text), ratio: ensureRatio(s.ratio || brand().defaultRatio || '4:5'), slides: s.pages });
+    HP.pending = { id: d.id, text, note: promptNote(HP.size) }; HP.text = ''; HP.open = '';
+    location.hash = '#/editor/' + d.id;
+  }
+  Object.assign(ACT, {
+    hpSend: send,
+    hpSize: () => { HP.open = HP.open === 'size' ? '' : 'size'; drawBar(); },
+    hpModel: () => { HP.open = HP.open === 'model' ? '' : 'model'; drawBar(); if (HP.open) { const on = $('#hpBar .ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
+    hpPickSize: (a) => { HP.size = promptSize(a.dataset.k).k; HP.open = ''; drawBar(); const b = $('#hpBar [data-act="hpSize"]'); b && b.focus(); },
+    hpIdea: (a) => { const p = PROMPT_IDEAS[+a.dataset.i], i = $('#hpIn'); if (!p || !i) return; HP.text = i.value = p[1]; grow(i); syncSend(); i.focus(); i.setSelectionRange(i.value.length, i.value.length); },
+  });
+  // the Agent's model menu is reused here: picking a model also closes this box's menu
+  const _pick = ACT.agPickModel;
+  ACT.agPickModel = function (a) { const r = _pick.apply(this, arguments); if (onHome()) { HP.open = ''; drawBar(); } return r; };
+  document.addEventListener('input', (e) => { const t = e.target; if (t.id !== 'hpIn') return; HP.text = t.value; grow(t); syncSend(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.id === 'hpIn' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape' && HP.open && onHome()) { const was = HP.open; HP.open = ''; drawBar(); const b = $(`#hpBar [data-act="${was === 'size' ? 'hpSize' : 'hpModel'}"]`); b && b.focus(); }
+  });
+  document.addEventListener('click', (e) => { if (HP.open && onHome() && e.target.isConnected && !e.target.closest('.hp-w')) { HP.open = ''; drawBar(); } });
+
+  /* the new design opens on the Agent tab and the prompt runs there */
+  const _oeHP = openEditor;
+  openEditor = function (id) {
+    const r = _oeHP.apply(this, arguments), p = HP.pending; HP.pending = null;
+    if (p && ED.d && ED.d.id === p.id && $('.ed')) { ACT.edTab({ dataset: { k: 'agent' } }); AGAPI.run(p.text, p.note); } // edTab also slides the panel in on narrow screens
+    return r;
+  };
+}
+
+/* Import → Image or file: once its new design is open, the file is imported into it */
+{ const _oeImp = openEditor; openEditor = function () { const r = _oeImp.apply(this, arguments), p = importPending; importPending = null; if (p && ED.d && ED.d.id === p.id && IMPORT_FILE) IMPORT_FILE(p.file); return r; }; }
 
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle

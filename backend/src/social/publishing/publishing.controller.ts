@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Query, Redirect, Req, Res } from "@nestjs/common";
-import { ArrayMaxSize, IsArray, IsObject, IsOptional, IsString } from "class-validator";
+import { ArrayMaxSize, IsArray, IsInt, IsObject, IsOptional, IsString, Matches, Max, Min } from "class-validator";
 import { Public } from "../../common/public.decorator";
 import { Roles } from "../../common/roles.decorator";
 import { ConnectionsService } from "./connections.service";
@@ -14,6 +14,22 @@ export class PostMediaDto {
   /** Content hash of the design pages the images were rendered from */
   @IsOptional() @IsString() hash?: string;
   /** The post itself, so it exists on the server before the debounced sync */
+  @IsOptional() @IsObject() post?: Record<string, any>;
+}
+
+export class VideoBeginDto {
+  /** The post itself, so it exists on the server before the debounced sync */
+  @IsOptional() @IsObject() post?: Record<string, any>;
+}
+export class VideoCompleteDto {
+  @IsInt() @Min(1) @Max(256) parts!: number;
+  /** Content hash of the design the video was made from */
+  @IsOptional() @IsString() hash?: string;
+}
+export class VideoFootageDto {
+  /** A finished footage export of the post's design (POST /api/footage/export) */
+  @IsString() @Matches(/^[a-f0-9]{24}$/) jobId!: string;
+  @IsOptional() @IsString() hash?: string;
   @IsOptional() @IsObject() post?: Record<string, any>;
 }
 
@@ -52,6 +68,37 @@ export class PublishingController {
   @Roles(...EDIT) @Put("brands/:brandId/posts/:id/media")
   media(@Param("brandId") brandId: string, @Param("id") id: string, @Body() d: PostMediaDto) {
     return this.publisher.saveMedia(brandId, id, { images: d.images ?? [], hash: d.hash, post: d.post });
+  }
+
+  /* ---------- video posts: the studio prepares the MP4 when the post is scheduled (an animated design is recorded and
+     uploaded in 8 MB chunks; an imported clip is exported on the server and attached by its export job) ---------- */
+  @Roles(...EDIT) @Post("brands/:brandId/posts/:id/video/upload")
+  videoBegin(@Param("brandId") brandId: string, @Param("id") id: string, @Body() d: VideoBeginDto) {
+    return this.publisher.videoBegin(brandId, id, d.post);
+  }
+
+  /** One raw chunk (application/octet-stream, see main.ts) */
+  @Roles(...EDIT) @Put("brands/:brandId/posts/:id/video/upload/:uploadId/:index")
+  async videoChunk(@Param("brandId") brandId: string, @Param("id") id: string, @Param("uploadId") uploadId: string, @Param("index") index: string, @Req() r: any) {
+    await this.publisher.videoChunk(brandId, id, uploadId, Number(index), r.body);
+    return { ok: true };
+  }
+
+  @Roles(...EDIT) @Post("brands/:brandId/posts/:id/video/upload/:uploadId/complete")
+  videoComplete(@Param("brandId") brandId: string, @Param("id") id: string, @Param("uploadId") uploadId: string, @Body() d: VideoCompleteDto) {
+    return this.publisher.videoComplete(brandId, id, uploadId, d.parts, d.hash);
+  }
+
+  @Roles(...EDIT) @Post("brands/:brandId/posts/:id/video/footage")
+  videoFootage(@Param("brandId") brandId: string, @Param("id") id: string, @Body() d: VideoFootageDto) {
+    return this.publisher.videoFromFootage(brandId, id, { jobId: d.jobId, hash: d.hash, post: d.post });
+  }
+
+  /** Published videos. Public (random ids), with Range requests: Instagram, Facebook and TikTok download them from here. */
+  @Public() @Get("video/:file")
+  async video(@Param("file") file: string, @Res() res: any) {
+    const path = await this.publisher.videoFile(file);
+    res.sendFile(path, { headers: { "Content-Type": "video/mp4", "Cache-Control": "public, max-age=31536000, immutable", "Cross-Origin-Resource-Policy": "cross-origin", "X-Content-Type-Options": "nosniff" }, acceptRanges: true });
   }
 
   /** Publish now (optionally sending the post and its rendered slides in the same request). */

@@ -1,3 +1,4 @@
+import { NO_CLIP, videoBlocked } from './post-video.js';
 /* ============================================================
    Footage style match: copy a reference video's look and subtitles onto a raw clip.
    installFootage(ctx) is called once from the engine and registers the footage actions.
@@ -66,13 +67,14 @@ export async function readProbe(api, id, { signal, sleep = (ms) => new Promise((
   }
   return null;
 }
-/** Scheduling posts images only: a footage design (a video) would go out as its black background page */
-export const SCHEDULE_VIDEO = "Scheduling videos isn't available yet. Download the video and post it from your phone.";
+/** A video is scheduled like an image post (its MP4 is prepared then, see post-video.js): only a clip with no file yet is blocked */
+export const SCHEDULE_VIDEO = NO_CLIP;
 export const isFootageDesign = (d) => !!(d && d.footage);
-/** Every Schedule entry point calls this first: true (after the toast) when the design is a video and must not be scheduled */
+/** Every Schedule entry point calls this first: true (after the toast) when the design is a clip without its file */
 export function blockSchedule(d, toast) {
-  if (!isFootageDesign(d)) return false;
-  if (toast) toast(SCHEDULE_VIDEO);
+  const no = videoBlocked(d);
+  if (!no) return false;
+  if (toast) toast(no);
   return true;
 }
 export const READY_IN_STUDIO = 'Your video is ready in Studio.';

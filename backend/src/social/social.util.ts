@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 
 /** Fields that belong to the database, not to the client objects. */
-const DB_FIELDS = ["_id", "brandId", "order", "hash", "createdAt", "updatedAt"];
+const DB_FIELDS = ["_id", "brandId", "order", "hash", "wid", "createdAt", "updatedAt"];
 
 export const strip = <T extends Record<string, any>>(doc: T | null | undefined): Record<string, any> | null => {
   if (!doc) return null;

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
-  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR } from './footage-editor.js';
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR, scenesPane } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
 
@@ -342,4 +342,23 @@ describe('audio (original volume, music bed, ducking)', () => {
   it('musicTimeAt: the music loops from the start of the video, as the export (aloop)', () => {
     expect(musicTimeAt(2500, 10)).toBeCloseTo(2.5); expect(musicTimeAt(12500, 10)).toBeCloseTo(2.5); expect(musicTimeAt(2500, 0)).toBeCloseTo(2.5);
   });
+});
+
+describe('the Scenes panel of an uploaded video', () => {
+  const clip = '<div class="body ft-media"><h3>Media</h3><b>clip.mp4</b><button data-act="ftReplace">Replace video</button></div>';
+  const look = '<div class="body ft-look-p"><h3>Look</h3><p>Matched to your brand look</p></div>';
+  it('holds the clip and its Look under one title', () => {
+    const h = scenesPane(clip, look);
+    expect(h.match(/<h3>/g)).toHaveLength(1);
+    expect(h).toContain('<h3>Scenes</h3>');
+    expect(h).toContain('Replace video'); expect(h).toContain('Matched to your brand look');
+    expect(h).toContain('>Look<');
+    expect(h.indexOf('clip.mp4')).toBeLessThan(h.indexOf('Matched'));
+  });
+  it('an empty video: the clip part asks for the video and there is no Look yet', () => {
+    const h = scenesPane('<div class="body ft-media"><h3>Media</h3><button>Add your video</button></div>', null);
+    expect(h).toContain('Add your video'); expect(h).toContain('<h3>Scenes</h3>');
+    expect(h).not.toContain('>Look<');
+  });
+  it('nothing to show yet: nothing', () => { expect(scenesPane(null, null)).toBe(null); });
 });

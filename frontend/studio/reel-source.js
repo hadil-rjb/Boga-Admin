@@ -32,12 +32,16 @@ export function installReelSource(ctx) {
 
   function tracks() {
     if (!isReel()) return [];
-    const d = ED.d, on = captionsOn(d), clips = () => M.clipsHTML();
+    const d = ED.d, on = captionsOn(d), clips = () => M.clipsHTML(), lines = linesOf(d), now = clips();
+    // a track with nothing on it leaves the timeline for the shell's "+ Track" row (dock.js); its `add` opens the panel that fills it
     const out = [
       { id: 'scenes', icon: ic('film37', 14), label: 'Scenes', height: 58, html: (pps) => M.scenesHTML(pps) },
-      { id: 'captions', icon: ic('vsCc', 14), label: 'Captions', hidden: !on, blocks: linesOf(d).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })) },
-      { id: 'voice', icon: ic('mic38', 14), label: 'Voice', toggle: 'mute', hidden: muted.voice, html: () => clips().voice },
-      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: muted.music, html: () => clips().music },
+      { id: 'captions', icon: ic('vsCc', 14), label: 'Captions', hidden: !on, blocks: lines.map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })),
+        empty: !lines.length, add: { label: 'Captions', act: 'edTab', k: 'captions' } },
+      { id: 'voice', icon: ic('mic38', 14), label: 'Voice', toggle: 'mute', hidden: muted.voice, html: () => clips().voice,
+        empty: !/au-clip/.test(now.voice || ''), add: { label: 'Voice-over', act: 'au38Open' } },
+      { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: muted.music, html: () => clips().music,
+        empty: !/au-clip/.test(now.music || ''), add: { label: 'Music', act: 'au38Open' } },
     ];
     const ly = M.layers() || [];
     if (ly.length) {

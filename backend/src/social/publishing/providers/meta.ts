@@ -1,5 +1,6 @@
 import { ApiError, request } from "../http";
 import { blob, Env, Linked, OAuthProvider, PublishInput } from "./types";
+import { sleep } from "./video-file";
 
 /**
  * Meta (one app for both): Facebook Pages and Instagram professional accounts linked to a Page.
@@ -20,7 +21,10 @@ function graph(env: Env) {
   const get = (path: string, q: Record<string, string>) => request(`${base}${path}?${new URLSearchParams(q)}`);
   const post = (path: string, q: Record<string, string>, body?: FormData) =>
     body ? request(`${base}${path}?${new URLSearchParams(q)}`, { method: "POST", body, timeoutMs: 90_000 }) : request(`${base}${path}`, { method: "POST", form: q, timeoutMs: 90_000 });
-  return { base, dialog, get, post };
+  // video uploads go to graph-video.facebook.com (same API, larger bodies); a custom META_GRAPH_URL (tests) is used as is
+  const videoBase = env("META_GRAPH_URL") ? base : `https://graph-video.facebook.com/${v}`;
+  const postVideo = (path: string, q: Record<string, string>) => request(`${videoBase}${path}`, { method: "POST", form: q, timeoutMs: 5 * 60_000 });
+  return { base, dialog, get, post, postVideo };
 }
 
 async function userToken(env: Env, code: string, redirectUri: string) {
@@ -62,6 +66,13 @@ export function facebook(env: Env): OAuthProvider {
 
     async publish(link: Linked, input: PublishInput) {
       const g = graph(env), token = link.tokens.accessToken, page = link.extra.pageId;
+      if (input.video) {
+        // a Page video: Facebook downloads it from its public URL
+        const r = await g.postVideo(`/${page}/videos`, { access_token: token, file_url: input.video.url, description: input.text });
+        let warning: string | undefined;
+        if (input.firstComment?.trim()) await g.post(`/${r.id}/comments`, { access_token: token, message: input.firstComment.trim() }).catch((e) => { warning = `Posted, but the first comment failed: ${e.message}`; });
+        return { id: String(r.id), url: `https://www.facebook.com/${page}/videos/${r.id}`, warning };
+      }
       const photo = (im: PublishInput["images"][number], extra: Record<string, string>) => {
         const f = new FormData();
         f.append("source", blob(im.buffer, im.mime), "slide.jpg");
@@ -88,14 +99,15 @@ export function facebook(env: Env): OAuthProvider {
 }
 
 export function instagram(env: Env): OAuthProvider {
-  const waitReady = async (id: string, token: string) => {
-    for (let i = 0; i < 20; i++) {
+  // images are ready in seconds; a video takes up to a few minutes (Instagram transcodes it)
+  const waitReady = async (id: string, token: string, video = false) => {
+    for (let i = 0; i < (video ? 100 : 20); i++) {
       const s = await graph(env).get(`/${id}`, { access_token: token, fields: "status_code,status" });
       if (s.status_code === "FINISHED" || !s.status_code) return;
-      if (s.status_code === "ERROR" || s.status_code === "EXPIRED") throw new ApiError(`Instagram could not process the image (${s.status || s.status_code})`);
-      await new Promise((r) => setTimeout(r, Number(env("META_POLL_MS") || 3000)));
+      if (s.status_code === "ERROR" || s.status_code === "EXPIRED") throw new ApiError(`Instagram could not process the ${video ? "video" : "image"} (${s.status || s.status_code})`);
+      await sleep(Number(env("META_POLL_MS") || 3000));
     }
-    throw new ApiError("Instagram is still processing the images. Try again in a minute.");
+    throw new ApiError(`Instagram is still processing the ${video ? "video" : "images"}. Try again in a minute.`);
   };
   return {
     net: "ig",
@@ -106,7 +118,7 @@ export function instagram(env: Env): OAuthProvider {
       ...SETUP,
       "The Instagram account must be a Business or Creator account linked to a Facebook Page.",
       "Permissions used: instagram_basic, instagram_content_publish, pages_show_list, pages_read_engagement, business_management.",
-      "PUBLIC_API_URL must be a public https address: Instagram downloads the images from it.",
+      "PUBLIC_API_URL must be a public https address: Instagram downloads the images and videos from it.",
     ],
     authorizeUrl: authorize(env, "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement,business_management"),
 
@@ -124,6 +136,24 @@ export function instagram(env: Env): OAuthProvider {
 
     async publish(link: Linked, input: PublishInput) {
       const g = graph(env), token = link.tokens.accessToken, ig = link.extra.igUserId;
+      if (input.video) {
+        if (/^https?:\/\/(localhost|127\.|\[::1\])/.test(input.video.url) && !env("META_ALLOW_LOCAL_URLS")) {
+          throw new ApiError("Instagram must download the video: set PUBLIC_API_URL to a public https address");
+        }
+        await checkDownloadable(input.video.url, "video");
+        // a Reel (shown in the feed too), or a video Story
+        const creation = (await g.post(`/${ig}/media`, input.story
+          ? { access_token: token, media_type: "STORIES", video_url: input.video.url }
+          : { access_token: token, media_type: "REELS", video_url: input.video.url, caption: input.text, share_to_feed: "true" })).id;
+        await waitReady(creation, token, true);
+        const media = (await g.post(`/${ig}/media_publish`, { access_token: token, creation_id: creation })).id;
+        const info = await g.get(`/${media}`, { access_token: token, fields: "permalink" }).catch(() => ({}) as any);
+        let warning: string | undefined = input.story && input.text.trim() ? "Stories don't show captions: only the video was posted" : undefined;
+        if (input.firstComment?.trim() && !input.story) {
+          await g.post(`/${media}/comments`, { access_token: token, message: input.firstComment.trim() }).catch((e) => { warning = `Posted, but the first comment failed: ${e.message}`; });
+        }
+        return { id: media, url: info.permalink, warning };
+      }
       if (!input.images.length) throw new ApiError("Instagram posts need at least one image");
       if (/^https?:\/\/(localhost|127\.|\[::1\])/.test(input.images[0].url) && !env("META_ALLOW_LOCAL_URLS")) {
         throw new ApiError("Instagram must download the images: set PUBLIC_API_URL to a public https address");
@@ -157,15 +187,16 @@ export function instagram(env: Env): OAuthProvider {
  * Instagram fetches the images itself from their public URL. Check that URL first, so a wrong
  * PUBLIC_API_URL gives a clear error instead of Meta's "cannot fetch media from this URI".
  */
-async function checkDownloadable(url: string) {
+async function checkDownloadable(url: string, kind: "image" | "video" = "image") {
   let status = 0, type = "";
+  const what = kind === "video" ? "the video" : "the images";
   try {
     const r = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(20_000) });
     status = r.status; type = r.headers.get("content-type") || "";
   } catch (e: any) {
-    throw new ApiError(`Instagram can't download the images: ${url} is unreachable (${e?.message || "network error"}). Check PUBLIC_API_URL.`);
+    throw new ApiError(`Instagram can't download ${what}: ${url} is unreachable (${e?.message || "network error"}). Check PUBLIC_API_URL.`);
   }
-  if (status !== 200 || !/^image\/jpe?g/i.test(type)) {
-    throw new ApiError(`Instagram can't download the images: ${url} answered ${status || "nothing"}${type ? ` (${type})` : ""}. Check PUBLIC_API_URL: it must be the API's public https address.`);
+  if (status !== 200 || !(kind === "video" ? /^video\/mp4/i : /^image\/jpe?g/i).test(type)) {
+    throw new ApiError(`Instagram can't download ${what}: ${url} answered ${status || "nothing"}${type ? ` (${type})` : ""}. Check PUBLIC_API_URL: it must be the API's public https address.`);
   }
 }
