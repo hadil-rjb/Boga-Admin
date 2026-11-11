@@ -335,6 +335,7 @@
           "when": "Announcements",
           "ratio": "4:5",
           "sourceId": "t1",
+          "origin": "brand",
           "slots": [
             {
               "role": "headline",
@@ -358,6 +359,7 @@
           "when": "Testimonials",
           "ratio": "1:1",
           "sourceId": "",
+          "origin": "brand",
           "slots": [
             {
               "role": "body",

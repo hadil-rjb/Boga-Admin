@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { pickSources, sourceSig, sourceRev, MAX_SOURCES, tidySystem, mergeRules, forAgent, agentExtras, LIMITS, lintSlide, lintText, patternWire } from './design-system.js';
+import { pickSources, sourceSig, sourceRev, MAX_SOURCES, tidySystem, mergeRules, forAgent, agentExtras, LIMITS, lintSlide, lintText, patternWire, MAX_INSPIRATION, MAX_INSPIRATION_PATTERNS, tidyGuideDesign, guideForRequest, gatherSources, hasSources, gatheredSig, markGuideRules, hashText } from './design-system.js';
 
 const FIXTURE = JSON.parse(readFileSync(new URL('../../backend/src/social/design-system/tidy.fixture.json', import.meta.url), 'utf8'));
 
@@ -239,5 +239,90 @@ describe('patternWire', () => {
   it('reads pixel ratios and falls back to 4:5', () => {
     expect(patternWire({ ratio: '1920x1080', slots: [] }, { esc })).toContain('viewBox="0 0 100 56.25"');
     expect(patternWire({ ratio: '?', slots: [] }, { esc })).toContain('viewBox="0 0 100 125"');
+  });
+});
+
+const gd = () => ({ name: ' Guide 2026.pdf ', at: 5, layout: ' 12-column grid, 64 px margins ', imagery: '', logoUse: 'Clear space equals the height of the B', typography: '', rules: [{ text: ' Never stretch the logo ', kind: 'dont' }, { text: '', kind: 'do' }, { text: 'Use one accent per slide', kind: 'maybe' }] });
+const pic = (id, src = 'data:image/jpeg;base64,AAA' + id) => ({ id, name: 'Pic ' + id, src, w: 1080, h: 1350, at: 1 });
+
+describe('tidyGuideDesign', () => {
+  it('trims, cuts and drops empty rules; null when the guide says nothing about design', () => {
+    const g = tidyGuideDesign(gd());
+    expect(g).toMatchObject({ name: 'Guide 2026.pdf', at: 5, layout: '12-column grid, 64 px margins', imagery: '', typography: '' });
+    expect(g.rules).toEqual([{ text: 'Never stretch the logo', kind: 'dont' }, { text: 'Use one accent per slide', kind: 'do' }]);
+    expect(tidyGuideDesign({ name: 'x.pdf', layout: ' ', imagery: '', logoUse: '', typography: '', rules: [] })).toBeNull();
+    expect(tidyGuideDesign(null)).toBeNull();
+    expect(tidyGuideDesign({ layout: 'x'.repeat(900) }).layout).toHaveLength(400);
+    expect(tidyGuideDesign({ layout: 'a', rules: Array.from({ length: 30 }, (_, i) => ({ text: 'R' + i, kind: 'do' })) }).rules).toHaveLength(12);
+  });
+  it('guideForRequest drops the date and is undefined without a usable guide', () => {
+    expect(guideForRequest(gd())).not.toHaveProperty('at');
+    expect(guideForRequest(gd()).name).toBe('Guide 2026.pdf');
+    expect(guideForRequest(undefined)).toBeUndefined();
+  });
+});
+describe('gatherSources', () => {
+  it('keeps own references, lists up to 8 pictures and the guide', () => {
+    const brand = { templates: [{ id: 't1', name: 'T', ratio: '4:5', bg: '#000', layers: [] }], inspiration: Array.from({ length: 11 }, (_, i) => pic('i' + i)).concat([{ id: 'bad', name: 'no src' }]), guideDesign: gd() };
+    const g = gatherSources(brand, [], []);
+    expect(g.own.map((s) => s.id)).toEqual(['t1']);
+    expect(g.inspiration).toHaveLength(MAX_INSPIRATION);
+    expect(g.inspiration[0]).toMatchObject({ kind: 'inspiration', id: 'i0', name: 'Pic i0', ratio: '1080x1350', w: 1080, h: 1350 });
+    expect(g.guide).toEqual({ name: 'Guide 2026.pdf', rev: expect.any(String) });
+    expect(hasSources(g)).toBe(true);
+  });
+  it('a brand with only pictures, or only a guide, has sources; a brand with nothing has none', () => {
+    expect(hasSources(gatherSources({ inspiration: [pic('i1')] }, [], []))).toBe(true);
+    expect(hasSources(gatherSources({ guideDesign: gd() }, [], []))).toBe(true);
+    expect(hasSources(gatherSources({}, [], []))).toBe(false);
+    expect(gatherSources({ guideDesign: { layout: '' } }, [], []).guide).toBeNull();
+  });
+});
+describe('gatheredSig', () => {
+  const own = { templates: [{ id: 't1', name: 'T', ratio: '4:5', bg: '#000', layers: [] }] };
+  it('equals the phase 1 signature when the brand has no pictures and no guide', () => {
+    const g = gatherSources(own, [], []);
+    expect(gatheredSig(g)).toBe(sourceSig(g.own));
+  });
+  it('changes when a picture is added, replaced or removed, and when the guide changes or goes', () => {
+    const sig = (b) => gatheredSig(gatherSources({ ...own, ...b }, [], []));
+    const base = sig({ inspiration: [pic('i1')], guideDesign: gd() });
+    expect(sig({ inspiration: [pic('i1'), pic('i2')], guideDesign: gd() })).not.toBe(base);
+    expect(sig({ inspiration: [pic('i1', 'data:image/jpeg;base64,ZZZ')], guideDesign: gd() })).not.toBe(base);
+    expect(sig({ inspiration: [], guideDesign: gd() })).not.toBe(base);
+    expect(sig({ inspiration: [pic('i1')], guideDesign: { ...gd(), layout: 'Other' } })).not.toBe(base);
+    expect(sig({ inspiration: [pic('i1')] })).not.toBe(base);
+    expect(sig({ inspiration: [pic('i1')], guideDesign: { ...gd(), at: 99 } })).toBe(base); // reading it again changes nothing
+  });
+});
+describe('tidySystem with inspiration and guide', () => {
+  const pat = (id, origin, sourceId) => ({ id, name: id, when: '', ratio: '4:5', origin, sourceId, slots: [{ role: 'headline', x: 0.1, y: 0.1, w: 0.8, h: 0.2 }] });
+  const sys = (patterns, rules = []) => ({ type: [{ role: 'headline', font: 'Inter', weight: 700, sizeMin: 60, sizeMax: 90 }], layout: { patterns }, rules });
+  it('keeps at most 3 inspiration patterns, each tied to a picture that was sent', () => {
+    const s = tidySystem(sys([pat('a', 'brand', 't1'), pat('b', 'inspiration', 'i1'), pat('c', 'inspiration', 'gone'), pat('d', 'inspiration', 'i2'), pat('e', 'inspiration', 'i1'), pat('f', 'inspiration', 'i2'), pat('g', 'weird', 'nope')]), ['t1'], ['i1', 'i2']);
+    expect(s.layout.patterns.map((p) => [p.id, p.origin, p.sourceId])).toEqual([['a', 'brand', 't1'], ['b', 'inspiration', 'i1'], ['d', 'inspiration', 'i2'], ['e', 'inspiration', 'i1'], ['g', 'brand', '']]);
+    expect(s.layout.patterns.filter((p) => p.origin === 'inspiration')).toHaveLength(MAX_INSPIRATION_PATTERNS);
+  });
+  it('defaults origin to brand, accepts guide rules, and passes the guide name through', () => {
+    const s = tidySystem({ ...sys([{ ...pat('a', undefined, 't1') }], [{ text: 'Never stretch the logo', kind: 'dont', by: 'guide' }, { text: 'X', kind: 'do', by: 'robot' }]), guide: { name: ' Guide.pdf ' } }, ['t1']);
+    expect(s.layout.patterns[0].origin).toBe('brand');
+    expect(s.rules.map((r) => r.by)).toEqual(['guide', 'ai']);
+    expect(s.guide).toEqual({ name: 'Guide.pdf' });
+    expect(forAgent(s)).not.toHaveProperty('guide');
+    expect(forAgent(s).rules[0].by).toBe('guide');
+  });
+});
+describe('guide rules', () => {
+  const fresh = [{ text: 'never stretch the logo ', kind: 'dont', by: 'ai' }, { text: 'Logo top left', kind: 'do', by: 'ai' }];
+  it('marks rules that match the guide, and unmarks them when there is no guide', () => {
+    expect(markGuideRules(fresh, gd()).map((r) => r.by)).toEqual(['guide', 'ai']);
+    expect(markGuideRules([{ text: 'Never stretch the logo', kind: 'dont', by: 'user' }], gd())[0].by).toBe('user');
+    expect(markGuideRules([{ text: 'A', kind: 'do', by: 'guide' }], null)[0].by).toBe('ai');
+    expect(fresh[0].by).toBe('ai'); // not mutated
+  });
+  it('orders user rules, then guide rules, then the rest, and never carries old guide rules over', () => {
+    const old = [{ text: 'Mine', kind: 'do', by: 'user' }, { text: 'Old guide rule', kind: 'do', by: 'guide' }, { text: 'Old AI rule', kind: 'do', by: 'ai' }];
+    const next = [{ text: 'Logo top left', kind: 'do', by: 'ai' }, { text: 'Never stretch the logo', kind: 'dont', by: 'guide' }, { text: 'mine', kind: 'do', by: 'ai' }];
+    expect(mergeRules(old, next).map((r) => r.text)).toEqual(['Mine', 'Never stretch the logo', 'Logo top left']);
   });
 });

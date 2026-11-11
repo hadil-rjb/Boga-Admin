@@ -8,15 +8,22 @@
    ============================================================ */
 
 export const MAX_SOURCES = 12;
+export const MAX_INSPIRATION = 8;
+export const MAX_INSPIRATION_PATTERNS = 3;
 
 const byNewest = (a, b) => (b.at || 0) - (a.at || 0);
 
-/** A short hash of a page's background and layers (32-bit FNV-1a, base 36): changes when its content changes. */
-export function sourceRev(page) {
-  const s = JSON.stringify([page && page.bg, page && page.layers]) || '';
+/** A short hash of a text (32-bit FNV-1a, base 36); undefined hashes the empty string. */
+export function hashText(s) {
+  s = typeof s === 'string' ? s : '';
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(36);
+}
+
+/** A short hash of a page's background and layers: changes when its content changes. */
+export function sourceRev(page) {
+  return hashText(JSON.stringify([page && page.bg, page && page.layers]) || '');
 }
 
 /** The references to learn from: { kind, id, name, ratio, at, live, rev }. `at` orders them; `rev` follows their content. */
@@ -40,13 +47,72 @@ export function sourceSig(sources) {
   return (sources || []).map((s) => s.id + ':' + (s.rev || '')).join('|');
 }
 
+// ---- Inspiration pictures and the brand guide ----
+
+/** The brand guide's written design rules, tidied; null when it says nothing about design. */
+export function tidyGuideDesign(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const rules = (Array.isArray(raw.rules) ? raw.rules : []).map((r) => {
+    r = r && typeof r === 'object' ? r : {};
+    const text = typeof r.text === 'string' ? r.text.trim().slice(0, 160) : '';
+    return text ? { text, kind: r.kind === 'dont' ? 'dont' : 'do' } : null;
+  }).filter(Boolean).slice(0, 12);
+  const t = (v) => (typeof v === 'string' ? v.trim().slice(0, 400) : '');
+  const out = {
+    name: typeof raw.name === 'string' ? raw.name.trim().slice(0, 120) : '',
+    at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : 0,
+    layout: t(raw.layout), imagery: t(raw.imagery), logoUse: t(raw.logoUse), typography: t(raw.typography),
+    rules,
+  };
+  return out.layout || out.imagery || out.logoUse || out.typography || rules.length ? out : null;
+}
+
+/** The guide as the server reads it: tidied, without the date; undefined when there is no usable guide. */
+export function guideForRequest(guideDesign) {
+  const g = tidyGuideDesign(guideDesign);
+  if (!g) return undefined;
+  const { at, ...rest } = g;
+  return rest;
+}
+
+/** Every source a design system is learned from: { own, inspiration, guide }. */
+export function gatherSources(brand, designs, posts) {
+  const inspiration = ((brand && Array.isArray(brand.inspiration)) ? brand.inspiration : [])
+    .filter((p) => p && typeof p.src === 'string').slice(0, MAX_INSPIRATION).map((p) => {
+      const sized = typeof p.w === 'number' && typeof p.h === 'number';
+      return {
+        kind: 'inspiration', id: p.id, name: p.name, ratio: sized ? p.w + 'x' + p.h : '',
+        w: typeof p.w === 'number' ? p.w : 0, h: typeof p.h === 'number' ? p.h : 0, at: p.at || 0, rev: hashText(p.src),
+      };
+    });
+  const g = guideForRequest(brand && brand.guideDesign);
+  return {
+    own: pickSources(brand, designs, posts),
+    inspiration,
+    guide: g ? { name: g.name, rev: hashText(JSON.stringify(g)) } : null,
+  };
+}
+
+export function hasSources(g) {
+  return !!(g && ((g.own && g.own.length) || (g.inspiration && g.inspiration.length) || g.guide));
+}
+
+/** The signature of everything gathered; with no pictures and no guide it is exactly the signature of the own references. */
+export function gatheredSig(g) {
+  return [
+    sourceSig(g.own),
+    g.inspiration && g.inspiration.length ? 'i=' + sourceSig(g.inspiration) : '',
+    g.guide ? 'g=' + g.guide.rev : '',
+  ].filter(Boolean).join('#');
+}
+
 export const LIMITS = { type: 5, roles: 8, pairs: 6, gradients: 3, patterns: 8, slots: 10, rules: 16 };
 export const TYPE_ROLES = ['headline', 'subhead', 'body', 'label', 'caption'];
 export const COLOR_ROLES = ['background', 'surface', 'text', 'accent', 'muted'];
 export const SLOT_ROLES = ['headline', 'subhead', 'body', 'label', 'logo', 'image', 'cta', 'shape'];
 
 const AGENT_MAX_CHARS = 6000;
-const BOOKKEEPING = ['v', 'at', 'model', 'sig', 'sources'];
+const BOOKKEEPING = ['v', 'at', 'model', 'sig', 'sources', 'guide'];
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const oneOf = (v, list, fallback) => (list.includes(v) ? v : fallback);
@@ -101,17 +167,20 @@ function tidySlot(s) {
   return { role, x: round4(x), y: round4(y), w: round4(w), h: round4(h) };
 }
 
-function tidyPattern(p, i, sourceIds) {
+function tidyPattern(p, i, sourceIds, inspirationIds) {
   p = obj(p);
   const slots = arr(p.slots).map(tidySlot).filter(Boolean).slice(0, LIMITS.slots);
   if (!slots.length) return null;
   const sourceId = str(p.sourceId, 80);
+  const origin = p.origin === 'inspiration' ? 'inspiration' : 'brand';
+  if (origin === 'inspiration' && inspirationIds && !inspirationIds.includes(sourceId)) return null;
   return {
     id: str(p.id, 40) || 'p' + (i + 1),
     name: str(p.name, 60),
     when: str(p.when, 200),
     ratio: str(p.ratio, 12),
-    sourceId: !sourceIds || sourceIds.includes(sourceId) ? sourceId : '',
+    sourceId: origin === 'inspiration' || !sourceIds || sourceIds.includes(sourceId) ? sourceId : '',
+    origin,
     slots,
   };
 }
@@ -120,11 +189,17 @@ function tidyRule(r) {
   r = obj(r);
   const text = str(r.text, 160);
   if (!text) return null;
-  return { text, kind: r.kind === 'do' ? 'do' : 'dont', by: r.by === 'user' ? 'user' : 'ai' };
+  return { text, kind: r.kind === 'do' ? 'do' : 'dont', by: oneOf(r.by, ['ai', 'user', 'guide'], 'ai') };
+}
+
+/** The patterns with only the first MAX_INSPIRATION_PATTERNS drawn from inspiration pictures kept. */
+function cappedInspiration(patterns) {
+  let n = 0;
+  return patterns.filter((p) => p.origin !== 'inspiration' || ++n <= MAX_INSPIRATION_PATTERNS);
 }
 
 /** The content fields of a design system with every limit applied; null when raw is not an object. */
-export function tidySystem(raw, sourceIds) {
+export function tidySystem(raw, sourceIds, inspirationIds) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const colors = obj(raw.colors);
   const layout = obj(raw.layout);
@@ -148,7 +223,7 @@ export function tidySystem(raw, sourceIds) {
       margin: num(layout.margin, 0, 300), gap: num(layout.gap, 0, 200),
       align: oneOf(layout.align, ['left', 'center', 'mixed'], 'left'),
       logo: { corner: oneOf(logo.corner, ['tl', 'tr', 'bl', 'br', 'none'], 'none'), width: num(logo.width, 0, 600) },
-      patterns: arr(layout.patterns).map((p, i) => tidyPattern(p, i, sourceIds)).filter(Boolean).slice(0, LIMITS.patterns),
+      patterns: cappedInspiration(arr(layout.patterns).map((p, i) => tidyPattern(p, i, sourceIds, inspirationIds)).filter(Boolean)).slice(0, LIMITS.patterns),
     },
     shapes: {
       radius: num(shapes.radius, 0, 300), stroke: num(shapes.stroke, 0, 40),
@@ -157,15 +232,31 @@ export function tidySystem(raw, sourceIds) {
     imagery: str(raw.imagery, 200),
     rules: arr(raw.rules).map(tidyRule).filter(Boolean).slice(0, LIMITS.rules),
   };
-  for (const k of BOOKKEEPING) if (raw[k] !== undefined) out[k] = raw[k];
+  for (const k of BOOKKEEPING) if (k !== 'guide' && raw[k] !== undefined) out[k] = raw[k];
+  if (raw.guide && typeof raw.guide === 'object' && !Array.isArray(raw.guide)) out.guide = { name: str(raw.guide.name, 120) };
   return out;
 }
 
-/** The old rules the user wrote, then the new rules, one per lower-cased text, at most LIMITS.rules. */
+/** A copy of the rules where those matching a guide rule are marked by: 'guide'; with no guide, no rule stays marked that way. */
+export function markGuideRules(rules, guideDesign) {
+  const g = tidyGuideDesign(guideDesign);
+  const key = (t) => String(t || '').trim().toLowerCase();
+  const fromGuide = new Set(g ? g.rules.map((r) => key(r.text)) : []);
+  return arr(rules).map((r) => {
+    if (!g) return r && r.by === 'guide' ? { ...r, by: 'ai' } : { ...r };
+    if (r && r.by !== 'user' && fromGuide.has(key(r.text))) return { ...r, by: 'guide' };
+    return { ...r };
+  });
+}
+
+/** The old rules the user wrote, then the new guide rules, then the other new rules, one per lower-cased text, at most LIMITS.rules. */
 export function mergeRules(oldRules, newRules) {
   const seen = new Set();
-  return arr(oldRules).filter((r) => r && r.by === 'user').concat(arr(newRules)).filter((r) => {
-    const key = String((r && r.text) || '').toLowerCase();
+  const fresh = arr(newRules);
+  const ordered = arr(oldRules).filter((r) => r && r.by === 'user')
+    .concat(fresh.filter((r) => r && r.by === 'guide'), fresh.filter((r) => !r || r.by !== 'guide'));
+  return ordered.filter((r) => {
+    const key = String((r && r.text) || '').trim().toLowerCase();
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
