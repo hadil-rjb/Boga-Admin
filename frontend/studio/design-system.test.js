@@ -91,8 +91,8 @@ describe('tidySystem', () => {
 });
 describe('tidySystem on the shared fixture', () => {
   it('gives the same result as the server\'s tidy', () => {
-    const s = tidySystem(FIXTURE.raw, FIXTURE.sourceIds);
-    expect({ ...s, rules: s.rules.map((r) => ({ ...r, by: r.by || 'ai' })) }).toEqual(FIXTURE.expected);
+    const s = tidySystem(FIXTURE.raw, FIXTURE.sourceIds, FIXTURE.inspirationIds);
+    expect({ ...s, rules: s.rules.map((r) => ({ ...r, by: 'ai' })) }).toEqual(FIXTURE.expected);
   });
 });
 describe('mergeRules', () => {

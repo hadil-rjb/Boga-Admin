@@ -50,6 +50,16 @@ const GuideSchema = z.object({
     background: z.enum(["dark", "light", "photo"]).describe("What is behind the logo there"),
     ink: z.string().describe("#RRGGBB main color of the logo itself (e.g. #FFFFFF for a white logo)"),
   })).describe("The full logo once (where it is largest), and the symbol alone once if it appears alone. Prefer places on a plain or gradient background over photos"),
+  design: z.object({
+    layout: z.string().describe("What the guide states about layout: grid, margins, spacing, logo placement. \"\" when it is silent"),
+    imagery: z.string().describe("What the guide states about photos, illustration and their treatment. \"\" when it is silent"),
+    logoUse: z.string().describe("What the guide states about logo use: clear space, minimum size, versions, misuse. \"\" when it is silent"),
+    typography: z.string().describe("What the guide states about type: hierarchy, sizes, case, spacing. \"\" when it is silent"),
+    rules: z.array(z.object({
+      text: z.string().describe("One short, concrete statement the guide makes, e.g. \"Never stretch the logo\""),
+      kind: z.enum(["do", "dont"]),
+    })).describe("The guide's own do and don't statements about design, at most 12. Only what the document states; empty when it has none"),
+  }).describe("What the document says about design. Only what the document states; every field empty when it is silent"),
   note: z.string().describe("One sentence on anything missing or uncertain, else \"\""),
 });
 export type Guide = z.infer<typeof GuideSchema>;
@@ -59,6 +69,7 @@ Read every page you are given: the logo and its versions, color swatches and cod
 - Prefer what the document states (color codes, font names, slogan) over what you infer. When the document gives no color codes, read the brand colors from the pages (logo, backgrounds, accents), not from photographs.
 - Map each font to the closest family the studio has; keep the real name in "found".
 - Logos: give the page and a bounding box that contains the whole logo with a small margin and nothing else (no text around it). Page images are labelled "Page N".
+- Design rules: report only what the document states or shows on a rules page; leave a field empty when the document is silent; do not turn general impressions into rules.
 - Write the descriptive fields in English, short and factual. Never invent facts that the document doesn't support.`;
 
 const hexOk = (c: string) => /^#?[0-9a-f]{6}$/i.test(String(c || "").trim());
@@ -91,6 +102,19 @@ export async function readGuideWithClaude(apiKey: string, input: { pages: { n: n
   return { guide: tidy(GuideSchema.parse(JSON.parse(text)), input.pages.map((p) => p.n)), model: res.model };
 }
 
+const text = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+
+/** What the guide says about design: trimmed, cut to 400 characters a field and 12 rules of at most 160, empty rules dropped. Tolerates a missing object. */
+export function tidyDesign(d: unknown): Guide["design"] {
+  const o = d && typeof d === "object" && !Array.isArray(d) ? (d as Record<string, unknown>) : {};
+  const rules = (Array.isArray(o.rules) ? o.rules : []).map((r) => {
+    const x = r && typeof r === "object" ? (r as Record<string, unknown>) : {};
+    const t = text(x.text, 160);
+    return t ? { text: t, kind: (x.kind === "do" ? "do" : "dont") as "do" | "dont" } : null;
+  }).filter((r): r is NonNullable<typeof r> => !!r).slice(0, 12);
+  return { layout: text(o.layout, 400), imagery: text(o.imagery, 400), logoUse: text(o.logoUse, 400), typography: text(o.typography, 400), rules };
+}
+
 /** Valid codes only, no duplicates, boxes inside the page and on a page that was sent */
 function tidy(g: Guide, pages: number[]): Guide {
   const seen = new Set<string>();
@@ -104,5 +128,5 @@ function tidy(g: Guide, pages: number[]): Guide {
     .sort((a, b) => (b.box.x1 - b.box.x0) * (b.box.y1 - b.box.y0) - (a.box.x1 - a.box.x0) * (a.box.y1 - a.box.y0))
     .filter((l, i, all) => all.findIndex((o) => o.kind === l.kind) === i);
   const website = g.website.trim().replace(/^https?:\/\//i, "").replace(/\/$/, "");
-  return { ...g, name: g.name.trim().slice(0, 40), initials: (g.initials || g.name).replace(/[^\p{L}\p{N}]/gu, "").slice(0, 3).toUpperCase(), website, colors, logos };
+  return { ...g, name: g.name.trim().slice(0, 40), initials: (g.initials || g.name).replace(/[^\p{L}\p{N}]/gu, "").slice(0, 3).toUpperCase(), website, colors, logos, design: tidyDesign(g.design) };
 }

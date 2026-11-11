@@ -25,6 +25,10 @@ describe('agent design system', () => {
     expect(DESIGN_SYSTEM_PROMPT).toMatch(/^- When the canvas size is left to you, use the ratio of the pattern you chose \(resize_canvas\) before adding layers; keep a size the user chose\.$/m);
     expect(DESIGN_SYSTEM_PROMPT).toMatch(/^- Mention a kept violation or a departure inside your closing sentences\.$/m);
   });
+  it('keeps inspiration to composition and treats guide rules as binding', () => {
+    expect(DESIGN_SYSTEM_PROMPT).toMatch(/borrow composition, never their colours, fonts, logo or words/);
+    expect(DESIGN_SYSTEM_PROMPT).toMatch(/Rules marked guide come from the brand's own guide/);
+  });
   it('describes check_design without pushing brands that have no system into an extra step', () => {
     const d = AGENT_TOOLS.find((x) => x.name === 'check_design')!.description;
     expect(d).toBe('Check a slide against the brand: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo.');

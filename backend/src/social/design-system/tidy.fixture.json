@@ -3,6 +3,9 @@
     "t1",
     "d2"
   ],
+  "inspirationIds": [
+    "i1"
+  ],
   "raw": {
     "summary": "  Dark, bold and quiet.  ",
     "type": [
@@ -172,6 +175,91 @@
               "h": 0.2
             }
           ]
+        },
+        {
+          "id": "pa",
+          "name": "Inspired pa",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "origin": "inspiration",
+          "sourceId": "i1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pb",
+          "name": "Inspired pb",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "origin": "inspiration",
+          "sourceId": "not-sent",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pc",
+          "name": "Inspired pc",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "origin": "inspiration",
+          "sourceId": "i1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pd",
+          "name": "Inspired pd",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "origin": "inspiration",
+          "sourceId": "i1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pe",
+          "name": "Inspired pe",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "origin": "inspiration",
+          "sourceId": "i1",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
         }
       ]
     },
@@ -183,6 +271,11 @@
     },
     "imagery": "Photos with a dark overlay",
     "rules": [
+      {
+        "text": "From the guide",
+        "kind": "do",
+        "by": "guide"
+      },
       {
         "text": "Logo top left, 140 px wide",
         "kind": "do"
@@ -369,6 +462,57 @@
               "h": 0.5
             }
           ]
+        },
+        {
+          "id": "pa",
+          "name": "Inspired pa",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "sourceId": "i1",
+          "origin": "inspiration",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pc",
+          "name": "Inspired pc",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "sourceId": "i1",
+          "origin": "inspiration",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
+        },
+        {
+          "id": "pd",
+          "name": "Inspired pd",
+          "when": "Quotes",
+          "ratio": "4:5",
+          "sourceId": "i1",
+          "origin": "inspiration",
+          "slots": [
+            {
+              "role": "headline",
+              "x": 0.1,
+              "y": 0.1,
+              "w": 0.8,
+              "h": 0.2
+            }
+          ]
         }
       ]
     },
@@ -380,6 +524,11 @@
     },
     "imagery": "Photos with a dark overlay",
     "rules": [
+      {
+        "text": "From the guide",
+        "kind": "do",
+        "by": "ai"
+      },
       {
         "text": "Logo top left, 140 px wide",
         "kind": "do",
@@ -453,11 +602,6 @@
       {
         "text": "R15",
         "kind": "do",
-        "by": "ai"
-      },
-      {
-        "text": "R16",
-        "kind": "dont",
         "by": "ai"
       }
     ]

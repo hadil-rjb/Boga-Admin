@@ -159,7 +159,9 @@ export const DESIGN_SYSTEM_PROMPT = `The brand has a design system (brand.design
 - When unsure how the brand handles something, look at a reference with view_reference.
 - Before you finish, call check_design and fix what it reports. If you keep a violation on purpose, say so.
 - The user's request wins over the system when they conflict. Say what you departed from.
-- Mention a kept violation or a departure inside your closing sentences.`;
+- Mention a kept violation or a departure inside your closing sentences.
+- Inspiration references are other brands' work: borrow composition, never their colours, fonts, logo or words.
+- Rules marked guide come from the brand's own guide: never break them unless the user asks.`;
 
 /** The agent's system prompt: today's prompt, plus the design system section when the context carries one */
 export function agentSystemPrompt(context: string): string {

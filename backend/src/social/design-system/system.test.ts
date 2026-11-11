@@ -2,19 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { tidy, systemFromAnswer, SYSTEM_PROMPT } from './system';
-import { AnalyzeSystemDto } from './system.controller';
+import { AnalyzeSystemDto, hasAnySource } from './system.controller';
 import fixture from './tidy.fixture.json';
 
 const good = () => ({
   summary: 'Bold and dark.',
   type: [{ role: 'headline', font: 'Inter', weight: 700, sizeMin: 72, sizeMax: 96, lh: 1.1, ls: 0, upper: false, align: 'left' }],
   colors: { roles: [{ hex: '#e8343f', role: 'accent', usage: 'buttons' }], pairs: [{ bg: '#0b1220', text: '#ffffff', accent: '#e8343f' }], gradients: [] },
-  layout: { margin: 72, gap: 24, align: 'left', logo: { corner: 'tl', width: 140 }, patterns: [{ id: 'p1', name: 'Hero', when: 'Announcements', ratio: '4:5', sourceId: 't1', slots: [{ role: 'headline', x: 0.1, y: 0.3, w: 0.8, h: 0.2 }] }] },
+  layout: { margin: 72, gap: 24, align: 'left', logo: { corner: 'tl', width: 140 }, patterns: [{ id: 'p1', name: 'Hero', when: 'Announcements', ratio: '4:5', sourceId: 't1', origin: 'brand', slots: [{ role: 'headline', x: 0.1, y: 0.3, w: 0.8, h: 0.2 }] }] },
   shapes: { radius: 24, stroke: 0, shadow: 'soft', motifs: '' }, imagery: 'none',
   rules: [{ text: 'Logo top left', kind: 'do' }],
 });
 
 describe('tidy', () => {
+  it('keeps at most three inspiration patterns tied to sent pictures, and never trusts a rule\'s by', () => {
+    const pat = (id: string, origin: string, sourceId: string) => ({ id, name: id, when: '', ratio: '4:5', origin, sourceId, slots: [{ role: 'headline', x: 0.1, y: 0.1, w: 0.8, h: 0.2 }] });
+    const g: any = good();
+    g.layout.patterns = [pat('a', 'brand', 't1'), pat('b', 'inspiration', 'i1'), pat('c', 'inspiration', 'gone'), pat('d', 'inspiration', 'i1'), pat('e', 'inspiration', 'i1'), pat('f', 'inspiration', 'i1')];
+    g.rules = [{ text: 'From the guide', kind: 'do', by: 'guide' }];
+    const s = tidy(g, ['t1'], ['i1']);
+    expect(s.layout.patterns.map((p: any) => [p.id, p.origin])).toEqual([['a', 'brand'], ['b', 'inspiration'], ['d', 'inspiration'], ['e', 'inspiration']]);
+    expect(s.rules[0].by).toBe('ai');
+    expect(tidy(good(), ['t1']).layout.patterns[0].origin).toBe('brand');
+  });
   it('normalises a good answer and marks rules as written by the AI', () => {
     const s = tidy(good(), ['t1']);
     expect(s.colors.roles[0].hex).toBe('#E8343F');
@@ -34,22 +44,23 @@ describe('tidy', () => {
     expect(s.rules).toHaveLength(16);
   });
   it('tidies the shared fixture exactly as the studio does', () => {
-    const s = tidy(fixture.raw, fixture.sourceIds);
+    const s = tidy(fixture.raw, fixture.sourceIds, fixture.inspirationIds);
     expect(s.rules.every((r) => r.by === 'ai')).toBe(true);
-    expect(s).toEqual(fixture.expected);
+    const asAi = (rules: { by?: string }[]) => rules.map((r) => ({ ...r, by: 'ai' }));
+    expect({ ...s, rules: asAi(s.rules) }).toEqual({ ...fixture.expected, rules: asAi(fixture.expected.rules) });
   });
   it('refuses an answer with nothing usable', () => {
     expect(() => tidy({ summary: 'x' }, [])).toThrow('empty');
     expect(() => tidy(null, [])).toThrow('empty');
   });
 });
+const ref = (o = {}) => ({ kind: 'template', id: 't1', name: 'T', ratio: '4:5', w: 1080, h: 1350, image: 'data:image/jpeg;base64,AAAA', layers: '[]', ...o });
+const check = async (body: any) => (await validate(plainToInstance(AnalyzeSystemDto, body))).length;
+const kit = { name: 'Boga', colors: [{ name: 'Red', hex: '#E8343F' }], fonts: { heading: 'Inter' } };
 describe('AnalyzeSystemDto', () => {
-  const ref = (o = {}) => ({ kind: 'template', id: 't1', name: 'T', ratio: '4:5', w: 1080, h: 1350, image: 'data:image/jpeg;base64,AAAA', layers: '[]', ...o });
-  const check = async (body: any) => (await validate(plainToInstance(AnalyzeSystemDto, body))).length;
-  const kit = { name: 'Boga', colors: [{ name: 'Red', hex: '#E8343F' }], fonts: { heading: 'Inter' } };
-  it('accepts 1 to 12 references and rejects 0, 13, a bad id and a non-image', async () => {
+  it('accepts up to 12 references and rejects 13, a bad id and a non-image', async () => {
     expect(await check({ kit, references: [ref()] })).toBe(0);
-    expect(await check({ kit, references: [] })).toBeGreaterThan(0);
+    expect(await check({ kit, references: [] })).toBe(0);
     expect(await check({ kit, references: Array.from({ length: 13 }, (_, i) => ref({ id: 't' + i })) })).toBeGreaterThan(0);
     expect(await check({ kit, references: [ref({ id: '../x' })] })).toBeGreaterThan(0);
     expect(await check({ kit, references: [ref({ image: 'https://x/y.png' })] })).toBeGreaterThan(0);
@@ -61,7 +72,31 @@ describe('AnalyzeSystemDto', () => {
     expect(await check({ kit: { ...kit, logos: [3] }, references: [ref()] })).toBeGreaterThan(0);
   });
 });
+describe('inspiration and guide in the request', () => {
+  it('accepts pictures or a guide without references, and rejects a request with no source at all', async () => {
+    const pic = { id: 'i1', name: 'P', w: 1080, h: 1350, image: 'data:image/jpeg;base64,AAAA' };
+    expect(await check({ kit, inspiration: [pic] })).toBe(0);
+    expect(await check({ kit, guide: { name: 'g.pdf', layout: '12 columns' } })).toBe(0);
+    expect(await check({ kit, references: [ref()] })).toBe(0);
+    expect(await check({ kit, inspiration: Array.from({ length: 9 }, (_, i) => ({ ...pic, id: 'i' + i })) })).toBeGreaterThan(0);
+    expect(await check({ kit, guide: { name: 'g.pdf', layout: 'x'.repeat(401) } })).toBeGreaterThan(0);
+    expect(await check({ kit, guide: { name: 'g.pdf', rules: [{ text: 'a', kind: 'maybe' }] } })).toBeGreaterThan(0);
+  });
+  it('knows when a request has something to learn from', () => {
+    const dto = (o: any) => o as AnalyzeSystemDto;
+    expect(hasAnySource(dto({ kit }))).toBe(false);
+    expect(hasAnySource(dto({ kit, guide: { name: 'g.pdf', layout: ' ' } }))).toBe(false);
+    expect(hasAnySource(dto({ kit, inspiration: [{ id: 'i1' }] }))).toBe(true);
+    expect(hasAnySource(dto({ kit, references: [ref()] }))).toBe(true);
+    expect(hasAnySource(dto({ kit, guide: { name: 'g.pdf', rules: [{ text: 'Never stretch the logo', kind: 'dont' }] } }))).toBe(true);
+  });
+});
 describe('SYSTEM_PROMPT', () => {
+  it('keeps colours and fonts out of inspiration and puts the guide first', () => {
+    expect(SYSTEM_PROMPT).toMatch(/never take a colour, a font or a logo from them/i);
+    expect(SYSTEM_PROMPT).toMatch(/follow it even where the references differ/i);
+    expect(SYSTEM_PROMPT).toMatch(/origin/);
+  });
   it('tells the model to measure, to normalise to 1080 and not to invent', () => {
     expect(SYSTEM_PROMPT).toMatch(/1080/);
     expect(SYSTEM_PROMPT).toMatch(/do not invent/i);
