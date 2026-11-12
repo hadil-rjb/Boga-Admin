@@ -8,11 +8,14 @@ import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
 import { validTz, zonedToUtc } from "../../framer/time";
 import { SocialMedia } from "./connection.schema";
 import { ConnectionsService } from "./connections.service";
-import { mergePost, PublishState, textFor } from "./post-state";
-import { Net, NETS, PublishImage } from "./providers";
+import { isVideoDesign, mergePost, PublishState, textFor, VIDEO_NOT_READY } from "./post-state";
+import { Net, NETS, PublishImage, PublishVideo } from "./providers";
+import { PostVideoStore, StoredVideo } from "./post-video.store";
+import { FootageStore } from "../../footage/footage.store";
+import { VIDEO_ID, videoProblem } from "./post-video";
 
 export const MAX_ATTEMPTS = 3;
-const LOCK_MS = 10 * 60_000;
+const LOCK_MS = 30 * 60_000; // a video can take minutes per network (upload, then the network's processing)
 const DATA_URL = /^data:image\/(png|jpe?g|webp);base64,([A-Za-z0-9+/=]+)$/i;
 
 /** Stored bytes come back from MongoDB as BSON Binary, not Buffer */
@@ -30,6 +33,8 @@ export class PublisherService {
     @InjectModel(SocialMedia.name) private media: Model<SocialMedia>,
     @InjectModel(SocialWorkspace.name) private workspaces: Model<SocialWorkspace>,
     private conns: ConnectionsService,
+    private videos: PostVideoStore,
+    private footage: FootageStore,
   ) {}
 
   /** Upserts a post sent by the studio, keeping the server-owned fields (publish, media). */
@@ -51,11 +56,55 @@ export class PublisherService {
     if (!post) throw new NotFoundException("Post not found");
     if (!body.images?.length) throw new BadRequestException("No images");
     const saved = await this.store(brandId, postId, body.images);
+    if (post.media?.video?.id) await this.videos.remove(post.media.video.id); // it was a video post: its file goes
     const media = { ids: saved.map((d) => String(d._id)), hash: body.hash || "", count: saved.length, at: new Date() };
     const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
     const armed = post.status === "Scheduled" && !["published", "partial", "publishing"].includes(pub.state);
     await this.posts.updateOne({ brandId, id: postId }, { $set: { media, publish: armed ? { ...pub, state: "pending", attempts: 0, nextTry: null } : pub } });
     return this.state(brandId, postId);
+  }
+
+  /* ---------- video posts ---------- */
+  /** A chunked upload of the studio's recording (an animated design) for this post */
+  async videoBegin(brandId: string, postId: string, post?: Record<string, any>) {
+    if (post) await this.upsertPost(brandId, { ...post, id: postId });
+    if (!(await this.posts.exists({ brandId, id: postId }))) throw new NotFoundException("Post not found");
+    return this.videos.begin(brandId, postId);
+  }
+  videoChunk(brandId: string, postId: string, uploadId: string, index: number, body: Buffer) { return this.videos.chunk(brandId, postId, uploadId, index, body); }
+  async videoComplete(brandId: string, postId: string, uploadId: string, parts: number, hash?: string) {
+    const v = await this.videos.complete(brandId, postId, uploadId, parts);
+    return this.attachVideo(brandId, postId, v, hash);
+  }
+  /** An imported clip: the footage export the studio finished (exports/<jobId>.mp4 of the design's footage) becomes the post's video */
+  async videoFromFootage(brandId: string, postId: string, body: { jobId: string; hash?: string; post?: Record<string, any> }) {
+    if (body.post) await this.upsertPost(brandId, { ...body.post, id: postId });
+    const post = await this.posts.findOne({ brandId, id: postId }).select("d").lean<Record<string, any>>();
+    if (!post) throw new NotFoundException("Post not found");
+    const design = await this.designs.findOne({ brandId, id: post.d }).select("footage").lean<Record<string, any>>();
+    const src = String(design?.footage?.src || "");
+    if (!VIDEO_ID.test(src) || !VIDEO_ID.test(String(body.jobId || ""))) throw new BadRequestException("This post's design has no exported video");
+    const v = await this.videos.adopt(this.footage.file(src, `exports/${body.jobId}.mp4`));
+    return this.attachVideo(brandId, postId, v, body.hash);
+  }
+  /** The post's media becomes this video (the previous slides or video go); a scheduled post is armed */
+  private async attachVideo(brandId: string, postId: string, v: StoredVideo, hash?: string) {
+    const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
+    if (!post) { await this.videos.remove(v.id); throw new NotFoundException("Post not found"); }
+    if (post.media?.video?.id && post.media.video.id !== v.id) await this.videos.remove(post.media.video.id);
+    await this.media.deleteMany({ brandId, postId });
+    const media = { ids: [], video: { id: v.id, mime: v.mime, size: v.size, durationMs: v.durationMs, width: v.width, height: v.height }, hash: hash || "", count: 1, at: new Date() };
+    const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
+    const armed = post.status === "Scheduled" && !["published", "partial", "publishing"].includes(pub.state);
+    await this.posts.updateOne({ brandId, id: postId }, { $set: { media, publish: armed ? { ...pub, state: "pending", attempts: 0, nextTry: null } : pub } });
+    return this.state(brandId, postId);
+  }
+  videoUrl(id: string) { return `${this.conns.apiUrl}/social/video/${id}.mp4`; }
+  /** A post video's file (public route: networks download it), or 404 */
+  async videoFile(raw: string) {
+    const id = raw.replace(/\.mp4$/i, "");
+    if (!VIDEO_ID.test(id) || !(await this.videos.exists(id))) throw new NotFoundException();
+    return this.videos.path(id);
   }
 
   /** Encodes the slides (PNG/JPEG data URLs) and replaces the stored files of a post. */
@@ -144,24 +193,36 @@ export class PublisherService {
     }
     const prev = claimed.publish || {};
     const results: Record<string, NetResult> = { ...(prev.results || {}) };
-    let state: PublishState = "failed", status = claimed.status, attempts = (prev.attempts || 0) + 1, nextTry: Date | null = null, fatal = "";
+    let state: PublishState = "failed", status = claimed.status, attempts = (prev.attempts || 0) + 1, nextTry: Date | null = null, fatal = "", permanent = false;
     try {
+      const design = await this.designs.findOne({ brandId, id: claimed.d }).select("name ratio footage motion").lean();
       const nets = ((claimed.pf || []) as string[]).filter((n): n is Net => NETS.includes(n as Net));
       if (!nets.length) throw new Error("No network selected");
-      const files = await this.media.find({ brandId, postId }).sort({ index: 1 }).select("+data").lean();
-      if (!files.length) throw new Error("The slides haven't been rendered yet: open the post in the studio and schedule it again");
-      const images: PublishImage[] = files.map((f) => ({ buffer: toBuffer(f.data), mime: f.mime, url: this.publicUrl(String(f._id)), width: f.width, height: f.height }));
-      const design = await this.designs.findOne({ brandId, id: claimed.d }).select("name ratio").lean();
-      const story = design?.ratio === "9:16";
+      let images: PublishImage[] = [], video: PublishVideo | undefined, unfit = 0;
+      if (isVideoDesign(design)) {
+        // a video design publishes its MP4, never its pages (a clip's only page is a black background)
+        const v = claimed.media?.video;
+        if (!v?.id || !(await this.videos.exists(v.id))) { permanent = true; throw new Error(VIDEO_NOT_READY); }
+        video = { url: this.videoUrl(v.id), path: this.videos.path(v.id), mime: v.mime || "video/mp4", size: v.size || 0, width: v.width || 0, height: v.height || 0, durationMs: v.durationMs || 0 };
+      } else {
+        const files = await this.media.find({ brandId, postId }).sort({ index: 1 }).select("+data").lean();
+        if (!files.length) throw new Error("The slides haven't been rendered yet: open the post in the studio and schedule it again");
+        images = files.map((f) => ({ buffer: toBuffer(f.data), mime: f.mime, url: this.publicUrl(String(f._id)), width: f.width, height: f.height }));
+      }
+      // a 9:16 still goes to Instagram as a Story; a 9:16 video as a Reel (the Story option is the post's `igStory`)
+      const story = design?.ratio === "9:16" && (!video || !!claimed.igStory);
 
       for (const net of nets) {
         if (results[net]?.ok) continue; // already out: never post twice
+        const problem = video ? videoProblem(net, video) : null;
+        if (problem) { results[net] = { ok: false, error: problem, at: new Date() }; unfit++; continue; } // this network can't take it: no call, no retry helps
         try {
           const link = await this.conns.linked(brandId, net);
           const r = await this.conns.provider(net).publish(link, {
             text: textFor(claimed, net, design?.name),
             firstComment: net === "ig" || net === "li" ? claimed.fc : undefined,
             images,
+            video,
             story: story && net === "ig",
           });
           results[net] = { ok: true, id: r.id, url: r.url, warning: r.warning, at: new Date() };
@@ -174,11 +235,12 @@ export class PublisherService {
       }
       const ok = nets.filter((n) => results[n]?.ok).length;
       state = ok === nets.length ? "published" : ok ? "partial" : "failed";
+      if (!ok && unfit === nets.filter((n) => !results[n]?.ok).length) permanent = true; // only limits failed: retrying won't change the video
     } catch (e: any) {
       fatal = e?.message || "Failed";
       state = "failed";
     }
-    const retry = state === "failed" && !manual && attempts < MAX_ATTEMPTS;
+    const retry = state === "failed" && !manual && !permanent && attempts < MAX_ATTEMPTS;
     if (state === "published" || state === "partial") status = "Published";
     else if (retry) { state = "pending"; nextTry = new Date(Date.now() + 2 ** attempts * 60_000); }
     else status = "Failed";
@@ -188,6 +250,22 @@ export class PublisherService {
       { $set: { status, publish: { state, results, attempts, nextTry, lockedAt: null, at: new Date(), lastError: lastError || null } } },
     );
     return this.state(brandId, postId);
+  }
+
+  /**
+   * Post videos no post points to any more (the post, its design or its brand was deleted, or a newer video replaced it),
+   * older than an hour so a video being attached is never taken; and uploads left unfinished for a day.
+   */
+  async sweepVideos(now = Date.now()) {
+    const { videos, uploads } = await this.videos.inventory();
+    let removed = 0;
+    if (videos.length) {
+      const used = new Set((await this.posts.distinct("media.video.id")).map(String));
+      for (const v of videos) if (!used.has(v.id) && now - v.at > 3600_000) { await this.videos.remove(v.id); removed++; }
+    }
+    for (const u of uploads) if (now - u.at > 24 * 3600_000) { await this.videos.dropUpload(u.uploadId); removed++; }
+    if (removed) this.log.log(`Removed ${removed} unused post video file(s)`);
+    return removed;
   }
 
   /** Scheduled posts whose time has come (in their time zone). */
@@ -207,5 +285,7 @@ export class PublisherService {
 
   async removeBrand(brandIds: string[]) {
     await this.media.deleteMany({ brandId: { $in: brandIds } });
+    const withVideo = await this.posts.find({ brandId: { $in: brandIds }, "media.video.id": { $exists: true } }).select("media.video.id").lean<Record<string, any>[]>();
+    for (const p of withVideo) await this.videos.remove(p.media?.video?.id);
   }
 }

@@ -10,6 +10,7 @@ import { AiModule } from "./ai/ai.module";
 import { FramerModule } from "./framer/framer.module";
 import { MediaModule } from "./media/media.module";
 import { SocialModule } from "./social/social.module";
+import { FootageModule } from "./footage/footage.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 
 @Module({
@@ -27,6 +28,7 @@ import { JwtAuthGuard } from "./auth/jwt-auth.guard";
     GscModule,
     FramerModule,
     SocialModule,
+    FootageModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }], // tout est protégé sauf @Public()
 })

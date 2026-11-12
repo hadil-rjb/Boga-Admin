@@ -58,6 +58,8 @@ export class CoverImageDto {
 export class AgentStepDto {
   @IsOptional() @IsIn(["anthropic", "groq"]) provider?: "anthropic" | "groq";
   @IsOptional() @IsString() @Matches(/^[\w.:\/-]{1,120}$/, { message: "invalid model id" }) model?: string;
+  /** The agent's mode (see agent.ts): which tools and prompt this turn gets. Missing: design */
+  @IsOptional() @IsIn(["design", "animate", "video"]) mode?: "design" | "animate" | "video";
   /** The design, the selection and the brand kit as JSON, built by the studio */
   @IsString() @MaxLength(120_000) context: string;
   /** Provider-neutral messages: user / assistant (text, tool calls) / tool (results); checked in agent.ts */

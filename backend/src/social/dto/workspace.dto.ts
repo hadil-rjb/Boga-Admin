@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayMinSize, IsArray, IsInt, IsObject, IsOptional, IsString, Min, ValidateNested } from "class-validator";
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsInt, MaxLength, IsObject, IsOptional, IsString, Min, ValidateNested } from "class-validator";
 
 /** Full workspace snapshot, the shape the studio keeps in memory (and exports as JSON). */
 export class WorkspaceDto {
@@ -25,6 +25,10 @@ export class ItemUpsert {
   @IsObject() item!: Record<string, any> & { id: string };
   /** Designs: the revision this copy is based on (see WorkspaceService.applyDesigns) */
   @IsOptional() @IsInt() @Min(0) rev?: number;
+  /** Designs: id of this write, stored with the design */
+  @IsOptional() @IsString() @MaxLength(64) wid?: string;
+  /** Designs: the client's writes it hasn't had an answer for; a newer revision written by one of them isn't a conflict */
+  @IsOptional() @IsArray() @ArrayMaxSize(50) @IsString({ each: true }) @MaxLength(64, { each: true }) mine?: string[];
 }
 
 export class ItemRef {

@@ -46,11 +46,33 @@ export function tiktok(env: Env): OAuthProvider {
 
     async publish(link: Linked, input: PublishInput) {
       const h = { Authorization: `Bearer ${link.tokens.accessToken}` };
-      if (!input.images.length) throw new ApiError("TikTok photo posts need at least one image");
+      if (!input.video && !input.images.length) throw new ApiError("TikTok photo posts need at least one image");
       const info = ok(await request(`${api()}/v2/post/publish/creator_info/query/`, { method: "POST", headers: h, json: {} })).data;
       const options: string[] = info.privacy_level_options || [];
       const privacy = options.includes("PUBLIC_TO_EVERYONE") ? "PUBLIC_TO_EVERYONE" : options[0] || "SELF_ONLY";
       const [title, ...rest] = input.text.trim().split("\n");
+      const warn = privacy === "SELF_ONLY" ? "Posted as private (Only me): TikTok hasn't audited this app yet" : undefined;
+      if (input.video) {
+        // a video: TikTok downloads it from its public URL (the PUBLIC_API_URL domain must be verified in the app)
+        const vi = ok(await request(`${api()}/v2/post/publish/video/init/`, {
+          method: "POST", headers: h,
+          json: {
+            post_info: { title: [...input.text.trim()].slice(0, 2200).join(""), privacy_level: privacy, disable_comment: false, disable_duet: false, disable_stitch: false, video_cover_timestamp_ms: 1000 },
+            source_info: { source: "PULL_FROM_URL", video_url: input.video.url },
+          },
+        }));
+        const pid = vi.data.publish_id;
+        for (let i = 0; i < 100; i++) {
+          const s = ok(await request(`${api()}/v2/post/publish/status/fetch/`, { method: "POST", headers: h, json: { publish_id: pid } })).data;
+          if (s.status === "PUBLISH_COMPLETE") {
+            const postId = (s.publicaly_available_post_id || s.publicly_available_post_id || [])[0];
+            return { id: String(postId || pid), url: postId ? `https://www.tiktok.com/@${info.creator_username || ""}/video/${postId}` : undefined, warning: warn };
+          }
+          if (s.status === "FAILED") throw new ApiError(`TikTok rejected the video: ${s.fail_reason || "unknown reason"}`);
+          await new Promise((r) => setTimeout(r, Number(env("TIKTOK_POLL_MS") || 3000)));
+        }
+        return { id: pid, warning: "TikTok is still processing the video; it will appear shortly" };
+      }
       const init = ok(await request(`${api()}/v2/post/publish/content/init/`, {
         method: "POST",
         headers: h,
@@ -66,7 +88,7 @@ export function tiktok(env: Env): OAuthProvider {
         const s = ok(await request(`${api()}/v2/post/publish/status/fetch/`, { method: "POST", headers: h, json: { publish_id: publishId } })).data;
         if (s.status === "PUBLISH_COMPLETE") {
           const postId = (s.publicaly_available_post_id || s.publicly_available_post_id || [])[0];
-          return { id: String(postId || publishId), url: postId ? `https://www.tiktok.com/@${info.creator_username || ""}/photo/${postId}` : undefined, warning: privacy === "SELF_ONLY" ? "Posted as private (Only me): TikTok hasn't audited this app yet" : undefined };
+          return { id: String(postId || publishId), url: postId ? `https://www.tiktok.com/@${info.creator_username || ""}/photo/${postId}` : undefined, warning: warn };
         }
         if (s.status === "FAILED") throw new ApiError(`TikTok rejected the post: ${s.fail_reason || "unknown reason"}`);
         await new Promise((r) => setTimeout(r, Number(env("TIKTOK_POLL_MS") || 3000)));

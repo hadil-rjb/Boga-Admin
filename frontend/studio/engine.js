@@ -20,6 +20,29 @@ import * as PATH from './paths';
 import * as MO from './motion';
 import * as AUD from './audio';
 import * as COMP from './composer';
+import { installFootage, blockSchedule, fmtDur } from './footage';
+import { exportPayload, exportSizes } from './footage-editor.js';
+import { isVideoPost, videoProblem, videoKey, videoLength, prepareVideo, overall, STEPS, videoBlocked } from './post-video.js';
+import { checkSchedule, checkAutomation, plannerView, cardLines, freeSlot, upcomingTimes } from './agent-plan.js';
+import { captionEdits, linesIn, gradeInput, audioInput, analysisState, videoCtx as footageCtx } from './agent-video.js';
+import { setStyleField, REGROUP_FIELDS, regroupFrom } from './caption-inspector.js';
+import { applyPresetTo, editStyle, capsView, linesOf as captionLinesOf } from './caption-panels.js';
+import { voiceoverLines, scenesToVoice, voiceInput, musicInput, soundCtx } from './agent-sound.js';
+import { capsOf as capsOfD, styleOf as styleOfD } from './caption-store.js';
+import { group as groupWords } from './captions.js';
+import { PRESETS } from './caption-presets.js';
+import { buildPalette, gifWriter, gifSize, gifEstimate, GIF_FPS, GIF_SIZES, GIF_LONG_MS } from './gif.js';
+import { installCardPreview, loopTime } from './card-preview.js';
+import { installVideoStudio } from './video-studio.js';
+import { installReelSource } from './reel-source.js';
+import { installStillSource } from './still-source.js';
+import { createBlockHTML, promptBlockHTML, promptBarHTML, promptSize, promptNote, promptName, promptGreeting, PROMPT_IDEAS } from './home.js';
+import { agentExtras, lintSlide, lintText, tidySystem, mergeRules, LIMITS, patternWire, MAX_INSPIRATION, gatherSources, hasSources, gatheredSig, tidyGuideDesign, guideForRequest, withGuideRules, sourcesPhrase } from './design-system.js';
+import { chatTitle, archiveChat, restoreChat, dropChat, addRefs, refsNote, refsStripHTML, historyHTML, REFS_MAX } from './agent-history.js';
+import { agentCopy, agentMode, allowed, videoStep, animPatch, fitAnims, scenePatch, animOut, videoCtx, frameTime, starterFor, sec, MAX_SCENES } from './agent-motion.js';
+import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
+import { installCaptionInspector } from './caption-inspector.js';
+import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
 
@@ -84,6 +107,10 @@ let renderSlide = null;
 let LIVE = null;
 /** Price alert and news templates (set by the market data section): panel, attach, build */
 let FEEDS = null;
+let IMPORT_FILE = null; // importDesign(file): an image, SVG or HTML file becomes layers of the open design (set by the live-data block), for the top bar's Import menu
+let AGAPI = null; // the Studio Agent's models and loop, for the Overview's prompt box (set by the v25 block)
+let PLAN = null; // the planner's helpers (connected networks, best times, next free slot), for the agent's planning tools (set by the planner block)
+let AUTOS = null; // the brand's automations and their dialog, for the agent's planning tools (set by the v26 block)
 /** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
 let NOTION = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
@@ -94,6 +121,8 @@ let textHTML = (l) => esc(l.text);
 const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false, applyStyles: () => {} }; // tree hooks: v31, styles: v33
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
+/** A video design's hash (what its prepared MP4 shows), set with the publishing helpers */
+let videoHash = () => '';
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
 const CONN = {
   brand: null, list: null, pending: null, pendingBrand: null,
@@ -311,23 +340,14 @@ function brandAv(b, size) {
   }
   return `<span class="${cls}" style="background:${b.avatarBg || (b.colors[0] ? b.colors[0].hex : '#fd0e35')}">${esc(b.initials)}</span>`;
 }
-/** "All brands" mode (Settings: S.set.allBrands): overview, planner and studio show every brand together */
-const allOn = () => !!(S.set && S.set.allBrands) && S.brands.length > 1;
+/** "All brands" mode is no longer offered: one brand at a time (the mode's views stay below, unreachable) */
+const allOn = () => false;
 /** "All brands" avatar: the first brands side by side, overlapping, and "+N" for the others */
 const allAv = (size) => `<span class="bgrp ${size || 'md'}" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}${S.brands.length > 3 ? `<span class="bgrp-n">+${S.brands.length - 3}</span>` : ''}</span>`;
-/** The sidebar's workspace button always names the workspace (Social Media Admin), like the Blog Admin's; brands switch in the top bar */
-const wsBtn = () => `<span class="ws-ico" aria-hidden="true">${ic('globe', 18)}</span><span class="t"><b>Social Media Admin</b><small>Social &amp; Publishing</small></span>${ic('chevD', 16)}`;
-const pillHTML = () => allOn() ? `${allAv('sm')}<span class="hide-sm">All brands</span>${ic('chevD', 16)}` : `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
-function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
-function brandMenu() {
-  const all = allOn();
-  return `<div class="div"></div><div class="cap">Switch brand</div>`
-    + (S.brands.length > 1 ? `<button class="it ${all ? 'on' : ''}" data-act="allBrands">${allAv('sm')}<span class="grow"><b>All brands</b><small>Every brand in one workspace</small></span>${all ? ic('check', 14, 'faint') : ''}</button>` : '')
-    // many brands: a search box, and the list scrolls (about five rows show)
-    + (S.brands.length > 5 ? `<label class="bm-q">${ic('search', 15)}<input type="search" id="bmQ" placeholder="Search ${S.brands.length} brands" aria-label="Search brands" autocomplete="off"></label>` : '')
-    + `<div class="bm-list">${S.brands.map((b) => `<button class="it ${!all && b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}" data-name="${esc((b.name + ' ' + (b.industry || '')).toLowerCase())}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${!all && b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')}<p class="bm-none" hidden>No brand matches.</p></div>`
-    + `<div class="div"></div><button class="it addb" data-act="addBrand"><span class="ico">${ic('plus', 16)}</span><span class="grow"><b>Add brand</b><small>New workspace &amp; brand kit</small></span></button><button class="it" data-act="manageBrands"><span class="ico">${ic('layers', 16)}</span><span class="grow"><b>Manage brands</b><small>${S.brands.length} brands</small></span></button>`;
-}
+/** The sidebar's workspace button names the workspace, like the Blog Admin's (company logo, "Boğa", the workspace); the top bar's brand button opens the brands list */
+const wsBtn = () => `<img src="/logo.png" alt="" width="36" height="36"><span class="t"><b>Boğa</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
+const pillHTML = () => brandAv(brand(), 'sm');
+function refreshChrome() { const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
 /* Brand templates are stored by the API, one document each (social_templates) */
 const tplApi = (b, path, o) => api(`/social/brands/${encodeURIComponent(b.id)}/templates${path}`, o);
 /** Disables a button and shows a spinner while a request runs */
@@ -472,13 +492,15 @@ function pathHTML(l, o = {}) {
   const sh = o.shadow === false ? [] : shadowsOf(l).filter((e) => e.k !== 'inner');
   const st = sh.length ? ` style="filter:${sh.map((e) => `drop-shadow(${e.x}px ${e.y}px ${e.b / 2}px ${shadowColor(e.c, e.o)})`).join(' ')}"` : '';
   // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="ly-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
 }
 const layerHTML = (l) => (l.type === 'group' ? '' : `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`);
 const posterHTML = (pg) => withTree(pg, () => pg.layers.map(layerHTML).join('')); // frames clip their content (v31)
 /** Scaled, static preview of a page (used on cards, planner, template pickers) */
 function thumb(pg, ratio, boxW, boxH) {
   const [w, h] = RATIOS[ratio], k = Math.min(boxW / w, boxH / h);
+  // a video design (footage): its poster frame instead of the page
+  if (pg.poster) return `<div class="thumb thumb-v" style="width:${w * k}px;height:${h * k}px"><img src="${esc(pg.poster)}" alt="" loading="lazy" decoding="async"></div>`;
   return `<div class="thumb" style="width:${w * k}px;height:${h * k}px"><div class="poster" style="width:${w}px;height:${h}px;background:${pg.bg};transform:scale(${k})">${posterHTML(pg)}</div></div>`;
 }
 const tplThumb = (key, ratio, bw, bh) => { const [w, h] = RATIOS[ratio]; return thumb({ bg: '#0b1220', layers: brandize(TPL[key].fn(w, h)) }, ratio, bw, bh); };
@@ -550,7 +572,6 @@ function renderSide() {
       <button class="it" data-act="goWs" data-href="/"><span class="ico">${ic('doc', 16)}</span><span class="grow"><b>Blog Admin</b><small>Content &amp; Articles</small></span></button>
       <button class="it" data-act="goWs" data-href="/bot/overview"><span class="ico">${ic('chat', 16)}</span><span class="grow"><b>Chatbot Admin</b><small>AI &amp; Conversations</small></span><span class="soon">Soon</span></button>
       <button class="it on" data-act="ws"><span class="ico">${ic('globe', 16)}</span><span class="grow"><b>Social Media Admin</b><small>Social &amp; Publishing</small></span>${ic('check', 14, 'faint')}</button>
-      <div id="brandMenu">${brandMenu()}</div>
     </div>
   </div>
   <nav class="nav" id="nav">${NAV.map(([k, l, i]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}</a>`).join('')}</nav>
@@ -576,11 +597,7 @@ ACT.me = () => { const m = $('#meMenu'); m.hidden = !m.hidden; };
 ACT.goUsage = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/usage') route(); else location.hash = '#/usage'; };
 ACT.goProfile = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/profile') route(); else location.hash = '#/profile'; };
 ACT.signOut = () => { persist.signOut(); navigate('/login'); };
-ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; if (!m.hidden) { const on = m.querySelector('.bm-list .it.on'); on && on.scrollIntoView({ block: 'nearest' }); } };
-document.addEventListener('input', (e) => {
-  if (e.target.id !== 'bmQ') return; const q = e.target.value.trim().toLowerCase(), L = e.target.closest('#brandMenu').querySelector('.bm-list'); let n = 0;
-  L.querySelectorAll('.it').forEach((b) => { const hit = !q || b.dataset.name.includes(q); b.hidden = !hit; n += hit; }); L.querySelector('.bm-none').hidden = n > 0;
-});
+ACT.ws = () => { const m = $('#wsMenu'); m.hidden = !m.hidden; };
 ACT.noop = (a, e) => { e.preventDefault(); toast('Not part of this demo'); $('#wsMenu') && ($('#wsMenu').hidden = true); };
 ACT.menu = () => { $('#side').classList.add('open'); $('#scrim').hidden = false; };
 ACT.theme = () => { setTheme(S.theme === 'dark' ? 'light' : 'dark'); route(); };
@@ -596,7 +613,7 @@ function route() {
   $$('#nav a[data-k]').forEach((a) => a.classList.toggle('on', a.dataset.k === (PAGES[page] ? page : 'overview')));
   closeDrawer();
   $('#top').innerHTML = `<button class="btn secondary icon" data-act="menu" title="Menu" style="display:${innerWidth > 1024 ? 'none' : 'inline-flex'}">${ic('menu')}</button>
-    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="Switch brand">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
+    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="${esc(brand().name)}: your brands" aria-label="Your brands">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
     <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>${p.themeFirst && p.actions ? p.actions() : ''}`;
   $('#view').innerHTML = `<div class="page">${p.view()}</div>`; scrollTo(0, 0);
   sbUsageLoad();
@@ -620,12 +637,44 @@ function agoOf(d) {
   if (days === 1) return 'Yesterday'; if (days < 7) return days + ' days ago';
   return fmt(t, { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
 }
+/* A carousel's card previews every slide: arrows on the preview (or the arrow keys while it has focus) step through them,
+   the dots say where you are. A single design shows its one page. The slide shown is remembered while the studio is open. */
+const DC_AT = new Map(); // design id -> slide shown on its card
+const dcDots = (n, i) => n > 8 ? `<b>${i + 1} / ${n}</b>` : Array.from({ length: n }, (_, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
+/** A card's artwork: the slide shown in front and, for a carousel, its other slides stacked behind it in order (the next one first).
+    At most DC_BACK slides are drawn behind, so a long carousel stays light. */
+const DC_BACK = 7;
+function dcArt(d, i) {
+  const n = d.pages.length, m = Math.min(n - 1, DC_BACK), step = m ? Math.min(12, 30 / m) : 0;
+  const back = Array.from({ length: m }, (_, k) => `<span class="dc-back" style="--k:${k + 1}" aria-hidden="true">${thumb(d.pages[(i + k + 1) % n], d.ratio, 190, 215)}</span>`).reverse().join('');
+  return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}</span>`;
+}
 function designCard(d, extra = '') {
   const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
+  // an animated design is one video, not a carousel: its first scene alone, no stack, arrows or dots
+  const video = !!dd.motion, n = video ? 1 : dd.pages.length, i = Math.min(DC_AT.get(d.id) || 0, n - 1);
+  const nav = n > 1 ? `<button type="button" class="dc-nav prev" data-act="dcSlide" data-n="-1" aria-label="Previous slide"${i ? '' : ' disabled'}>${ic('chevL', 16)}</button><button type="button" class="dc-nav next" data-act="dcSlide" data-n="1" aria-label="Next slide"${i < n - 1 ? '' : ' disabled'}>${ic('chevR', 16)}</button><span class="dc-dots" aria-hidden="true">${dcDots(n, i)}</span>` : '';
   return `<div class="card dc" data-id="${d.id}">
-    <button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
+    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(video ? { ...dd, pages: dd.pages.slice(0, 1) } : dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
 }
+/** Shows another slide on a carousel's card, in place */
+function dcShow(card, step) {
+  const d = card && getD(card.dataset.id); if (!d || d.motion || d.pages.length < 2) return; // a video card has no slides to step through
+  const n = d.pages.length, i = Math.max(0, Math.min(n - 1, (DC_AT.get(d.id) || 0) + step)); if (i === (DC_AT.get(d.id) || 0)) return;
+  DC_AT.set(d.id, i);
+  const pv = card.querySelector('.pv'), art = pv.querySelector('.dc-art'); if (art) art.outerHTML = dcArt(d, i);
+  pv.setAttribute('aria-label', `Open ${d.name}, carousel, slide ${i + 1} of ${n}`);
+  const [prev, next] = [card.querySelector('.dc-nav.prev'), card.querySelector('.dc-nav.next')], had = document.activeElement;
+  prev.disabled = !i; next.disabled = i === n - 1; card.querySelector('.dc-dots').innerHTML = dcDots(n, i);
+  if (had === prev && prev.disabled) next.focus(); else if (had === next && next.disabled) prev.focus(); // the arrow at an end goes away: keep the keyboard on the card
+}
+ACT.dcSlide = (a, e) => { e && (e.preventDefault(), e.stopPropagation()); dcShow(a.closest('.card.dc'), +a.dataset.n); };
+document.addEventListener('keydown', (e) => {
+  if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const pv = e.target.closest && e.target.closest('.card.dc .pv'); if (!pv || !pv.parentNode.querySelector('.dc-nav')) return;
+  e.preventDefault(); dcShow(pv.closest('.card.dc'), e.key === 'ArrowRight' ? 1 : -1);
+});
 
 /* ---------- Designs: create / open / rename / duplicate / status / delete ----------
    Changes go to the in-memory workspace, then persist.flush() sends them to the API
@@ -648,6 +697,43 @@ function designMenu(btn, d) {
   m.addEventListener('click', (e) => { if (e.target.closest('[data-act]')) m.remove(); });
   const f = m.querySelector('button'); f && f.focus();
 }
+/* ---------- top bar: one Import button, a menu with the sources (Figma, an image or a file) ---------- */
+function importBtn() {
+  return `<button class="btn secondary imp-btn" data-act="impMenu" aria-haspopup="menu" title="Import a design">${ic('upload')}<span class="hide-sm">Import</span></button>`;
+}
+function importMenu(btn) {
+  const open = $('.dmenu-imp') || importWasOpen; importWasOpen = false; $$('.dmenu').forEach((m) => m.remove()); if (open) return; // a second press closes it
+  const m = document.createElement('div'); m.className = 'dmenu dmenu-imp'; m.setAttribute('role', 'menu'); m.setAttribute('aria-label', 'Import');
+  const it = (act, icon, label, line) => `<button type="button" role="menuitem" data-act="${act}"><span class="imp-i">${ic(icon, 18)}</span><span class="grow"><b>${label}</b><small>${line}</small></span></button>`;
+  m.innerHTML = it('figma', 'figma', 'From Figma', 'Frames become editable layers') + it('impImage', 'image', 'Image or file', 'PNG, JPG, SVG or HTML, rebuilt as layers');
+  document.body.append(m);
+  const r = btn.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + 'px'; // the menu's right edge under the button's
+  m.style.top = (r.bottom + 8 + mh > innerHeight - 8 ? Math.max(8, r.top - mh - 8) : r.bottom + 8) + 'px';
+  m.addEventListener('click', (e) => { if (e.target.closest('[data-act]')) m.remove(); });
+  m.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { m.remove(); btn.isConnected && btn.focus(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const b = [...m.querySelectorAll('button')], n = b.indexOf(document.activeElement); b[(n + (e.key === 'ArrowDown' ? 1 : b.length - 1)) % b.length].focus(); }
+  });
+  const f = m.querySelector('button'); f && f.focus();
+}
+let importWasOpen = false; // menus close on any press outside them, before the click: remember that the press was on the open menu's own button
+document.addEventListener('mousedown', (e) => { importWasOpen = !!(e.target.closest && e.target.closest('.imp-btn') && $('.dmenu-imp')); }, true);
+let importPending = null; // { id, file }: the file waits for its new design to open in the editor
+Object.assign(ACT, {
+  impMenu: (a, e) => { e && e.stopPropagation(); importMenu(a); },
+  /** Image or file: pick it, then a new design opens and the file becomes its layers (the design takes the picture's shape) */
+  impImage: () => {
+    if (!canEdit()) return;
+    const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,.svg,text/html,.html,.htm';
+    i.addEventListener('change', () => {
+      const f = i.files && i.files[0]; if (!f) return;
+      const d = createDesign({ name: f.name.replace(/\.[^.]+$/, '').slice(0, 44) || 'Imported design', ratio: brand().defaultRatio || '4:5', source: 'Import' });
+      importPending = { id: d.id, file: f }; location.hash = '#/editor/' + d.id;
+    });
+    i.click();
+  },
+});
 Object.assign(ACT, {
   dMore: (a, e) => { e && e.stopPropagation(); const d = getD(a.dataset.id); if (d) designMenu(a, d); },
   dRename: (a) => {
@@ -864,7 +950,7 @@ function ovSchedule() {
 
 PAGES.overview = {
   t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.', themeFirst: true,
-  actions: () => `<button class="btn secondary hide-sm" data-act="figma">${ic('figma')}Import from Figma</button><a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
+  actions: () => `${importBtn()}<a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
   view: () => {
     if (!OV.day) { OV.day = iso(new Date()); OV.start = iso(addD(new Date(), -2)); }
     const who = esc(allOn() ? 'your brands' : brand().name);
@@ -940,6 +1026,7 @@ document.addEventListener('dragover', (e) => { const d = e.target.closest('.day'
 document.addEventListener('drop', (e) => {
   const d = e.target.closest('.day'); if (!d) return; e.preventDefault();
   const id = e.dataTransfer.getData('text/plain'); if (!id) return;
+  if (blockSchedule(getD(id), toast)) return;
   S.posts.push({ id: 'p' + uid(), d: id, date: d.dataset.date, time: '09:00', pf: Object.keys(S.platforms).filter((k) => S.platforms[k]).slice(0, 2), status: 'Scheduled' });
   toast('Scheduled for ' + fmt(new Date(d.dataset.date + 'T00:00'), { weekday: 'long', day: 'numeric', month: 'short' }) + ', 09:00'); route();
 });
@@ -949,7 +1036,7 @@ const ST = { tab: 0, q: '', page: 0 };
 const ST_PER = 12;
 PAGES.studio = {
   t: 'Studio', s: 'Design posts for every platform, or bring them in from Figma.',
-  actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
+  actions: () => `${importBtn()}<button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
   view: () => {
     const tile = (r, n, s, w, h, sl) => `<button class="tile" data-act="newDesign" data-ratio="${r}" data-slides="${sl || 1}"><span class="shape"><i style="width:${w}px;height:${h}px"></i></span><span><b>${n}</b><small>${s}</small></span></button>`;
     // two libraries: the brand's designs and the templates saved from them (in All brands, every brand's)
@@ -969,7 +1056,7 @@ PAGES.studio = {
       <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page + 1}" ${ST.page < pages - 1 ? '' : 'disabled'} aria-label="Next page">${ic('chevR', 16)}</button></nav>`;
     let body;
     if (ST.tab === 1) body = ts.length ? `<div class="cards">${shown.map(tplCard).join('')}</div>${pager}` : q && tpls.length ? miss()
-      : none('layout', 'No templates yet', 'Open a design and choose “Save slide as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
+      : none('layout', 'No templates yet', 'Open a design and choose “Save page as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     else body = ds.length ? `<div class="cards">${shown.map((d) => designCard(d)).join('')}</div>${pager}` : q && S.designs.length ? miss()
       : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
@@ -985,7 +1072,7 @@ document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = 
 
 /* ---------- Brand kit (one per brand workspace) ---------- */
 const BK = { tab: 'info' };
-const BKTABS = [['info', 'Info & guidelines', 'doc'], ['logos', 'Logos & assets', 'image'], ['colors', 'Colors', 'palette'], ['type', 'Typography', 'type'], ['tpl', 'Templates', 'layout'], ['set', 'Settings', 'settings']];
+const BKTABS = [['info', 'Info & guidelines', 'doc'], ['logos', 'Logos & assets', 'image'], ['colors', 'Colors', 'palette'], ['type', 'Typography', 'type'], ['tpl', 'Templates', 'layout'], ['ds', 'Design system', 'wand'], ['set', 'Settings', 'settings']];
 function setupItems() {
   const b = brand();
   return [
@@ -1001,7 +1088,6 @@ function setupCard() {
   const it = setupItems(), n = it.filter((x) => x.d).length; if (n === it.length) return '';
   return `<div class="widget"><div class="wtitle">${brandAv(brand(), 'sm')}Set up ${esc(brand().name)}<span class="sp"></span><span class="xs-t muted">${n} of ${it.length} done</span></div><div class="prog-w"><div class="prog" role="progressbar" aria-label="Setup progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(n / it.length * 100)}"><i style="width:${Math.round(n / it.length * 100)}%"></i></div><b class="prog-pct">${Math.round(n / it.length * 100)}%</b></div><div>${it.map((x) => `<button class="todo" style="width:100%;text-align:left" data-act="bkGo" ${x.tab ? `data-tab="${x.tab}"` : `data-href="${x.href}"`}><span class="cbx ${x.d ? 'on' : ''}">${x.d ? ic('check', 12) : ''}</span><span class="grow ${x.d ? 'muted' : ''}" style="${x.d ? 'text-decoration:line-through' : ''}">${x.l}</span>${x.d ? '' : ic('chevR', 16, 'faint')}</button>`).join('')}</div></div>`;
 }
-const bkPreview = () => `<div class="row" style="gap:16px;flex-wrap:wrap">${tplThumb('launch', '4:5', 200, 250)}${tplThumb('quote', '4:5', 200, 250)}${tplThumb('stat', '1:1', 200, 250)}</div>`;
 const ta = (key, ph, h) => `<textarea class="inp ta" data-b="${key}" placeholder="${ph || ''}" style="min-height:${h || 90}px">${esc(brand()[key])}</textarea>`;
 const ip = (key, ph) => `<input class="inp" data-b="${key}" value="${esc(brand()[key])}" placeholder="${ph || ''}">`;
 const LANGS = ['English', 'French', 'Spanish', 'German', 'Arabic', 'Italian', 'Portuguese'];
@@ -1027,8 +1113,7 @@ const BKP = {
   colors: () => {
     const b = brand(), role = (i) => ['Primary: buttons, accents', 'Dark: backgrounds', 'Light: backgrounds'][i] || '';
     return `<div class="phead"><div><h2>Brand colors</h2><p>The first three colors drive starter templates: primary, dark and light.</p></div><button class="btn secondary sm" data-act="addColor" ${b.colors.length >= 12 ? 'disabled' : ''}>${ic('plus', 16)}Add color</button></div>
-      <div style="display:flex;flex-direction:column;gap:8px">${b.colors.map((c, i) => `<div class="crow"><input type="color" data-ci="${c.id}" value="${hex(c.hex)}"><div class="grow"><input class="inp" style="padding:6px 10px" data-cn="${c.id}" value="${esc(c.name)}"><p class="xs-t faint" style="margin-top:3px">${role(i)}</p></div><code class="sm-t muted">${c.hex.toUpperCase()}</code><button class="btn ghost icon sm" data-act="delColor" data-id="${c.id}" ${b.colors.length <= 3 ? 'disabled' : ''} title="Remove">${ic('trash', 16)}</button></div>`).join('')}</div>
-      <div><span class="label">Live preview on starter templates</span><div id="bkPreview">${bkPreview()}</div></div>`;
+      <div style="display:flex;flex-direction:column;gap:8px">${b.colors.map((c, i) => `<div class="crow"><input type="color" data-ci="${c.id}" value="${hex(c.hex)}"><div class="grow"><input class="inp" style="padding:6px 10px" data-cn="${c.id}" value="${esc(c.name)}"><p class="xs-t faint" style="margin-top:3px">${role(i)}</p></div><code class="sm-t muted">${c.hex.toUpperCase()}</code><button class="btn ghost icon sm" data-act="delColor" data-id="${c.id}" ${b.colors.length <= 3 ? 'disabled' : ''} title="Remove">${ic('trash', 16)}</button></div>`).join('')}</div>`;
   },
   type: () => {
     const b = brand(), sel = (key, label, list) => `<div class="fld"><label>${label}</label><select class="field" data-bf="${key}">${list.map((f) => `<option ${f === b.fonts[key] ? 'selected' : ''}>${f}</option>`).join('')}</select></div>`;
@@ -1040,7 +1125,7 @@ const BKP = {
   tpl: () => {
     const b = brand();
     return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Open in Studio</a></div>
-      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save slide as brand template”.</p></div>`}`;
+      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save page as brand template”.</p></div>`}`;
   },
   set: () => {
     const b = brand(), connected = Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]);
@@ -1051,6 +1136,474 @@ const BKP = {
       + `<div><span class="label">Brand actions</span><div class="acts"><button class="btn secondary" data-act="dupBrand">${ic('copy')}Duplicate brand</button><button class="btn secondary" data-act="delBrand" style="color:var(--neg)" ${S.brands.length < 2 ? 'disabled' : ''}>${ic('trash')}Delete brand</button></div>${S.brands.length < 2 ? '<p class="hint">You need at least one brand.</p>' : ''}</div>`;
   },
 };
+/* ---------- Brand kit · Design system: Claude reads the brand's templates and approved designs and writes its style sheet ----------
+   The system lives on the brand (brand().designSystem) and goes through tidySystem on every write, so the limits always hold.
+   Analysis runs only when the user presses Analyze; DSRUN remembers which brands are being analysed (not stored). */
+const DSRUN = new Map(); // brand id → { n: designs and pictures being studied, guide: whether the brand guide is read too }
+const DSGUIDE = new Map(); // brand id → the current step while its brand guide is read (not stored)
+const DS = { aiWait: false, aiTried: false };
+const DS_BUDGET = 20_000_000; // characters of image data in one analysis request
+const DS_PIC_TYPE = /^image\/(png|jpeg|webp)$/;
+const DS_PIC_URL = /^data:image\/(png|jpeg|webp);base64,/;
+const DS_TYPE = { headline: 'Headline', subhead: 'Subhead', body: 'Body', label: 'Label', caption: 'Caption' };
+const DS_CORNERS = [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right'], ['none', 'No logo']];
+const DS_REF_ID = /^[A-Za-z0-9_-]{1,80}$/;
+const DS_IMAGE_MAX = 2_500_000;
+const DS_LAYERS_MAX = 40_000;
+const dsCap = (s) => String(s || '').charAt(0).toUpperCase() + String(s || '').slice(1);
+const dsDesigns = (n) => n + (n === 1 ? ' design' : ' designs');
+/** "3 designs", "3 designs, 2 pictures and the brand guide", "2 pictures" or "the brand guide"; "0 designs" for nothing */
+const dsWhat = (designs, pictures, guide) => sourcesPhrase({ designs, pictures, guide }) || dsDesigns(0);
+const dsFont = (f) => String(f || '').replace(/[^\p{L}\p{N} _-]/gu, '');
+const dsOnTab = (bid) => S.active === bid && location.hash === '#/brand' && BK.tab === 'ds';
+const dsDraw = (bid) => { if (dsOnTab(bid)) rerender(); };
+/** "just now", "3 days ago", "yesterday", or "on 12 Nov" */
+function dsWhen(at) {
+  const r = agoOf({ at: at || 0 });
+  if (!r) return '';
+  return /^(Just now|Yesterday)$|ago$/.test(r) ? r.charAt(0).toLowerCase() + r.slice(1) : 'on ' + r;
+}
+/** Is a Claude key set? null while the AI settings are loading (the tab redraws when they arrive). */
+function dsKey() {
+  if (AIS.view) return !!(AIS.view.anthropic && AIS.view.anthropic.hasKey);
+  if (DS.aiTried) return false;
+  if (!DS.aiWait) {
+    DS.aiWait = true;
+    const bid = S.active;
+    Promise.resolve(aiLoad()).finally(() => { DS.aiWait = false; DS.aiTried = true; dsDraw(bid); });
+  }
+  return null;
+}
+const dsSourceIds = (sys) => ((sys && sys.sources) || []).map((s) => s.id);
+/** Stores a system on a brand, always through tidySystem. */
+function dsStore(b, sys) { b.designSystem = tidySystem(sys, dsSourceIds(sys)); save(); return b.designSystem; }
+const dsCount = (sys) => [sys.type.length, sys.layout.patterns.length, sys.rules.length].join('|');
+
+/* ----- reading a reference: one JPEG (long side at most 1000 px) and its compact layer list ----- */
+const dsDataUrl = (blob) => new Promise((ok) => { if (!blob) return ok(''); const f = new FileReader(); f.onload = () => ok(String(f.result || '')); f.onerror = () => ok(''); f.readAsDataURL(blob); });
+/** A picture (data URL) re-encoded as JPEG (quality q) at k times its size, its long side at most `max`: { image, w, h }, or null when it cannot be read.
+    Transparent parts become white, as JPEG has no transparency. */
+function dsJpeg(url, k = 1, max = Infinity, q = 0.8) {
+  return new Promise((ok) => {
+    if (!url) return ok(null);
+    const im = new Image();
+    im.onload = () => {
+      const W = im.naturalWidth, H = im.naturalHeight;
+      if (!W || !H) return ok(null);
+      const s = Math.min(k, max / Math.max(W, H)), w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
+      try {
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+        ok({ image: c.toDataURL('image/jpeg', q), w, h });
+      } catch (e) { ok(null); }
+    };
+    im.onerror = () => ok(null);
+    im.src = url;
+  });
+}
+/** The inspiration picture sent with an analysis or shown to the agent: shrunk until it is under DS_IMAGE_MAX; null when it is not. */
+async function dsPicImage(src) {
+  let image = typeof src === 'string' ? src : '';
+  for (let k = 0; k < 4 && image.length > DS_IMAGE_MAX; k++) { const r = await dsJpeg(image, 0.75); if (!r) return null; image = r.image; }
+  return DS_PIC_URL.test(image) && image.length <= DS_IMAGE_MAX ? image : null;
+}
+async function dsRef(b, designs, s) {
+  if (!renderSlide || !DS_REF_ID.test(String(s.id))) return null;
+  let t;
+  if (s.kind === 'template') t = (b.templates || []).find((x) => x.id === s.id);
+  else { t = designs.find((x) => x.id === s.id); if (t && !t.pages) t.pages = buildPages(t); }
+  if (!t) return null;
+  const ratio = ensureRatio(t.ratio), dims = RATIOS[ratio];
+  if (!dims) return null;
+  const [w, h] = dims;
+  const pg = t.pages ? t.pages[0] : { id: t.id, bg: t.bg, layers: t.layers };
+  if (!pg) return null;
+  const design = t.pages ? t : { id: t.id, ratio, pages: [pg] };
+  let scale = Math.min(1, 1000 / Math.max(w, h)), image = '';
+  for (let k = 0; k < 4 && !image; k++) {
+    const url = await dsDataUrl(await renderSlide(design, 0, scale, 'jpeg'));
+    if (url.startsWith('data:image/') && url.length <= DS_IMAGE_MAX) image = url;
+    scale *= 0.6; // too heavy: once more, smaller
+  }
+  if (!image) return null;
+  const cmp = (AGAPI && AGAPI.compact) || ((l) => l);
+  const list = (pg.layers || []).map(cmp);
+  let layers = JSON.stringify(list);
+  while (layers.length > DS_LAYERS_MAX && list.length) { list.pop(); layers = JSON.stringify(list); }
+  const clampPx = (n) => Math.min(8000, Math.max(100, Math.round(n)));
+  return {
+    kind: s.kind, id: s.id, name: String(t.name || s.name || 'Untitled').slice(0, 120), ratio: String(ratio).slice(0, 20),
+    w: clampPx(w), h: clampPx(h), live: !!s.live, image, layers: layers.slice(0, DS_LAYERS_MAX),
+  };
+}
+function dsKit(b) {
+  const cut = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+  const kit = { name: cut(b.name, 120) || 'Brand', colors: (b.colors || []).slice(0, 12).map((c) => ({ name: cut(c.name, 60), hex: cut(c.hex, 20) })), fonts: {} };
+  const industry = cut(b.industry, 200), voice = cut(b.voice, 2000);
+  if (industry) kit.industry = industry;
+  if (voice) kit.voice = voice;
+  ['heading', 'body', 'arabic'].forEach((k) => { const f = cut(b.fonts && b.fonts[k], 80); if (f) kit.fonts[k] = f; });
+  kit.logos = (b.logos || []).map((l) => String(l.name || '').slice(0, 60)).filter(Boolean).slice(0, 12);
+  return kit;
+}
+const dsConfirm = (designs, pictures, guide) => new Promise((ok) => {
+  let yes = false;
+  modal(`<div class="mh"><h2>Re-analyze this brand?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><p class="sm-t">The design system is rewritten from ${dsWhat(designs, pictures, guide)}. Values you edited are replaced. Rules you wrote are kept.</p></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="dsGo">Re-analyze</button></div>`, {
+    onMount: (bg, close) => { const g = $('#dsGo', bg); g.addEventListener('click', () => { yes = true; close(); }); setTimeout(() => g.focus(), 30); },
+    onClose: () => ok(yes),
+  });
+});
+
+/* ----- the tab ----- */
+function dsSources(b, src) {
+  return `<ul class="ds-srcs" aria-label="Designs Claude studies">${src.map((s) => {
+    let pv = '';
+    try {
+      if (s.kind === 'template') { const t = (b.templates || []).find((x) => x.id === s.id); if (t) { ensureRatio(t.ratio); pv = btThumb(t, 84, 62); } }
+      else { const d = getD(s.id); if (d && d.pages && d.pages[0]) { ensureRatio(d.ratio); pv = thumb(d.pages[0], d.ratio, 84, 62); } }
+    } catch (e) { pv = ''; }
+    return `<li class="ds-src"><div class="ds-src-pv">${pv}</div><b title="${esc(s.name)}">${esc(s.name || 'Untitled')}</b><small>${s.kind === 'template' ? 'Template' : 'Design'}</small></li>`;
+  }).join('')}</ul>`;
+}
+const dsProg = (bid) => { const r = DSRUN.get(bid); return r ? `<span class="spin" aria-hidden="true"></span>Claude is studying ${dsWhat(r.designs, r.pictures, r.guide)}…` : ''; };
+const dsLive = (bid) => `<p class="ds-prog" role="status" aria-live="polite">${dsProg(bid)}</p>`;
+const dsKeyNote = () => `<div class="ds-note">${ic('lock', 16)}<span class="grow">Add a Claude key in Settings → AI to analyze this brand's designs.</span><button class="btn secondary sm" data-act="agModelSetup">Set up AI</button></div>`;
+const dsSec = (title, body, aside = '') => `<section class="ds-sec"><div class="ds-sh"><h3 class="ds-h">${title}</h3>${aside}</div>${body}</section>`;
+const dsNum = (path, val, label, o = {}) => `<input class="inp ds-num" type="number" inputmode="numeric" data-ds="${path}" value="${esc(val)}" min="${o.min ?? 0}" max="${o.max ?? 400}" step="${o.step ?? 1}" aria-label="${esc(label)}">`;
+const dsPics = (b) => (Array.isArray(b.inspiration) ? b.inspiration : []).filter((p) => p && typeof p.src === 'string' && DS_PIC_URL.test(p.src) && typeof p.id === 'string');
+/** A file picker that looks like a small button: a label around a hidden input, reachable with Tab and opened with Enter or Space. */
+const dsFileBtn = (id, label, icon, accept, o = {}) => `<label class="btn secondary sm ds-src-file${o.off ? ' ds-src-off' : ''}" role="button" ${o.off ? 'aria-disabled="true"' : 'tabindex="0"'}${o.title ? ` title="${esc(o.title)}"` : ''}>${ic(icon, 16)}${label}<input type="file" id="${id}" accept="${accept}"${o.multi ? ' multiple' : ''} hidden${o.off ? ' disabled' : ''}></label>`;
+
+/** Sources: the brand's own designs, its inspiration pictures and its brand guide. `note` shows the Claude key note in the guide row
+    (only where the page shows it nowhere else). */
+function dsSourcesHTML(b, g, ro, note = false) {
+  const key = ro ? true : dsKey(), pics = dsPics(b).slice(0, MAX_INSPIRATION), full = pics.length >= MAX_INSPIRATION;
+  const reading = DSGUIDE.has(b.id), gd = tidyGuideDesign(b.guideDesign);
+  const head = (title, aside = '', act = '') => `<div class="ds-src-gh"><h4 class="ds-src-t">${title}</h4>${aside ? `<small class="ds-src-n">${aside}</small>` : ''}${act ? `<span class="ds-src-act">${act}</span>` : ''}</div>`;
+  const own = `<div class="ds-src-g">${head('Your designs', g.own.length ? String(g.own.length) : '')}${g.own.length ? dsSources(b, g.own) : '<p class="ds-src-none">No templates or approved designs yet.</p>'}</div>`;
+  const cards = pics.map((p, i) => {
+    const name = String(p.name || '').trim() || 'Picture';
+    return `<li class="ds-src ds-src-card"><div class="ds-src-pv"><img src="${esc(p.src)}" alt="" loading="lazy" decoding="async">${ro ? '' : `<button type="button" class="ds-src-del" data-act="dsInspDel" data-id="${esc(p.id)}" title="Remove picture" aria-label="Remove ${esc(name)}">${ic('x', 12)}</button>`}</div>`
+      + (ro ? `<b title="${esc(name)}">${esc(name)}</b>` : `<input class="inp ds-src-name" data-ds-insp="${esc(p.id)}" value="${esc(name)}" maxlength="40" aria-label="Picture ${i + 1} name">`) + '</li>';
+  }).join('');
+  const add = ro ? '' : dsFileBtn('dsInspUp', 'Add pictures', 'upload', 'image/png,image/jpeg,image/webp', { multi: true, off: full, title: full ? 'Inspiration is full (8 pictures). Remove one to add another.' : '' });
+  const insp = `<div class="ds-src-g">${head('Inspiration', `${pics.length} of ${MAX_INSPIRATION}`, add)}
+    <p class="ds-src-help">Other brands' work you like. Claude learns layout and mood from it, never colors, fonts or logos.</p>
+    ${pics.length ? `<ul class="ds-srcs" aria-label="Inspiration pictures">${cards}</ul>` : ''}</div>`;
+  const off = reading || !key, offTitle = !key ? 'Add a Claude key in Settings → AI first.' : '';
+  let doc;
+  if (gd) {
+    doc = `<div class="ds-src-doc">${ic('doc', 18)}<div class="ds-src-dm"><b title="${esc(gd.name)}">${esc(gd.name || 'Brand guide')}</b>${gd.at ? `<small>read ${esc(dsWhen(gd.at))}</small>` : ''}</div>`
+      + (ro ? '' : `<div class="ds-src-acts">${dsFileBtn('dsGuideUp', 'Replace', 'refresh', 'application/pdf,.pdf', { off, title: offTitle })}<button type="button" class="btn ghost sm" data-act="dsGuideDel" ${reading ? 'disabled' : ''}>${ic('trash', 16)}Remove</button></div>`) + '</div>';
+  } else {
+    doc = ro ? '<p class="ds-src-none">No brand guide.</p>' : `<div>${dsFileBtn('dsGuideUp', 'Add your brand guide (PDF)', 'doc', 'application/pdf,.pdf', { off, title: offTitle })}</div>`;
+  }
+  const prog = ro ? '' : `<p class="ds-prog" id="dsGuideProg" role="status" aria-live="polite">${reading ? `<span class="spin" aria-hidden="true"></span>Reading the brand guide…<span class="ds-src-step">${esc(DSGUIDE.get(b.id) || '')}</span>` : ''}</p>`;
+  const guide = `<div class="ds-src-g">${head('Brand guide')}${doc}${prog}${note && !ro && !key ? dsKeyNote() : ''}</div>`;
+  return `<section class="ds-src-sec" aria-labelledby="dsSrcH"><h3 class="ds-h" id="dsSrcH">Sources</h3>${own}${insp}${guide}</section>`;
+}
+
+function dsView() {
+  const b = brand(), ro = !!persist.readOnly, sys = b.designSystem ? tidySystem(b.designSystem, dsSourceIds(b.designSystem)) : null;
+  const g = gatherSources(b, S.designs, S.posts), running = DSRUN.has(b.id), some = hasSources(g);
+  const key = ro ? true : dsKey();
+  if (key === null) return `<div class="phead"><div><h2>Design system</h2><p>Loading the AI settings…</p></div></div><div class="ds-sk"><div class="skel" style="height:22px;width:60%"></div><div class="skel" style="height:96px"></div></div>`;
+  if (!sys) {
+    if (!some) {
+      return `<div class="empty ds-empty">${ic('wand', 28)}<b>Nothing to learn from yet</b><p>Save a template, approve a design, add inspiration pictures or add your brand guide.</p>${ro ? '' : `<button class="btn secondary sm" data-act="bkTab" data-k="tpl">${ic('layout', 16)}Open templates</button>`}</div>
+        ${ro ? '' : dsSourcesHTML(b, g, ro, true)}`;
+    }
+    if (ro) return `<div class="empty ds-empty">${ic('wand', 28)}<b>No design system yet</b><p>An admin or editor can analyze this brand's designs to write one.</p></div>${dsSourcesHTML(b, g, ro)}`;
+    const n = g.own.length + g.inspiration.length;
+    const what = n ? (n === 1 ? 'this design' : `these ${n} designs`) + (g.guide ? ' and the brand guide' : '') : 'the brand guide';
+    return `<div class="phead"><div><h2>Teach the agent how ${esc(b.name)} designs</h2><p>Claude studies ${what} and writes the brand's design system: type, colors, spacing, layouts and rules. You can edit everything afterwards.</p></div></div>
+      ${dsSourcesHTML(b, g, ro)}
+      ${key ? `<div class="ds-go"><button class="btn primary" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>${ic('wand', 16)}Analyze</button>${dsLive(b.id)}</div>` : dsKeyNote()}`;
+  }
+  const stale = some && gatheredSig(g) !== sys.sig;
+  const nPics = (sys.sources || []).filter((s) => s.kind === 'inspiration').length, nDes = (sys.sources || []).length - nPics, usedMore = !!(nPics || sys.guide);
+  return `<div class="phead"><div><h2>Design system</h2><p>How ${esc(b.name)} designs, written by Claude from ${usedMore ? 'its sources' : 'its templates and approved designs'}. The Studio Agent follows it.</p></div></div>
+    ${stale ? `<div class="ds-note ds-stale">${ic('alert', 16)}<span class="grow">${g.inspiration.length || g.guide || sys.guide || (sys.sources || []).some((s) => s.kind === 'inspiration') ? 'Sources changed since this was analyzed.' : 'Templates or designs changed since this was analyzed.'}</span>${ro || !key ? '' : `<button class="btn secondary sm" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>Re-analyze</button>`}</div>` : ''}
+    ${dsSourcesHTML(b, g, ro)}
+    <div class="ds">
+      ${dsSec('Summary', ro ? `<p class="ds-sum">${esc(sys.summary) || '<span class="muted">No summary.</span>'}</p>` : `<textarea class="inp ta ds-sum" data-ds="summary" maxlength="600" rows="3" aria-label="Summary" placeholder="Two or three sentences on the overall look">${esc(sys.summary)}</textarea>`)}
+      ${dsSec('Type', dsTypeHTML(sys, ro))}
+      ${dsSec('Colors', dsColorHTML(sys))}
+      ${dsSec('Layout', dsLayoutHTML(sys, ro), '<small class="ds-aside">Sizes are for a 1080 px wide canvas.</small>')}
+      ${dsSec('Patterns', dsPatternHTML(sys, ro))}
+      ${dsSec('Rules', dsRulesHTML(sys, ro))}
+    </div>
+    <div class="ds-foot"><span class="ds-when">Analyzed ${esc(dsWhen(sys.at))} from ${dsWhat(nDes, nPics, !!sys.guide)}</span>${ro ? '' : key ? `${dsLive(b.id)}<button class="btn secondary sm" data-act="dsAnalyze" ${running ? 'disabled aria-disabled="true"' : ''}>${ic('refresh', 16)}Re-analyze</button>` : ''}</div>
+    ${!ro && !key ? dsKeyNote() : ''}`;
+}
+function dsTypeHTML(sys, ro) {
+  if (!sys.type.length) return '<p class="sm-t muted">No type roles found.</p>';
+  return `<div class="ds-types">${sys.type.map((t, i) => {
+    const name = DS_TYPE[t.role] || dsCap(t.role), font = dsFont(t.font);
+    RT.loadFont && RT.loadFont(font, t.weight);
+    const px = Math.max(14, Math.min(40, Math.round(t.sizeMax * 0.36)));
+    const look = `font-family:'${esc(font)}',sans-serif;font-weight:${t.weight};font-size:${px}px;${t.upper ? 'text-transform:uppercase;' : ''}letter-spacing:${Math.max(-2, Math.min(4, t.ls / 10))}px`;
+    const meta = `${esc(t.font)} · line height ${t.lh}${t.upper ? ' · uppercase' : ''} · ${t.align}`;
+    const fields = ro
+      ? `<span class="ds-val">${t.sizeMin}–${t.sizeMax} px</span><span class="ds-val">Weight ${t.weight}</span>`
+      : `<span class="ds-f"><span class="ds-fl">Size</span>${dsNum(`type.${i}.sizeMin`, t.sizeMin, name + ' smallest size in px', { min: 8, max: 400 })}<span class="ds-dash" aria-hidden="true">–</span>${dsNum(`type.${i}.sizeMax`, t.sizeMax, name + ' largest size in px', { min: 8, max: 400 })}<span class="ds-unit">px</span></span>
+         <span class="ds-f"><span class="ds-fl">Weight</span>${dsNum(`type.${i}.weight`, t.weight, name + ' font weight', { min: 100, max: 900, step: 100 })}</span>`;
+    return `<div class="ds-type"><div class="ds-type-s" style="${look}">${esc(name)}</div><div class="ds-type-m"><small class="ds-meta">${meta}</small><div class="ds-fields">${fields}</div></div></div>`;
+  }).join('')}</div>`;
+}
+const dsSafeGrad = (g) => typeof g === 'string' && /^(linear|radial)-gradient\([#%.,\s\w()-]+\)$/.test(g);
+function dsColorHTML(sys) {
+  const c = sys.colors;
+  const roles = c.roles.length ? `<ul class="ds-roles">${c.roles.map((r) => `<li class="ds-role"><i style="background:${r.hex}" aria-hidden="true"></i><div class="grow"><b>${esc(dsCap(r.role))}</b> <code>${r.hex}</code>${r.usage ? `<small>${esc(r.usage)}</small>` : ''}</div></li>`).join('')}</ul>` : '<p class="sm-t muted">No color roles found.</p>';
+  const pairs = c.pairs.length ? `<div><span class="ds-sub">Pairs</span><div class="ds-pairs">${c.pairs.map((p) => `<span class="ds-pair" style="background:${p.bg};color:${p.text}" role="img" aria-label="Text ${p.text} on ${p.bg}${p.accent ? ', accent ' + p.accent : ''}" title="${p.text} on ${p.bg}${p.accent ? ' · accent ' + p.accent : ''}"><span>Aa</span>${p.accent ? `<i style="background:${p.accent}"></i>` : ''}</span>`).join('')}</div></div>` : '';
+  const grads = c.gradients.filter(dsSafeGrad);
+  const gr = grads.length ? `<div><span class="ds-sub">Gradients</span><div class="ds-grads">${grads.map((g) => `<span style="background:${esc(g)}" title="${esc(g)}" role="img" aria-label="Gradient"></span>`).join('')}</div></div>` : '';
+  return roles + pairs + gr;
+}
+function dsLayoutHTML(sys, ro) {
+  const L = sys.layout, sh = sys.shapes, corner = (DS_CORNERS.find(([k]) => k === L.logo.corner) || DS_CORNERS[4])[1];
+  const f = (label, inner) => `<div class="ds-lf"><span class="ds-fl">${label}</span>${inner}</div>`;
+  const px = (path, v, label, max) => (ro ? `<span class="ds-val">${v} px</span>` : `<span class="ds-px">${dsNum(path, v, label, { max })}<span class="ds-unit">px</span></span>`);
+  const fields = f('Margin', px('layout.margin', L.margin, 'Margin in px', 300)) + f('Gap', px('layout.gap', L.gap, 'Gap in px', 200))
+    + f('Logo corner', ro ? `<span class="ds-val">${corner}</span>` : `<select class="field ds-sel" data-ds="layout.logo.corner" aria-label="Logo corner">${DS_CORNERS.map(([k, l]) => `<option value="${k}" ${k === L.logo.corner ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
+    + f('Logo width', px('layout.logo.width', L.logo.width, 'Logo width in px', 600));
+  const facts = [['Alignment', dsCap(L.align)], ['Corner radius', sh.radius + ' px'], ['Stroke', sh.stroke ? sh.stroke + ' px' : 'None'], ['Shadow', dsCap(sh.shadow)], sh.motifs && ['Motifs', sh.motifs], sys.imagery && ['Imagery', sys.imagery]].filter(Boolean);
+  return `<div class="ds-lgrid">${fields}</div><dl class="ds-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`;
+}
+function dsPatternHTML(sys, ro) {
+  const P = sys.layout.patterns;
+  if (!P.length) return '<p class="sm-t muted">No recurring layouts found.</p>';
+  const pics = dsPics(brand());
+  // a picture's current name when it is still there (it can be renamed), else the name it had when the system was analyzed
+  const from = (id) => { const pic = pics.find((x) => x.id === id), s = (sys.sources || []).find((x) => x.id === id); return pic && s && s.kind === 'inspiration' ? String(pic.name || '').trim() || 'Picture' : s ? s.name : ''; };
+  return `<ul class="ds-pats">${P.map((p, i) => {
+    const label = p.name || 'Pattern ' + (i + 1), src = p.sourceId && from(p.sourceId), insp = p.origin === 'inspiration';
+    return `<li class="ds-pat"><div class="ds-pat-pv">${patternWire(p, { esc })}${p.ratio ? `<span class="ds-ratio">${esc(p.ratio)}</span>` : ''}</div>
+      <div class="ds-pat-m">${ro ? `<b>${esc(label)}</b>${p.when ? `<p>${esc(p.when)}</p>` : ''}`
+        : `<input class="inp ds-pn" data-ds="patterns.${i}.name" value="${esc(p.name)}" maxlength="60" placeholder="Name" aria-label="Pattern ${i + 1} name">
+           <textarea class="inp ds-pw" data-ds="patterns.${i}.when" maxlength="200" rows="2" placeholder="When to use it" aria-label="When to use ${esc(label)}">${esc(p.when)}</textarea>`}
+        <div class="ds-pat-f">${insp ? '<span class="ds-tag" title="Learned from an inspiration picture">Inspiration</span>' : ''}${src ? `<small class="grow" title="From ${esc(src)}">From ${esc(src)}</small>` : '<span class="grow"></span>'}${ro ? '' : `<button class="btn ghost icon sm" data-act="dsPatDel" data-id="${esc(p.id)}" title="Delete pattern" aria-label="Delete ${esc(label)}">${ic('trash', 16)}</button>`}</div></div></li>`;
+  }).join('')}</ul>`;
+}
+function dsRulesHTML(sys, ro) {
+  const full = sys.rules.length >= LIMITS.rules;
+  const list = (kind, title) => {
+    const items = sys.rules.map((r, i) => [r, i]).filter(([r]) => r.kind === kind);
+    const li = items.map(([r, i]) => `<li class="ds-rule">${ic(kind === 'do' ? 'check' : 'x', 14)}${ro ? `<span class="grow">${esc(r.text)}</span>`
+      : `<input class="inp ds-rt" data-ds="rules.${i}.text" value="${esc(r.text)}" maxlength="160" aria-label="${title} rule ${items.findIndex(([, j]) => j === i) + 1}">`}${r.by === 'user' ? '<span class="ds-you" title="Written by you">You</span>' : r.by === 'guide' ? '<span class="ds-tag" title="From the brand guide">Guide</span>' : ''}${ro ? '' : `<button class="btn ghost icon sm" data-act="dsRuleDel" data-i="${i}" title="Delete rule" aria-label="Delete rule: ${esc(r.text)}">${ic('trash', 14)}</button>`}</li>`).join('');
+    const add = ro ? '' : `<li class="ds-rule ds-add">${ic('plus', 14)}<input class="inp ds-rt" data-ds-new="${kind}" maxlength="160" placeholder="${full ? 'Up to ' + LIMITS.rules + ' rules' : 'Add a rule'}" aria-label="New ${title.toLowerCase()} rule" ${full ? 'disabled' : ''}><button class="btn secondary sm" data-act="dsRuleAdd" data-k="${kind}" ${full ? 'disabled' : ''}>Add</button></li>`;
+    return `<div class="ds-rl ds-${kind}"><span class="ds-sub">${title}</span><ul>${li || (ro ? '<li class="ds-rule ds-none">None</li>' : '')}${add}</ul></div>`;
+  };
+  return `<div class="ds-rls">${list('do', 'Do')}${list('dont', 'Don’t')}</div>`;
+}
+BKP.ds = dsView;
+
+/* ----- analysis: canEdit, sources, confirm, progress, render, call, store (or keep the old system on failure) ----- */
+ACT.dsAnalyze = async () => {
+  if (!canEdit()) return;
+  const b = brand(), bid = b.id, designs = S.designs;
+  if (DSRUN.has(bid)) return;
+  const g = gatherSources(b, designs, S.posts), src = g.own, gd = g.guide ? tidyGuideDesign(b.guideDesign) : null;
+  if (!hasSources(g)) { dsDraw(bid); return; }
+  if (b.designSystem && !(await dsConfirm(src.length, g.inspiration.length, !!g.guide))) return;
+  if (DSRUN.has(bid)) return; // pressed again while the confirmation was open
+  DSRUN.set(bid, { designs: src.length, pictures: g.inspiration.length, guide: !!g.guide }); dsDraw(bid);
+  try {
+    const references = [];
+    for (const s of src) { try { const r = await dsRef(b, designs, s); if (r) references.push(r); } catch (e) { /* skipped: cannot be rendered */ } }
+    // inspiration pictures, in the gathered order; one that cannot be sent within the limits is skipped
+    const inspiration = [];
+    for (const s of g.inspiration) {
+      const p = dsPics(b).find((x) => x.id === s.id), w = Math.round(p ? p.w : 0), h = Math.round(p ? p.h : 0);
+      if (!p || !DS_REF_ID.test(p.id) || !(w >= 100 && w <= 8000 && h >= 100 && h <= 8000)) continue;
+      const image = await dsPicImage(p.src);
+      if (image) inspiration.push({ id: p.id, name: String(p.name || '').trim().slice(0, 120) || 'Picture', w, h, image });
+    }
+    // the request carries at most DS_BUDGET characters of pictures: inspiration shrinks first, then goes from the end
+    const total = () => references.concat(inspiration).reduce((t, x) => t + x.image.length, 0);
+    for (let k = 0; k < 4 && inspiration.length && total() > DS_BUDGET; k++) {
+      for (const x of inspiration) { const r = await dsJpeg(x.image, 0.75); if (r && r.image.length < x.image.length) x.image = r.image; }
+    }
+    while (inspiration.length && total() > DS_BUDGET) inspiration.pop();
+    while (references.length && total() > DS_BUDGET) references.pop();
+    const guide = gd ? guideForRequest(gd) : undefined;
+    if (guide && !guide.name) guide.name = 'Brand guide';
+    if (!references.length && !inspiration.length && !guide) {
+      toast(src.length ? 'These designs could not be rendered. Open one and try again.' : 'These pictures could not be read. Remove them and add them again.');
+      return;
+    }
+    const body = { kit: dsKit(b), references };
+    if (inspiration.length) body.inspiration = inspiration;
+    if (guide) body.guide = guide;
+    const r = await api('/social/brands/' + encodeURIComponent(bid) + '/design-system/analyze', { method: 'POST', body });
+    const ids = references.map((x) => x.id), inspIds = inspiration.map((x) => x.id), fresh = tidySystem(r && r.system, ids, inspIds);
+    if (!fresh) throw new Error('Claude’s answer could not be used. Try again.');
+    const target = S.brands.find((x) => x.id === bid);
+    if (!target) return; // the brand was deleted meanwhile
+    const old = target.designSystem;
+    const rules = mergeRules(old && old.rules, withGuideRules(fresh.rules.map((x) => ({ ...x, by: 'ai' })), guide ? gd : null));
+    const sources = src.filter((x) => ids.includes(x.id)).map(({ kind, id, name, ratio }) => ({ kind, id, name, ratio }))
+      .concat(inspiration.map((x) => ({ kind: 'inspiration', id: x.id, name: x.name, ratio: x.w + 'x' + x.h })));
+    target.designSystem = tidySystem({ ...fresh, rules, v: 1, at: Date.now(), model: r.model, sig: gatheredSig(g), sources, ...(guide ? { guide: { name: guide.name } } : {}) }, ids);
+    save();
+    toast('Design system updated');
+  } catch (e) {
+    toast((e && e.message) || 'The analysis failed. Try again.');
+  } finally {
+    DSRUN.delete(bid); dsDraw(bid);
+  }
+};
+
+/* ----- edits: data-ds="<path>" fields, written on change; the tab redraws only when the structure changed ----- */
+function dsWrite(sys, path, raw) {
+  // an empty or non-numeric number field keeps the old value (tidySystem would turn NaN into the lower bound)
+  const p = path.split('.'), n = (v, old) => { const x = String(v).trim() === '' ? NaN : Number(v); return Number.isFinite(x) ? x : old; };
+  if (p[0] === 'summary') sys.summary = raw;
+  else if (p[0] === 'type' && sys.type[+p[1]] && ['sizeMin', 'sizeMax', 'weight'].includes(p[2])) sys.type[+p[1]][p[2]] = n(raw, sys.type[+p[1]][p[2]]);
+  else if (p[0] === 'layout' && (p[1] === 'margin' || p[1] === 'gap')) sys.layout[p[1]] = n(raw, sys.layout[p[1]]);
+  else if (p[0] === 'layout' && p[1] === 'logo' && p[2] === 'corner') sys.layout.logo.corner = raw;
+  else if (p[0] === 'layout' && p[1] === 'logo' && p[2] === 'width') sys.layout.logo.width = n(raw, sys.layout.logo.width);
+  else if (p[0] === 'patterns' && sys.layout.patterns[+p[1]] && (p[2] === 'name' || p[2] === 'when')) sys.layout.patterns[+p[1]][p[2]] = raw;
+  else if (p[0] === 'rules' && sys.rules[+p[1]] && p[2] === 'text') Object.assign(sys.rules[+p[1]], { text: raw, by: 'user' });
+  else return false;
+  return true;
+}
+function dsRead(sys, path) {
+  const p = path.split('.');
+  if (p[0] === 'patterns') return ((sys.layout.patterns[+p[1]] || {})[p[2]]);
+  if (p[0] === 'rules') return ((sys.rules[+p[1]] || {})[p[2]]);
+  return p.reduce((o, k) => (o == null ? o : o[/^\d+$/.test(k) ? +k : k]), sys);
+}
+/** Applies fn to a copy of the brand's system, stores it tidied, and redraws if rules, patterns or type roles came or went */
+function dsEdit(fn) {
+  const b = brand(); if (!b.designSystem) return;
+  const before = tidySystem(b.designSystem, dsSourceIds(b.designSystem)), copy = JSON.parse(JSON.stringify(before));
+  if (fn(copy) === false) return;
+  const after = dsStore(b, copy);
+  if (dsCount(after) !== dsCount(before)) { rerender(); return after; }
+  // same structure: leave the DOM alone, only show values tidySystem corrected (clamped, swapped)
+  $$('[data-ds]').forEach((el) => { if (el === document.activeElement) return; const v = dsRead(after, el.dataset.ds); const s = v == null ? '' : String(v); if (el.value !== s) el.value = s; });
+  return after;
+}
+document.addEventListener('change', (e) => {
+  const t = e.target, path = t.dataset && t.dataset.ds;
+  if (!path || persist.readOnly) return;
+  dsEdit((sys) => dsWrite(sys, path, t.value));
+});
+ACT.dsRuleAdd = (a) => {
+  if (!canEdit()) return;
+  const k = a.dataset.k === 'do' ? 'do' : 'dont', inp = $(`[data-ds-new="${k}"]`), text = inp ? inp.value.trim() : '';
+  if (!text) { inp && inp.focus(); return; }
+  const b = brand(); if (!b.designSystem) return;
+  if ((b.designSystem.rules || []).length >= LIMITS.rules) { toast(`A design system holds up to ${LIMITS.rules} rules.`); return; }
+  if ((b.designSystem.rules || []).some((r) => r.text.toLowerCase() === text.toLowerCase())) { toast('That rule is already in the list.'); return; }
+  dsEdit((sys) => { sys.rules.push({ text, kind: k, by: 'user' }); });
+  const n = $(`[data-ds-new="${k}"]`); n && !n.disabled && n.focus();
+};
+ACT.dsRuleDel = (a) => {
+  if (!canEdit()) return;
+  const i = +a.dataset.i;
+  dsEdit((sys) => { if (!sys.rules[i]) return false; sys.rules.splice(i, 1); });
+};
+ACT.dsPatDel = (a) => {
+  if (!canEdit()) return;
+  const id = a.dataset.id;
+  const done = dsEdit((sys) => { const i = sys.layout.patterns.findIndex((p) => p.id === id); if (i < 0) return false; sys.layout.patterns.splice(i, 1); });
+  if (done) toast('Pattern deleted');
+};
+document.addEventListener('keydown', (e) => {
+  const k = e.target && e.target.dataset && e.target.dataset.dsNew;
+  if (k && e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ACT.dsRuleAdd({ dataset: { k } }); }
+  // the Sources file pickers are labels: Enter or Space opens them like a button
+  const f = e.target && e.target.closest && e.target.closest('label.ds-src-file');
+  if (f && (e.key === 'Enter' || e.key === ' ') && !e.isComposing) { e.preventDefault(); const inp = $('input[type=file]', f); if (inp && !inp.disabled) inp.click(); }
+});
+
+/* ----- sources: inspiration pictures and the brand guide. Adding either never starts an analysis; it only marks the system out of date. ----- */
+const dsBrandById = (bid) => S.brands.find((x) => x.id === bid); // the brand by id, as it is now (null when deleted)
+async function dsAddPictures(files) {
+  if (!canEdit()) return;
+  const bid = brand().id;
+  let added = 0, bad = false, full = false;
+  for (const f of files) {
+    if (!DS_PIC_TYPE.test(f.type || '')) { bad = true; continue; }
+    const now = dsBrandById(bid);
+    if (!now) return;
+    if (dsPics(now).length >= MAX_INSPIRATION) { full = true; break; }
+    const pic = await dsJpeg(await dsDataUrl(f), 1, 1080, 0.72);
+    if (!pic || pic.w < 100 || pic.h < 100) { bad = true; continue; }
+    const b = dsBrandById(bid);
+    if (!b) return;
+    if (dsPics(b).length >= MAX_INSPIRATION) { full = true; break; } // filled up while this one was read
+    const id = ('i' + uid()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+    const name = String(f.name || '').replace(/\.[^.]+$/, '').trim().slice(0, 40) || 'Picture';
+    b.inspiration = dsPics(b).concat({ id, name, src: pic.image, w: pic.w, h: pic.h, at: Date.now() });
+    added++;
+  }
+  if (added) save();
+  dsDraw(bid);
+  if (full) toast('Inspiration is full (8 pictures). Remove one to add another.');
+  else if (bad) toast('Choose PNG, JPG or WebP pictures');
+  else if (added) toast(added === 1 ? 'Picture added' : added + ' pictures added');
+}
+async function dsAddGuide(file) {
+  if (!canEdit()) return;
+  const bid = brand().id;
+  if (DSGUIDE.has(bid)) return; // a guide is already being read for this brand
+  DSGUIDE.set(bid, ''); dsDraw(bid);
+  try {
+    const { guide } = await readBrandGuide(file, (i, t) => {
+      DSGUIDE.set(bid, t);
+      const el = dsOnTab(bid) && $('#dsGuideProg .ds-src-step');
+      if (el) el.textContent = t;
+    });
+    if (!guide || !guide.isBrandGuide) { toast('This does not look like a brand guide.'); return; }
+    const gd = tidyGuideDesign({ ...(guide.design || {}), name: file.name, at: Date.now() });
+    if (!gd) { toast('This document says nothing about layout, imagery or logo use.'); return; }
+    const b = dsBrandById(bid);
+    if (!b) return; // the brand was deleted meanwhile
+    b.guideDesign = gd; // the brand kit (colors, fonts, voice, logos) is left as it is
+    save();
+    toast('Brand guide added');
+  } catch (e) {
+    toast((e && e.message) || 'Could not read this PDF');
+  } finally {
+    DSGUIDE.delete(bid); dsDraw(bid);
+  }
+}
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (!t || persist.readOnly) return;
+  if (t.id === 'dsInspUp' && t.files && t.files.length) { const files = [...t.files]; t.value = ''; dsAddPictures(files); return; }
+  if (t.id === 'dsGuideUp' && t.files && t.files.length) { const f = t.files[0]; t.value = ''; dsAddGuide(f); return; }
+  const pid = t.dataset && t.dataset.dsInsp;
+  if (!pid || !canEdit()) return;
+  // a name is not part of the signature: renaming never marks the system out of date, and nothing is redrawn
+  const p = dsPics(brand()).find((x) => x.id === pid);
+  if (!p) return;
+  const name = t.value.trim().slice(0, 40) || 'Picture';
+  t.value = name;
+  if (name !== p.name) { p.name = name; save(); }
+});
+ACT.dsInspDel = (a) => {
+  if (!canEdit()) return;
+  const b = brand(), list = dsPics(b), next = list.filter((p) => p.id !== a.dataset.id);
+  if (next.length === list.length) return;
+  b.inspiration = next; save(); rerender();
+  const add = $('#dsInspUp'); add && add.closest('label').focus();
+  toast('Picture removed');
+};
+ACT.dsGuideDel = () => {
+  if (!canEdit()) return;
+  const b = brand();
+  if (DSGUIDE.has(b.id) || !b.guideDesign) return;
+  delete b.guideDesign; save(); rerender();
+  const add = $('#dsGuideUp'); add && add.closest('label').focus();
+  toast('Brand guide removed');
+};
+
 PAGES.brand = {
   t: 'Brand kit', get s() { return 'Colors, fonts, logos and templates for ' + brand().name + '. Nothing here is shared with your other brands.'; },
   actions: () => `<button class="btn secondary hide-sm" data-act="manageBrands">${ic('layers')}Manage brands</button><button class="btn primary" data-act="addBrand">${ic('plus')}New brand</button>`,
@@ -1078,7 +1631,6 @@ function openBrands() {
   const view = () => `<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
     <div class="mb" style="gap:12px">
       <div class="br-list">${S.brands.map(row).join('')}</div>
-      ${S.brands.length > 1 ? `<button class="br-all ${allOn() ? 'on' : ''}" data-act="allBrands">${allAv('md')}<span class="grow"><b>All brands in one workspace</b><small>Overview, planner and designs of every brand together</small></span>${allOn() ? '<span class="badge b-Published">On</span>' : ic('chevR', 16)}</button>` : ''}
     </div>
     <div class="mf"><button class="btn secondary" data-close>Close</button><button class="btn primary" data-act="addBrand">${ic('plus', 18)}Add brand</button></div>`;
   let bg = null, from = null;
@@ -1326,6 +1878,8 @@ function openGuideImport(file) {
       logos: st.logos.filter((l) => l.on).map((l) => ({ id: 'l' + uid(), name: l.name.slice(0, 40), kind: l.kind, src: l.src })),
     });
     if (cols.length) b.colors = mkColors(cols.map((c) => [c.name, c.hex]));
+    const gd = tidyGuideDesign({ ...(g.design || {}), name: file.name, at: Date.now() });
+    if (gd) b.guideDesign = gd; // what the guide says about layout, imagery and logo use, for the Design system tab
     closeAll(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; renderSide(); toast('“' + b.name + '” created from its brand guide');
     location.hash === '#/brand' ? route() : (location.hash = '#/brand');
   };
@@ -1352,7 +1906,6 @@ Object.assign(ACT, {
     S.active = a.dataset.id; save(); ST.q = ''; ST.tab = 0; P.tray = 'designs'; renderSide(); route(); toast('Switched to ' + brand().name);
   },
   addBrand: () => { closeModals(); closeDrawer(); openAddBrand(); },
-  allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
   brandPhoto: (a) => { const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (b && canEdit()) openBrandPhoto(b); },
   brMove: (a) => { const i = S.brands.findIndex((x) => x.id === a.dataset.id), j = i + +a.dataset.n; if (i < 0 || j < 0 || j >= S.brands.length) return; const [m] = S.brands.splice(i, 1); S.brands.splice(j, 0, m); save(); renderSide(); BR.paint && BR.paint(); },
   manageBrands: () => { closeModals(); closeDrawer(); openBrands(); },
@@ -1482,7 +2035,7 @@ document.addEventListener('change', (e) => {
   const t = e.target, d = t.dataset || {};
   if (d.b === 'name') { const b = brand(); b.name = t.value.trim() || b.name; t.value = b.name; b.initials = initialsOf(b.name); const h = $('#bkName'); h && (h.textContent = b.name); refreshChrome(); save(); }
   else if (d.b) { const sub = $('.bk-head .sm-t'); if (sub && (d.b === 'industry' || d.b === 'website')) sub.textContent = [brand().industry, brand().website].filter(Boolean).join(' · ') || 'Add your brand details below'; save(); }
-  if (d.ci) { refreshChrome(); const pv = $('#bkPreview'); pv && (pv.innerHTML = bkPreview()); save(); }
+  if (d.ci) { refreshChrome(); save(); }
   if (d.bf) { brand().fonts[d.bf] = t.value; save(); rerender(); }
   if (t.id === 'logoUp' && t.files.length) {
     const kind = $('#logoKind').value, files = [...t.files]; let n = 0;
@@ -2073,6 +2626,7 @@ ACT.figma = () => openFigma();
 /* ---------- Schedule + export modals (used by the editor) ---------- */
 const CAPS = ['New: CPI is out at 13:30 GMT. Here’s the high-impact calendar for today. Save this post and trade with a plan.', 'Today’s market movers, in one glance. Which release are you watching?'];
 function openSchedule(d) {
+  if (blockSchedule(d, toast)) return;
   const sel = new Set(Object.keys(S.platforms).filter((k) => S.platforms[k]).slice(0, 3)), dd = iso(addD(new Date(), 1));
   modal(`<div class="mh"><h2>Schedule post</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
   <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 110, 140)}<div class="grow"><span class="label">Platforms</span><div class="chips" id="scPf">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="chip ${sel.has(k) ? 'on' : ''}" data-k="${k}">${v.n}</button>`).join('')}</div></div></div>
@@ -2115,9 +2669,10 @@ const dim = () => RATIOS[ED.d.ratio];
 const curP = () => ED.d.pages[ED.pi];
 const curL = () => ED.sel && curP().layers.find((l) => l.id === ED.sel);
 const elOf = (id) => $(`#poster .ly[data-id="${id}"]`);
-/** Undo history: pages and canvas size (Magic resize changes the ratio) */
-const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages });
-const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
+/** Undo history: pages and canvas size (Magic resize changes the ratio), a footage design's footage (look) and the captions (d.captions) */
+const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages, ...(ED.d.footage ? { f: ED.d.footage } : {}), ...(ED.d.captions ? { c: ED.d.captions } : {}), ...(ED.d.motion ? { a: ED.d.audio || null } : {}) }); // a: null when the design has no sound settings yet, so Undo can remove the ones added after
+/** a: an animated design's sound settings (music, voice, speed…), undoable since the Studio Agent phase 4 */
+const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (v.c) ED.d.captions = v.c; if ('a' in v) { if (v.a) ED.d.audio = v.a; else delete ED.d.audio; } if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
 const hex = (v) => {
   v = String(v || '').trim();
   if (/^#[0-9a-f]{6}$/i.test(v)) return v;
@@ -2231,7 +2786,7 @@ function edPanel() {
   if (isAg) return agPanel(p);
   if (t === 'templates') {
     const bt = brand().templates;
-    h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save slide as brand template</button>
+    h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save page as brand template</button>
     <span class="label" style="margin-top:6px">${esc(brand().name)} templates</span>
     ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="edBTpl" data-id="${x.id}">${btThumb(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}`;
   }
@@ -2244,7 +2799,7 @@ function edPanel() {
     const fg = ED.d.pages.map((pg, i) => ({ pg, i, f: pg.figma || (i === 0 && ED.d.figma) })).filter((x) => x.f);
     FIGSYNC && FIGSYNC.check(ED.d); // flags slides whose Figma file changed since the import (not defined yet when the editor opens at startup)
     h = `<h3 class="row" style="color:var(--text-2)">${ic('figma', 20)}<span style="color:var(--text-1)">Figma</span></h3><p class="sm-t muted">Bring frames from your Figma files in as editable slides.</p><button class="btn secondary" data-act="edFigmaImport">${ic('link')}Paste link &amp; import</button>
-      <span class="label" style="margin-top:6px">Linked frames</span>${fg.length ? fg.map(({ f, i }) => `<div class="idea"><div class="row sp"><b class="sm-t">Slide ${i + 1} · ${esc(f.file || 'Figma')}</b><span class="badge ${f.sync === 'Changed in Figma' ? 'b-warn' : 'b-Published'}">${f.sync || 'In sync'}</span></div><button class="btn secondary sm" data-act="edResync" data-i="${i}">${ic('refresh', 16)}Re-sync from Figma</button></div>`).join('') : '<p class="sm-t muted">No linked frames in this design yet.</p>'}
+      <span class="label" style="margin-top:6px">Linked frames</span>${fg.length ? fg.map(({ f, i }) => `<div class="idea"><div class="row sp"><b class="sm-t">Page ${i + 1} · ${esc(f.file || 'Figma')}</b><span class="badge ${f.sync === 'Changed in Figma' ? 'b-warn' : 'b-Published'}">${f.sync || 'In sync'}</span></div><button class="btn secondary sm" data-act="edResync" data-i="${i}">${ic('refresh', 16)}Re-sync from Figma</button></div>`).join('') : '<p class="sm-t muted">No linked frames in this design yet.</p>'}
       <div class="note">${ic('figma', 16)}<span>Edit here like in Figma: drag, resize, rotate, change text. Re-sync pulls updated frames and keeps your caption and schedule.</span></div>`;
   }
   if (t === 'brand') {
@@ -2258,10 +2813,10 @@ function edPanel() {
   }
   if (t === 'data') {
     const live = ED.d.tpl === 'calendar';
-    h = `<h3>Live data</h3><p class="sm-t muted">Economic calendar feed. ${live ? 'Changes update the slide instantly.' : 'Apply it to build a calendar slide.'}</p>
+    h = `<h3>Live data</h3><p class="sm-t muted">Economic calendar feed. ${live ? 'Changes update the page instantly.' : 'Apply it to build a calendar page.'}</p>
       <div class="seg"><button class="${ED.lang === 'en' ? 'on' : ''}" data-act="edLang" data-l="en">English</button><button class="${ED.lang === 'ar' ? 'on' : ''}" data-act="edLang" data-l="ar">العربية</button></div>
       ${EVENTS.map((e) => `<button class="evrow" data-act="edEv" data-id="${e.id}"><span class="cbx ${e.on ? 'on' : ''}">${e.on ? ic('check', 12) : ''}</span><span class="cur" style="background:${CUR_COLOR[e.cur]}">${e.cur}</span><span class="grow" style="text-align:left">${ED.lang === 'ar' ? e.ar : e.en}</span><span class="xs-t muted">${e.t}</span></button>`).join('')}
-      ${live ? '' : `<button class="btn primary" data-act="edApplyCal">Replace slide with calendar</button>`}<p class="xs-t muted">Times are GMT. Source: Forex Factory feed (as in the current Calendar Studio).</p>`;
+      ${live ? '' : `<button class="btn secondary" data-act="edApplyCal">Replace page with calendar</button>`}<p class="xs-t muted">Times are GMT. Source: Forex Factory feed (as in the current Calendar Studio).</p>`;
   }
   p.innerHTML = h;
 }
@@ -2351,7 +2906,7 @@ Object.assign(ACT, {
   edResync: (a) => FIGSYNC.resync(ED.d, +a.dataset.i),
   edLang: (a) => { ED.lang = a.dataset.l; ED.d.tpl === 'calendar' ? rebuildCalendar() : edPanel(); },
   edEv: (a) => { const e = EVENTS.find((x) => x.id === a.dataset.id); e.on = e.on ? 0 : 1; ED.d.tpl === 'calendar' ? rebuildCalendar() : edPanel(); },
-  edApplyCal: () => { ED.d.tpl = 'calendar'; rebuildCalendar(); toast('Calendar slide built from the live feed'); },
+  edApplyCal: () => { ED.d.tpl = 'calendar'; rebuildCalendar(); toast('Calendar page built from the live feed'); },
   edPage: (a) => { ED.pi = +a.dataset.i; ED.sel = null; edAll(); },
   edAddPage: () => { const [w, h] = dim(); mutate(() => { ED.d.pages.push({ id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = ED.d.pages.length - 1; ED.sel = null; }); },
   edDupPage: () => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(curP()))); c.id = uid(); ED.d.pages.splice(ED.pi + 1, 0, c); ED.pi++; ED.sel = null; }),
@@ -2607,7 +3162,7 @@ function agEmpty() {
     </div>`;
 }
 function agMsg(m, i, last) {
-  if (m.r === 'u') return `<div class="ag-u">${esc(m.t)}</div>`;
+  if (m.r === 'u') return `${m.refs && m.refs.length ? `<div class="ag-u-refs">${m.refs.map((r) => `<img src="${esc(r)}" alt="Inspiration picture">`).join('')}</div>` : ''}${m.t ? `<div class="ag-u">${esc(m.t)}</div>` : ''}`;
   const steps = m.steps || [], n = steps.length, fails = steps.filter((s) => s.err).length, cur = steps.find((s) => !s.done), running = !m.done;
   const head = `<div class="ag-who"><span class="ag-av">${ic('studio', 12)}</span><b>Agent</b>${m.model ? `<span class="ag-mdl">${esc(m.model)}</span>` : ''}${running ? '<span class="ag-live"><i></i>Working</span>' : ''}</div>`;
   // the work log: one live line while it runs, then a summary that opens on the full list
@@ -2622,14 +3177,29 @@ function agMsg(m, i, last) {
   const think = running && !n && !m.t ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : '';
   const text = m.t ? `<div class="ag-txt">${esc(m.t)}</div>` : '';
   const cap = m.caption ? `<div class="ag-cap"><div class="ag-cap-h"><span>Caption</span><span class="grow"></span><button class="ag-mini" data-act="agCopy" data-i="${i}">${ic('copy', 13)}Copy</button>${m.ai || /Here is/.test(m.t) ? `<button class="ag-mini" data-act="agSched" data-i="${i}">${ic('clock', 13)}Schedule</button>` : ''}</div><p>${esc(m.caption)}</p></div>` : '';
+  const plan = m.proposal ? agPlanCard(m.proposal, i) : '';
   const foot = m.after != null && !m.undone ? `<div class="ag-foot"><button class="ag-mini" data-act="agUndo" data-i="${i}">${ic('undo', 13)}Undo</button></div>` : m.undone ? `<div class="ag-foot"><span class="ag-undone">${ic('undo', 13)}Undone</span></div>` : '';
   const chips = last && m.done && m.chips && !m.undone ? `<div class="ag-sugs">${m.chips.map((k) => `<button class="ag-sug" data-act="agDo" data-k="${k}">${esc(AG_LABEL[k])}</button>`).join('')}</div>` : '';
-  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${foot}${chips}</div></div>`;
+  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${plan}${foot}${chips}</div></div>`;
 }
 // the work log stays open or closed across re-renders
 document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('ag-log') && ED.d && ED.d.chat) { const m = ED.d.chat[+d.dataset.i]; if (m) m.logOpen = d.open; } }, true);
+/** A post or automation the agent proposed (agent-plan.js): Review opens the studio's own dialog filled in; nothing is created before the user confirms there */
+function agPlanCard(p, i) {
+  const d = getD(p.d), post = p.kind === 'post', day = (k) => fmt(new Date(k + 'T00:00'), { weekday: 'short', day: 'numeric', month: 'short' });
+  const c = cardLines(p, { designName: d ? d.name : '', dateLabel: day, netName: (k) => (PLATFORMS[k] || {}).n });
+  const lines = c.lines.map((l, k) => `<div class="ag-plan-l${post ? (k === 2 ? ' ag-plan-c' : '') : k === 2 && p.caption && p.caption.mode !== 'ai' ? ' ag-plan-c' : ''}">${esc(l)}</div>`).join('');
+  let f;
+  if (!d) f = '<span class="ag-plan-st">Design deleted</span>';
+  else if (p.state === 'done') f = `<span class="ag-plan-st">${ic('check', 13)}${post ? 'Scheduled' : 'Created'}</span><button class="ag-mini" data-act="agPlanGo" data-i="${i}">${post ? 'Open planner' : 'Open automations'}</button>`;
+  else if (p.state === 'dismissed') f = '<span class="ag-plan-st">Dismissed</span>';
+  else f = persist.readOnly ? '' : `<button class="btn primary sm" data-act="agPlanOpen" data-i="${i}">${ic(post ? 'clock' : 'refresh', 14)}${post ? 'Review and schedule' : 'Review automation'}</button><button class="ag-mini" data-act="agPlanDismiss" data-i="${i}">Dismiss</button>`;
+  return `<div class="ag-cap ag-plan"><div class="ag-cap-h"><span>${c.title}</span><span class="grow ag-plan-sub">${esc(c.sub || '')}</span></div><div class="ag-plan-b">${lines}</div>${f ? `<div class="ag-plan-f">${f}</div>` : ''}</div>`;
+}
 function agThread() {
   const th = $('#agTh'); if (!th) return; const ch = ED.d.chat || [];
+  agHead();
+  if (ED.agHist) { th.innerHTML = historyHTML({ ic, esc, when: (at) => agoOf({ at }) }, ED.d); th.scrollTop = 0; ED._agn = null; agComposer(); return; }
   if (!ch.length && th.querySelector('.ag-empty')) ED._agTop = th.scrollTop; else if (ch.length) ED._agTop = 0;
   th.innerHTML = ch.length ? ch.map((m, i) => agMsg(m, i, i === ch.length - 1)).join('') : agEmpty();
   if (ch.length) { const n = ch.length + ':' + ch.reduce((a, m) => a + (m.steps ? m.steps.length : 0) + (m.done ? 1 : 0), 0); if (ED._agn !== n) { ED._agn = n; th.scrollTop = th.scrollHeight; } } else { th.scrollTop = ED._agTop || 0; ED._agn = null; }
@@ -2637,23 +3207,58 @@ function agThread() {
 }
 function agComposer() {
   const b = $('#agSend'), i = $('#agIn'); if (!b) return;
-  b.innerHTML = ic(ED.agBusy ? 'stop' : 'arrowUp', 16); b.title = ED.agBusy ? 'Stop' : 'Send'; b.setAttribute('aria-label', b.title); b.disabled = !ED.agBusy && !(i && i.value.trim());
+  b.innerHTML = ic(ED.agBusy ? 'stop' : 'arrowUp', 16); b.title = ED.agBusy ? 'Stop' : 'Send'; b.setAttribute('aria-label', b.title); b.disabled = !ED.agBusy && !(i && i.value.trim()) && !(ED.agRefs || []).length;
 }
 function agCtx() {
-  const e = $('#agCtx'); if (!e) return; const l = curL(), key = (l ? l.id + l.name : '') + '|' + ED.agScope + '|' + ED.pi + '|' + ED.d.pages.length;
+  const e = $('#agCtx'); if (!e) return; const l = curL(), key = (l ? l.id + l.name : '') + '|' + ED.agScope + '|' + ED.pi + '|' + ED.d.pages.length + '|' + agWords().chip;
   if (ED._agk === key) return; ED._agk = key;
   e.innerHTML = l ? `<button class="ag-chip on" data-act="agClearSel" title="Deselect to work on the whole slide">${ic('layers', 13)}${esc(l.name)}${ic('x', 12)}</button>`
-    : `<button class="ag-chip" data-act="agScope" title="Choose what the agent edits">${ic('layout', 13)}${ED.agScope === 'all' ? 'All ' + ED.d.pages.length + ' slides' : 'Slide ' + (ED.pi + 1)}${ic('chevD', 12)}</button>`;
+    : `<button class="ag-chip" data-act="agScope" title="${esc(agWords().scopeTitle)}">${ic('layout', 13)}${esc(agWords().chip)}${ic('chevD', 12)}</button>`;
 }
+/** The panel's words for the agent's mode: slides in Design, scenes in Animate (agent-motion.js) */
+const agWords = () => agentCopy(AGAPI && ED.d ? AGAPI.mode() : 'design', ED.pi, ED.d ? ED.d.pages.length : 1, ED.agScope);
 function agPanel(p) {
   const d = ED.d; if (ED.agOpen === undefined) ED.agOpen = ''; ED.agScope = ED.agScope || 'slide'; ED.agDraft = ED.agDraft || ''; d.chat = d.chat || [];
   d.chat.forEach((m) => { if (m.r === 'a' && !m.done && !ED.agBusy) { m.done = true; m.t = m.t || 'Stopped. Nothing was changed.'; } });
-  p.innerHTML = `<div class="ag"><div class="ag-h"><div class="grow"><b>Agent</b><small>Edits slide ${ED.pi + 1} of ${d.pages.length}</small></div>
-    <button class="btn ghost icon sm" data-act="agNew" title="New chat">${ic('plus', 18)}</button></div>
+  p.innerHTML = `<div class="ag"><div class="ag-h" id="agHead"></div>
     <div class="ag-th" id="agTh" role="log" aria-live="polite"></div>
-    <div class="ag-cmp"><div class="ag-box"><textarea id="agIn" rows="2" maxlength="600" placeholder="Ask for changes" aria-label="Ask the agent for changes">${esc(ED.agDraft)}</textarea>
-      <div class="ag-bar"><span id="agCtx" style="min-width:0;display:flex"></span><span class="grow"></span><button class="ag-send" id="agSend" data-act="agSend" disabled></button></div></div><p class="ag-foot2">Enter to send · Shift+Enter for a new line</p></div></div>`;
-  ED._agk = null; agCtx(); agThread(); const i = $('#agIn'); if (i) { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 140) + 'px'; }
+    <div class="ag-cmp"><div class="ag-box" id="agBox"><div id="agRefs"></div><textarea id="agIn" rows="2" maxlength="600" placeholder="${esc(agWords().placeholder)}" aria-label="Ask the agent for changes">${esc(ED.agDraft)}</textarea>
+      <div class="ag-bar"><button class="ag-att" data-act="agAttach" title="Add inspiration pictures (PNG, JPEG or WebP, up to ${REFS_MAX})" aria-label="Add inspiration pictures">${ic('image', 16)}</button><span id="agCtx" style="min-width:0;display:flex"></span><span class="grow"></span><button class="ag-send" id="agSend" data-act="agSend" disabled></button></div></div><p class="ag-foot2">Enter to send · Shift+Enter for a new line</p></div></div>`;
+  ED._agk = null; agCtx(); agRefsDraw(); agThread(); const i = $('#agIn'); if (i) { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 140) + 'px'; }
+}
+
+/** The header: title, History, New chat. In the history, the title says so and New chat still starts a fresh one */
+function agHead() {
+  const e = $('#agHead'); if (!e) return; const n = ((ED.d && ED.d.chats) || []).length, key = (ED.agHist ? 'h' : 'c') + n + agWords().sub;
+  if (e.dataset.k === key) return; e.dataset.k = key;
+  e.innerHTML = `<div class="grow"><b>${ED.agHist ? 'Chat history' : 'Agent'}</b><small>${ED.agHist ? (n ? `${n} past chat${n === 1 ? '' : 's'} on this design` : 'Past chats on this design') : esc(agWords().sub)}</small></div>
+    <button class="btn ghost icon sm${ED.agHist ? ' on' : ''}" data-act="agHist" title="${ED.agHist ? 'Back to the chat' : 'Chat history'}" aria-pressed="${!!ED.agHist}">${ic(ED.agHist ? 'x' : 'history', 18)}</button>
+    <button class="btn ghost icon sm" data-act="agNew" title="New chat">${ic('plus', 18)}</button>`;
+}
+function agRefsDraw() { const e = $('#agRefs'); if (e) e.innerHTML = refsStripHTML({ ic, esc }, ED.agRefs || [], 'agRefDrop'); agComposer(); }
+/** A picture the user adds: { full } for the model (JPEG, long side ≤ 1280 px), { thumb } for the chat (≤ 160 px) */
+async function readRef(file) {
+  if (!/^image\/(png|jpeg|webp|gif|avif|bmp)$/.test(file.type || '')) throw new Error('not a picture');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('unreadable')); i.src = url; });
+    const draw = (max, q) => { const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k)); const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', q); };
+    return { full: draw(1280, 0.85), thumb: draw(160, 0.7) };
+  } finally { URL.revokeObjectURL(url); }
+}
+/** Reads the files and adds them to `list`; says when some were not pictures or past the limit */
+async function takeRefs(list, files) {
+  const pics = [...(files || [])].filter((f) => /^image\//.test(f.type || ''));
+  if (!pics.length) { if ((files || []).length) toast('Add PNG, JPEG or WebP pictures'); return list || []; }
+  const read = (await Promise.all(pics.map((f) => readRef(f).catch(() => null)))).filter(Boolean);
+  const r = addRefs(list, read);
+  if (r.dropped) toast(`Up to ${REFS_MAX} pictures per message`); else if (read.length < pics.length) toast('Some pictures could not be read');
+  return r.list;
+}
+/** Opens the file picker for pictures */
+function pickPictures(done) {
+  const f = document.createElement('input'); f.type = 'file'; f.accept = 'image/png,image/jpeg,image/webp'; f.multiple = true;
+  f.onchange = () => done(f.files); f.click();
 }
 
 /* ---------- running ---------- */
@@ -2681,8 +3286,8 @@ function agStop() {
   if (m && !m.done) { m.done = true; m.t = 'Stopped. Nothing was changed.'; } agThread();
 }
 function agSubmit() {
-  const i = $('#agIn'); if (!i) return; const t = i.value.trim(); if (!t || ED.agBusy) return;
-  i.value = ''; ED.agDraft = ''; i.style.height = 'auto'; agRun(t);
+  const i = $('#agIn'); if (!i) return; const t = i.value.trim(); if ((!t && !(ED.agRefs || []).length) || ED.agBusy) return;
+  i.value = ''; ED.agDraft = ''; i.style.height = 'auto'; agRun(t || 'Use these pictures as inspiration for this design');
 }
 Object.assign(ACT, {
   agGrp: (a) => {
@@ -2695,8 +3300,17 @@ Object.assign(ACT, {
   },
   agDo: (a) => agRun(AG_LABEL[a.dataset.k], a.dataset.k),
   agSend: () => (ED.agBusy ? agStop() : agSubmit()),
-  agNew: () => { ED.agRun++; ED.agBusy = false; ED.d.chat = []; agThread(); const i = $('#agIn'); i && i.focus(); },
-  agScope: () => { if (ED.d.pages.length < 2) return toast('This design has one slide'); ED.agScope = ED.agScope === 'all' ? 'slide' : 'all'; ED._agk = null; agCtx(); toast(ED.agScope === 'all' ? 'The agent will edit all slides' : 'The agent will edit this slide'); },
+  agNew: () => { ED.agRun++; ED.agBusy = false; const kept = archiveChat(ED.d); ED.agHist = false; if (kept) { touch(); save(); } agThread(); const i = $('#agIn'); i && i.focus(); },
+  agHist: () => { ED.agHist = !ED.agHist; agThread(); },
+  agHistOpen: (a) => { if (ED.agBusy) return toast('The agent is still working. Press stop first.'); if (!restoreChat(ED.d, a.dataset.id)) return; ED.agHist = false; touch(); save(); agThread(); },
+  agHistDrop: (a) => { if (dropChat(ED.d, a.dataset.id)) { touch(); save(); agThread(); toast('Chat deleted'); } },
+  agAttach: () => pickPictures(async (files) => { ED.agRefs = await takeRefs(ED.agRefs, files); agRefsDraw(); const i = $('#agIn'); i && i.focus(); }),
+  agRefDrop: (a) => { (ED.agRefs || []).splice(+a.dataset.i, 1); agRefsDraw(); },
+  agScope: () => {
+    const sc = AGAPI && AGAPI.mode() === 'animate' ? 'scene' : 'slide';
+    if (ED.d.pages.length < 2) return toast(sc === 'scene' ? 'This video has one scene' : 'This design has one slide');
+    ED.agScope = ED.agScope === 'all' ? 'slide' : 'all'; ED._agk = null; agCtx(); toast(ED.agScope === 'all' ? `The agent will edit all ${sc}s` : `The agent will edit this ${sc}`);
+  },
   agClearSel: () => { ED.sel = null; drawSel(); edProps(); },
   agUndo: (a) => {
     const m = ED.d.chat[+a.dataset.i]; if (!m || m.undone) return;
@@ -2704,18 +3318,36 @@ Object.assign(ACT, {
     doUndo(); if (m.ratioBefore) { ED.d.ratio = m.ratioBefore; edAll(); fitZoom(); } m.undone = true; agThread(); toast('Change undone');
   },
   agCopy: (a) => { const m = ED.d.chat[+a.dataset.i]; navigator.clipboard.writeText(m.caption).then(() => toast('Copied'), () => toast('Could not copy')); },
+  agPlanOpen: (a) => {
+    const m = ED.d.chat[+a.dataset.i], p = m && m.proposal; if (!p) return;
+    const d = getD(p.d); if (!d) { toast('This design was deleted'); return agThread(); }
+    // the dialog may finish after the user left the editor: the card's design is still the one to save
+    const done = () => { p.state = 'done'; if (ED.d === d) { touch(); agThread(); } save(); };
+    if (p.kind === 'post') openSchedule(d, { prefill: { pf: p.networks, cap: p.caption, fc: p.firstComment, date: p.date, time: p.time }, onDone: (k) => { if (k === 'schedule' || k === 'now') done(); } });
+    else if (AUTOS) AUTOS.open(null, null, { name: p.name, d: p.d, cadence: p.cadence, pf: p.networks, caption: p.caption, startDate: p.startDate, endDate: p.endDate, onDone: done });
+  },
+  agPlanDismiss: (a) => { const m = ED.d.chat[+a.dataset.i]; if (!m || !m.proposal) return; m.proposal.state = 'dismissed'; touch(); save(); agThread(); },
+  agPlanGo: (a) => { const m = ED.d.chat[+a.dataset.i]; if (m && m.proposal) location.hash = m.proposal.kind === 'post' ? '#/planner' : '#/automations'; },
   agSched: (a) => { const m = ED.d.chat[+a.dataset.i]; openSchedule(ED.d); const c = $('#scCap'); if (c) c.value = m.caption; },
 });
 document.addEventListener('input', (e) => {
   const t = e.target; if (t.id !== 'agIn') return;
   ED.agDraft = t.value; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 140) + 'px'; agComposer();
 });
+/* pictures pasted into the box, or dropped on it, are added as inspiration */
+document.addEventListener('paste', async (e) => {
+  if (e.target.id !== 'agIn') return; const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => /^image\//.test(f.type));
+  if (!files.length) return; e.preventDefault(); ED.agRefs = await takeRefs(ED.agRefs, files); agRefsDraw();
+});
+document.addEventListener('dragover', (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (b && [...(e.dataTransfer.types || [])].includes('Files')) { e.preventDefault(); b.classList.add('drop'); } });
+document.addEventListener('dragleave', (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (b && !b.contains(e.relatedTarget)) b.classList.remove('drop'); });
+document.addEventListener('drop', async (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (!b) return; e.preventDefault(); e.stopPropagation(); b.classList.remove('drop'); ED.agRefs = await takeRefs(ED.agRefs, e.dataTransfer.files); agRefsDraw(); }, true);
 document.addEventListener('keydown', (e) => {
   if (e.target.id === 'agIn' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); agSubmit(); }
 });
 /* leaving or switching designs cancels any running agent */
 const _openEditor2 = openEditor;
-openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; ED.agDraft = ''; ED._agk = null; _openEditor2(id); };
+openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; ED.agDraft = ''; ED._agk = null; ED.agHist = false; ED.agRefs = []; _openEditor2(id); };
 
 
 
@@ -2819,8 +3451,8 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     [['heading', 'h', 'T'], ['subheading', 's'], ['body text', 'b']].forEach(([t, x, s]) => a('Create', 'Add ' + t, () => ACT.edText({ dataset: { k: x } }), s));
     Object.entries(SHAPES).forEach(([x, n]) => a('Create', 'Add shape: ' + n.toLowerCase(), () => ACT.edShape({ dataset: { k: x } })));
     Object.keys(RATIOS).forEach((r) => a('Canvas', 'Resize to ' + r, () => magicResize(r)));
-    a('Slides', 'Add slide', () => ACT.edAddPage()); a('Slides', 'Duplicate slide', () => ACT.edDupPage());
-    RAIL.forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
+    a('Pages', 'Add page', () => ACT.edAddPage()); a('Pages', 'Duplicate page', () => ACT.edDupPage());
+    (ED.d && VS.source() ? VS.rail() : RAIL).forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
     k.colors.forEach((c) => a('Brand color', 'Apply ' + c + ' to selection', () => ACT.edColor({ dataset: { c } }), '', c));
     [['Undo', doUndo, 'Ctrl Z'], ['Redo', doRedo, 'Ctrl Shift Z'], ['Duplicate layer', dupSel, 'Ctrl D'], ['Delete layer', delSel, 'Del'], ['Fit to screen', () => ACT.edFit(), 'Ctrl 0'], ['Zoom to selection', () => zoomToSelection(), 'Shift 2'], ['Show or hide rulers', () => toggleRulers(), 'Shift R'], ['Toggle safe zones', () => ACT.edSafe()], ['Export', () => openExport(ED.d, ED.pi), 'Ctrl E'], ['Schedule post', () => openSchedule(ED.d)], ['Switch light / dark theme', () => setTheme(S.theme === 'dark' ? 'light' : 'dark')], ['Keyboard shortcuts', kbd, '?']].forEach(([t, fn, s]) => a('Action', t, fn, s));
     return C;
@@ -3029,11 +3661,11 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
       <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
-      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
+      <label class="lab">Pages<select class="field" id="exP"><option value="cur">Current page (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} pages</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
-        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
+        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in page order.` : 'Same layout, fonts and images as the canvas.'; };
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
@@ -3555,6 +4187,7 @@ Object.assign(IC, {
   }
   const level = (s) => (s > .72 ? 'High' : s > .5 ? 'Good' : 'Low');
   const taken = (nets, key, t, skip) => S.posts.some((p) => p !== skip && p.date === key && p.pf.some((k) => nets.includes(k)) && Math.abs(tmin(p.time) - tmin(t)) < 60);
+  PLAN = { conn, bestTimes: (nets, key, n) => bestTimes(nets, key, n) }; // the agent finds its own free slot in the workspace time zone (agent-plan.js)
   function nextSlot(nets, skip) {
     const now = new Date(), nowM = now.getHours() * 60 + now.getMinutes() + 30;
     for (let i = 0; i < 21; i++) { const k = iso(addD(now, i)); for (const b of bestTimes(nets, k, 3)) { if (i === 0 && tmin(b.t) < nowM) continue; if (!taken(nets, k, b.t, skip)) return { date: k, time: b.t }; } }
@@ -3698,7 +4331,7 @@ Object.assign(IC, {
   }
   PAGES.planner = {
     t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.', themeFirst: true,
-    actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
+    actions: () => `${importBtn()}<button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
     view: () => {
       const days = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date());
       const title = P.view === 'month' ? fmt(P.mo, { month: 'long', year: 'numeric' }) : P.view === 'list' ? 'All posts' : `${fmt(days[0], { day: 'numeric', month: 'long' })} – ${fmt(days[6], { day: 'numeric', month: 'long', year: 'numeric' })}`;
@@ -3850,12 +4483,22 @@ Object.assign(IC, {
   const TAGS = { calendar: ['#Forex', '#EconomicCalendar', '#Trading', '#MarketNews'], article: ['#UXDesign', '#Onboarding', '#ProductDesign', '#UXResearch'], stat: ['#SEO', '#Growth', '#OrganicTraffic', '#Marketing'], launch: ['#Launch', '#DesignTools', '#SocialMedia', '#NewRelease'], features: ['#ProductUpdate', '#Features', '#SaaS'], testimonial: ['#CustomerStories', '#Testimonial', '#SocialProof'], event: ['#AMA', '#LiveEvent', '#Growth', '#Webinar'], quote: ['#Quote', '#Inspiration', '#Design'] };
   function withUtm(u, k, d) { try { const x = new URL(/^https?:\/\//.test(u) ? u : 'https://' + u); x.searchParams.set('utm_source', PLATFORMS[k].n.toLowerCase()); x.searchParams.set('utm_medium', 'social'); x.searchParams.set('utm_campaign', slug(d ? d.name : 'post')); return x.toString(); } catch (e) { return u; } }
   openSchedule = function (d0, o = {}) {
+    // footage designs are videos: the publisher only posts images (see footage.js blockSchedule)
+    if (blockSchedule(d0 || (o.post ? getD(o.post.d) : null), toast)) return;
     const ed = o.post || null, inEd = document.body.classList.contains('in-editor'), c0 = conn();
-    const st = { d: d0 || (ed ? getD(ed.d) : null), pf: new Set(ed ? ed.pf : c0.slice(0, 3)), cap: ed ? ed.cap || '' : '', caps: ed && ed.caps ? clone(ed.caps) : {}, tab: 'all', fc: ed ? ed.fc || '' : '', fcOpen: !!(ed && ed.fc), link: ed ? ed.link || '' : '', utm: !!(ed && ed.utm), now: false, date: '', time: '', pv: null, pvi: 0, tags: false };
+    const st = { igStory: !!(ed && ed.igStory), d: d0 || (ed ? getD(ed.d) : null), pf: new Set(ed ? ed.pf : c0.slice(0, 3)), cap: ed ? ed.cap || '' : '', caps: ed && ed.caps ? clone(ed.caps) : {}, tab: 'all', fc: ed ? ed.fc || '' : '', fcOpen: !!(ed && ed.fc), link: ed ? ed.link || '' : '', utm: !!(ed && ed.utm), now: false, date: '', time: '', pv: null, pvi: 0, tags: false };
     const tomorrow = iso(addD(new Date(), 1));
     st.date = ed ? ed.date : o.date || tomorrow;
     const defTime = (k) => { const bt = bestTimes([...st.pf], k, 3), n = new Date(), nm = n.getHours() * 60 + n.getMinutes() + 15, f = k === iso(n) ? bt.find((b) => tmin(b.t) > nm) : bt[0]; return (f || bt[bt.length - 1]).t; };
     st.time = ed ? ed.time : o.time || defTime(st.date);
+    // a proposal from the Studio Agent (agent-plan.js): its values replace the defaults of a new post; the user still confirms here
+    const pre = !ed && o.prefill;
+    if (pre) {
+      if (pre.pf) st.pf = new Set(pre.pf.filter((k) => c0.includes(k)));
+      if (pre.cap != null) st.cap = String(pre.cap);
+      if (pre.fc) { st.fc = String(pre.fc); st.fcOpen = true; }
+      if (pre.date) st.date = pre.date; if (pre.time) st.time = pre.time;
+    }
     const html = `<div class="mh"><h2>${ed ? 'Edit post' : 'Schedule post'}</h2><span id="cSt"></span><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
     <div class="cp7"><div class="cp7-l">
       <div class="c7s" id="cDes"></div>
@@ -3885,7 +4528,7 @@ Object.assign(IC, {
       function drawDes() {
         const d = st.d, el = R('cDes');
         if (!d) { el.innerHTML = `<span class="label" style="margin:0">Choose a design</span><div class="dpick7">${S.designs.map((x) => { const dd = getD(x.id); return `<button class="dp7" data-c="pick" data-id="${x.id}"><div class="thumbbox" style="width:64px;height:76px;background:transparent">${thumb(dd.pages[0], dd.ratio, 64, 76)}</div><span>${esc(x.name)}</span></button>`; }).join('')}</div>`; return; }
-        el.innerHTML = `<div class="row" style="gap:12px"><div class="strip7">${d.pages.slice(0, 4).map((pg) => `<div class="thumbbox" style="width:54px;height:66px;background:transparent">${thumb(pg, d.ratio, 54, 66)}</div>`).join('')}${d.pages.length > 4 ? `<span class="more7b">+${d.pages.length - 4}</span>` : ''}</div><div class="grow"><b class="sm-t" style="display:block">${esc(d.name)}</b><span class="xs-t muted">${d.ratio} · ${d.pages.length > 1 ? 'Carousel, ' + d.pages.length + ' slides' : 'Single image'}</span></div><button class="btn ghost sm" data-c="chg">Change</button>${inEd ? '' : `<a class="btn ghost sm" href="#/editor/${d.id}" data-close>Edit design</a>`}</div>`;
+        el.innerHTML = `<div class="row" style="gap:12px"><div class="strip7">${d.pages.slice(0, 4).map((pg) => `<div class="thumbbox" style="width:54px;height:66px;background:transparent">${thumb(pg, d.ratio, 54, 66)}</div>`).join('')}${d.pages.length > 4 ? `<span class="more7b">+${d.pages.length - 4}</span>` : ''}</div><div class="grow"><b class="sm-t" style="display:block">${esc(d.name)}</b><span class="xs-t muted">${d.ratio} · ${isVideoPost(d) ? `Video${videoLength(d, MO.timeline) ? ' · ' + fmtDur(videoLength(d, MO.timeline)) : ''}` : d.pages.length > 1 ? 'Carousel, ' + d.pages.length + ' pages' : 'Single image'}</span>${isVideoPost(d) && d.ratio === '9:16' && st.pf.has('ig') ? `<div class="seg c7ig" role="radiogroup" aria-label="On Instagram"><button role="radio" aria-checked="${!st.igStory}" class="${st.igStory ? '' : 'on'}" data-c="igs" data-v="0">Reel</button><button role="radio" aria-checked="${st.igStory}" class="${st.igStory ? 'on' : ''}" data-c="igs" data-v="1">Story</button></div>` : ''}</div><button class="btn ghost sm" data-c="chg">Change</button>${inEd ? '' : `<a class="btn ghost sm" href="#/editor/${d.id}" data-close>Edit design</a>`}</div>`;
       }
       function drawNets() { R('cNets').innerHTML = Object.entries(PLATFORMS).map(([k, v]) => { const on = st.pf.has(k), c = S.platforms[k]; return `<button class="c7net ${on ? 'on' : ''} ${c ? '' : 'off'}" style="--c:${v.c}" data-c="net" data-k="${k}" aria-pressed="${on}" title="${c ? v.n : v.n + ' is not connected'}"><span class="ci">${ic('net_' + k, 20)}${on ? `<i class="ck">${ic('check', 10)}</i>` : ''}${c ? '' : `<i class="pl">${ic('plus', 10)}</i>`}</span><span class="nm">${v.n}</span></button>`; }).join(''); }
       function drawTabBar() {
@@ -3917,8 +4560,18 @@ Object.assign(IC, {
         if (ns.length && ns.some((n) => !capFor(n).trim())) out.push(['warn', 'Some networks have no caption. Posts with text get more engagement']);
         if (st.pf.has('ig') && capFor('ig').trim() && !tagsOf(capFor('ig') + ' ' + st.fc).length) out.push(['warn', 'Instagram: add 3 to 5 hashtags to be found']);
         if (st.d && st.d.ratio === '9:16' && ns.some((n) => ['li', 'x', 'fb'].includes(n))) out.push(['warn', '9:16 is cropped in LinkedIn, X and Facebook feeds']);
-        if (st.d && st.pf.has('ig') && st.d.ratio !== '9:16') { const [rw, rh] = RATIOS[st.d.ratio], a = rw / rh; if (a < 0.8 - 1e-3 || a > 1.91 + 1e-3) out.push(['err', 'Instagram only accepts images from 4:5 (portrait) to 1.91:1 (landscape)']); }
-        if (st.d && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
+        const vid = isVideoPost(st.d);
+        if (st.d && !vid && st.pf.has('ig') && st.d.ratio !== '9:16') { const [rw, rh] = RATIOS[st.d.ratio], a = rw / rh; if (a < 0.8 - 1e-3 || a > 1.91 + 1e-3) out.push(['err', 'Instagram only accepts images from 4:5 (portrait) to 1.91:1 (landscape)']); }
+        if (st.d && !vid && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
+        if (vid) {
+          // a video: each network's length limit, how Instagram shows it, and what preparing it takes
+          const len = videoLength(st.d, MO.timeline), sz = ed && ed.media && ed.media.video ? ed.media.video.size : 0;
+          ns.forEach((n) => { const p = videoProblem(n, { durationMs: len, size: sz }); if (p) out.push(['err', p]); });
+          if (st.d.footage && !st.d.footage.src) out.push(['err', 'Add your video first, then schedule it']);
+          if (st.pf.has('ig')) out.push(st.d.ratio === '9:16' ? (st.igStory ? ['warn', 'Instagram: a video Story doesn’t show the caption'] : ['ok', 'Instagram: posts as a Reel, shown in the feed too']) : ['warn', 'Instagram: Reels look best in 9:16']);
+          if (ed && ed.media && ed.media.video && ed.media.hash && ed.media.hash !== videoHash(st.d)) out.push(['warn', 'The video changed since it was prepared. Schedule again to update it']);
+          if (st.d.motion) out.push(['ok', `The video is recorded in this tab when you confirm${len ? ` (about ${fmtDur(len)})` : ''}. Keep it open until it’s ready`]);
+        }
         if (st.link && st.pf.has('ig')) out.push(['warn', 'Links in Instagram captions are not clickable. Use link in bio']);
         if (!st.now && st.d) {
           if (!st.date || !st.time) out.push(['err', 'Pick a date and time']); else if (zonedToUtc(st.date, st.time, schedTz()) < now) out.push(['err', 'This time is in the past']);
@@ -3947,7 +4600,7 @@ Object.assign(IC, {
         R('cSt').innerHTML = ed ? badge(ed.status) : '';
       }
       const afterCap = () => { drawTabBar(); drawCnt(); drawTags(); drawPv(); drawChk(); drawFoot(); };
-      const afterNets = () => { drawNets(); drawTabBar(); loadCap(); drawCnt(); drawTags(); drawFc(); drawPv(); drawWhen(); drawLink(); drawChk(); drawPub(); drawFoot(); };
+      const afterNets = () => { drawNets(); drawDes(); drawTabBar(); loadCap(); drawCnt(); drawTags(); drawFc(); drawPv(); drawWhen(); drawLink(); drawChk(); drawPub(); drawFoot(); };
       const setCap = (v) => { if (st.tab === 'all') st.cap = v; else st.caps[st.tab] = v; R('cCap').value = v; afterCap(); };
       const addTxt = (t) => { const cur = st.tab === 'all' ? st.cap : capFor(st.tab); setCap(cur + (cur && !/\s$/.test(cur) ? ' ' : '') + t); };
       /* Write with AI: a real caption from the slides' content, in the brand voice (provider from Settings → AI) */
@@ -3973,8 +4626,8 @@ Object.assign(IC, {
       }
       function commit(kind) {
         const d = st.d; if (!d) return; const tz = schedTz(), n = nowIn(tz), status = kind === 'draft' ? 'Draft' : 'Scheduled';
-        const rec = { d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
-        const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close();
+        const rec = { igStory: isVideoPost(d) && d.ratio === '9:16' && st.pf.has('ig') && st.igStory, d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
+        const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close(); if (o.onDone) o.onDone(kind);
         // publishing goes through the API: "now" sends it right away, "schedule" uploads the rendered slides for the scheduler
         if (kind === 'now') PUB.publishNow(post);
         else { toast(kind === 'draft' ? 'Draft saved' : (ed ? 'Updated for ' : 'Scheduled for ') + dlabel(rec.date) + ' at ' + rec.time); if (kind === 'schedule') PUB.prepare(post); }
@@ -3983,8 +4636,9 @@ Object.assign(IC, {
       R('cLink').value = st.link; R('cTone').value = 'Professional';
       bg.addEventListener('click', (e) => {
         const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c;
-        if (c === 'pick') { st.d = getD(b.dataset.id); st.pvi = 0; drawDes(); drawTags(); drawPv(); drawChk(); drawFoot(); }
+        if (c === 'pick') { if (blockSchedule(getD(b.dataset.id), toast)) return; st.d = getD(b.dataset.id); st.pvi = 0; drawDes(); drawTags(); drawPv(); drawChk(); drawFoot(); }
         else if (c === 'chg') { st.d = null; drawDes(); drawPv(); drawChk(); drawFoot(); }
+        else if (c === 'igs') { st.igStory = b.dataset.v === '1'; drawDes(); drawChk(); } // a 9:16 video on Instagram: Reel or Story
         else if (c === 'net') { const k = b.dataset.k; if (!S.platforms[k]) return toast(PLATFORMS[k].n + ' is not connected. Add it in Settings, Connected accounts'); st.pf.has(k) ? st.pf.delete(k) : st.pf.add(k); if (st.tab === k && !st.pf.has(k)) st.tab = 'all'; afterNets(); }
         else if (c === 'tab') { st.tab = b.dataset.k; if (st.tab !== 'all') st.pv = st.tab; drawTabBar(); loadCap(); drawCnt(); drawTags(); drawPv(); }
         else if (c === 'reset') { delete st.caps[st.tab]; loadCap(); afterCap(); }
@@ -4072,12 +4726,24 @@ persist.watch(() => ({ brands: S.brands, data: S.data, active: S.active, set: S.
 /* Save conflicts: another tab or user saved a design after this copy was loaded. Nothing is lost: the design
    takes the saved version and this tab's version becomes "… (conflicted copy)". When the editor has it open,
    editing carries on in the copy (same layers, Undo kept). */
+/* Live designs refresh their data by themselves in every open tab, so two tabs "conflict" on a design nobody edited.
+   AUTO_LIVE keeps the design as the last automatic refresh left it: while this tab's version is still exactly that,
+   the saved version simply replaces it (no copy). */
+const AUTO_LIVE = new Map();
 persist.onConflict((list) => {
   let open = null;
+  list = list.filter(({ brandId, item }) => {
+    const D = S.data[brandId], mine = D && D.designs.find((x) => x.id === item.id);
+    if (!mine || AUTO_LIVE.get(mine.id) !== JSON.stringify(mine)) return true;
+    const saved = JSON.parse(JSON.stringify(item)); ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
+    Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved); AUTO_LIVE.delete(mine.id);
+    return false;
+  });
+  if (!list.length) { if (!document.body.classList.contains('in-editor')) route(); save(); return; }
   list.forEach(({ brandId, item }) => {
     const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
     const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
-    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
+    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design').replace(/( \(conflicted copy\))+$/, '') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
     if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
     ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     // same object, the saved content: posts and the planner keep pointing at it
@@ -4289,7 +4955,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** Slide title: the biggest visible text (the headline, not the footer URL); the strip shows it on one line with "…", the tooltip has it whole */
   const fullLabel = (pg) => {
     const ts = (pg.layers || []).filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim());
-    if (!ts.length) return 'Empty slide';
+    if (!ts.length) return 'Empty page';
     const t = ts.reduce((b, l) => ((l.size || 0) > (b.size || 0) ? l : b), ts[0]);
     return String(t.text).trim().replace(/\s+/g, ' ');
   };
@@ -4300,25 +4966,25 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const host = $1('#edPages'); if (!host) return; const d = ED.d, n = d.pages.length, old = $1('.pgs-track', host), sl = old ? old.scrollLeft : 0, stage = host.closest('.ed-stage');
     if (stage) stage.dataset.pgs = folded ? 'c' : 'o';
     const cards = d.pages.map((pg, i) => `<div class="pg ${i === ED.pi ? 'on' : ''}" role="tab" aria-selected="${i === ED.pi}" draggable="true">
-        <button class="pg-th" data-act="edPage" data-i="${i}" title="Slide ${i + 1} · ${E(label(pg))}" aria-label="Slide ${i + 1}: ${E(label(pg))}" tabindex="${i === ED.pi ? 0 : -1}">${thumb(pg, d.ratio, 100, 86)}</button>
+        <button class="pg-th" data-act="edPage" data-i="${i}" title="Page ${i + 1} · ${E(label(pg))}" aria-label="Page ${i + 1}: ${E(label(pg))}" tabindex="${i === ED.pi ? 0 : -1}">${thumb(pg, d.ratio, 100, 86)}</button>
         <span class="pg-n">${i + 1}</span>
-        <div class="pg-act"><button data-act="pgDup" data-i="${i}" title="Duplicate slide" aria-label="Duplicate slide ${i + 1}">${ic('copy', 13)}</button>${n > 1 ? `<button data-act="pgDel" data-i="${i}" title="Delete slide" aria-label="Delete slide ${i + 1}">${ic('trash', 13)}</button>` : ''}<button data-act="pgMore" data-i="${i}" title="More" aria-label="More actions for slide ${i + 1}" aria-haspopup="menu">${ic('more', 13)}</button></div>
-        <button class="pg-ins" data-act="pgAddAfter" data-i="${i}" title="Add slide after ${i + 1}" aria-label="Add slide after ${i + 1}">${ic('plus', 13)}</button>
+        <div class="pg-act"><button data-act="pgDup" data-i="${i}" title="Duplicate page" aria-label="Duplicate page ${i + 1}">${ic('copy', 13)}</button>${n > 1 ? `<button data-act="pgDel" data-i="${i}" title="Delete page" aria-label="Delete page ${i + 1}">${ic('trash', 13)}</button>` : ''}<button data-act="pgMore" data-i="${i}" title="More" aria-label="More actions for page ${i + 1}" aria-haspopup="menu">${ic('more', 13)}</button></div>
+        <button class="pg-ins" data-act="pgAddAfter" data-i="${i}" title="Add page after ${i + 1}" aria-label="Add page after ${i + 1}">${ic('plus', 13)}</button>
         <span class="pg-lab" title="${E(label(pg))}">${E(label(pg))}</span>
       </div>`).join('');
     host.innerHTML = `<div class="pgs-head">
-        <span class="ttl">${ic('slides', 16)}<span class="t">Slides</span><span class="cnt">${n}</span></span><span class="sp"></span>
-        <span class="pgs-pager"><button data-act="pgStep" data-n="-1" title="Previous slide (PageUp)" aria-label="Previous slide" ${ED.pi === 0 ? 'disabled' : ''}>${ic('chevL', 16)}</button><span aria-live="polite">${ED.pi + 1} / ${n}</span><button data-act="pgStep" data-n="1" title="Next slide (PageDown)" aria-label="Next slide" ${ED.pi >= n - 1 ? 'disabled' : ''}>${ic('chevR', 16)}</button></span>
-        <button class="add" data-act="edAddPage" title="Add slide">${ic('plus', 15)}<span>Add slide</span></button>
-        <button class="tb fold" data-act="pgFold" title="${folded ? 'Show slides' : 'Hide slides'}" aria-label="${folded ? 'Show slides' : 'Hide slides'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
+        <span class="ttl">${ic('slides', 16)}<span class="t">Pages</span><span class="cnt">${n}</span></span><span class="sp"></span>
+        <span class="pgs-pager"><button data-act="pgStep" data-n="-1" title="Previous page (PageUp)" aria-label="Previous page" ${ED.pi === 0 ? 'disabled' : ''}>${ic('chevL', 16)}</button><span aria-live="polite">${ED.pi + 1} / ${n}</span><button data-act="pgStep" data-n="1" title="Next page (PageDown)" aria-label="Next page" ${ED.pi >= n - 1 ? 'disabled' : ''}>${ic('chevR', 16)}</button></span>
+        <button class="add" data-act="edAddPage" title="Add page">${ic('plus', 15)}<span>Add page</span></button>
+        <button class="tb fold" data-act="pgFold" title="${folded ? 'Show pages' : 'Hide pages'}" aria-label="${folded ? 'Show pages' : 'Hide pages'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
       </div>
-      <div class="pgs-track" role="tablist" aria-label="Slides">${cards}<button class="pg-add" data-act="edAddPage" style="height:86px" title="Add slide">${ic('plus', 16)}<span>New slide</span></button></div>`;
+      <div class="pgs-track" role="tablist" aria-label="Pages">${cards}<button class="pg-add" data-act="edAddPage" style="height:86px" title="Add page">${ic('plus', 16)}<span>New page</span></button></div>`;
     const tr = $1('.pgs-track', host); if (tr) { tr.scrollLeft = sl; const on = $1('.pg.on', tr); if (on) { const a = on.offsetLeft - 24, b = on.offsetLeft + on.offsetWidth + 24; if (a < tr.scrollLeft) tr.scrollLeft = a; else if (b > tr.scrollLeft + tr.clientWidth) tr.scrollLeft = b - tr.clientWidth; } }
   };
 
   const addBlank = (at) => { const [w, h] = dim(); mutate(() => { ED.d.pages.splice(at, 0, { id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = at; ED.sel = null; }); };
   const dupAt = (i) => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; });
-  const delAt = (i) => { if (ED.d.pages.length < 2) return toast('A design needs at least one slide'); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(ED.pi > i ? ED.pi - 1 : Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); };
+  const delAt = (i) => { if (ED.d.pages.length < 2) return toast('A design needs at least one page'); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(ED.pi > i ? ED.pi - 1 : Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); };
   const moveAt = (i, to) => { if (to < 0 || to >= ED.d.pages.length) return; mutate(() => { const [x] = ED.d.pages.splice(i, 1); ED.d.pages.splice(to, 0, x); ED.pi = to; ED.sel = null; }); };
   const go = (i) => { i = clamp(i, 0, ED.d.pages.length - 1); if (i !== ED.pi) ACT.edPage({ dataset: { i } }); };
   const foldTo = (v) => { folded = v; try { localStorage.setItem('boga.pgsFolded', v ? '1' : '0'); } catch (e) {} edPages(); if (ED.fit) requestAnimationFrame(() => { fitZoom(); }); };
@@ -4326,7 +4992,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function slideMenu(btn) {
     const i = +btn.dataset.i, n = ED.d.pages.length, r = btn.getBoundingClientRect();
     $A('#ctx').forEach((x) => x.remove());
-    const rows = [['Duplicate', 'copy', () => dupAt(i)], ['Add slide after', 'plus', () => addBlank(i + 1)], '-', ['Move left', 'moveL', () => moveAt(i, i - 1), i === 0], ['Move right', 'moveR', () => moveAt(i, i + 1), i === n - 1], '-', ['Delete', 'trash', () => delAt(i), n < 2, 'dng']];
+    const rows = [['Duplicate', 'copy', () => dupAt(i)], ['Add page after', 'plus', () => addBlank(i + 1)], '-', ['Move left', 'moveL', () => moveAt(i, i - 1), i === 0], ['Move right', 'moveR', () => moveAt(i, i + 1), i === n - 1], '-', ['Delete', 'trash', () => delAt(i), n < 2, 'dng']];
     const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
     c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
     document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
@@ -4433,8 +5099,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     edMore: (a) => {
       const old = $1('#ctx'); if (old) old.remove(); if (moreWas) { moreWas = false; return; }
       const r = a.getBoundingClientRect(), rows = [
-        ['Zoom in', 'plus', clickSel('.ed-top [data-act=edZoom][data-n="0.1"]')], ['Zoom out', 'minus', clickSel('.ed-top [data-act=edZoom][data-n="-0.1"]')], ['Fit to screen', 'frame', () => ACT.edFit()], '-',
-        ['Safe zones', 'frame', clickSel('#edSafe')], ['Grid overlay', 'grid', clickSel('#edGrid')], ['Search actions', 'search', clickSel('.ed-top [data-act=cmdk]')], ['Preview on networks', 'eye', clickSel('.ed-top [data-act=edPreview]')], ['Schedule', 'clock', clickSel('.ed-top [data-act=edSchedule]')]
+        ['Zoom in', 'plus', clickSel('[data-act=edZoom][data-n="0.1"]')], ['Zoom out', 'minus', clickSel('[data-act=edZoom][data-n="-0.1"]')], ['Fit to screen', 'frame', () => ACT.edFit()], '-',
+        ...[['Version history', 'history', '#edHist'], ['Comments', 'cm36', '#edCm36']].filter((x) => $1(x[2])).map(([l, i, q]) => [l, i, clickSel(q)]),
+        ['Safe zones', 'frame', clickSel('#edSafe')], ['Grid overlay', 'grid', clickSel('#edGrid')], ...($1('#edRulers') ? [['Rulers', 'frame', clickSel('#edRulers')]] : []), ...($1('#edAll34') ? [['All pages side by side', 'slides', clickSel('#edAll34')]] : []), '-',
+        ['Search actions', 'search', clickSel('.ed-top [data-act=cmdk]')], ['Preview on networks', 'eye', clickSel('.ed-top [data-act=edPreview]')], ['Schedule', 'clock', clickSel('.ed-top [data-act=edSchedule]')]
       ];
       const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.dataset.owner = 'more'; c.setAttribute('role', 'menu');
       c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}"><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
@@ -5511,6 +6179,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* ---------- publishing ---------- */
   const fnv = (str) => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
   const designHash = (d) => fnv(d.ratio + JSON.stringify(d.pages.map((p) => [p.bg, p.layers])));
+  /** A video post's hash: what its MP4 shows (post-video.js videoKey) */
+  videoHash = (d) => fnv(videoKey(d));
   const toDataUrl = (blob) => new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
   const plain = (p) => { const { publish, media, ...rest } = p; return JSON.parse(JSON.stringify(rest)); };
   /** Slides for publishing: lossless PNG at the design's size (at most 2160 px), the API encodes the JPEG once */
@@ -5535,10 +6205,37 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return state === 'published' ? `Published to ${ok.join(', ')}` : state === 'partial' ? `Published to ${ok.join(', ')}. ${bad.join(', ')} failed: open the post to see why` : `Publishing failed${st.publish && st.publish.lastError ? ': ' + st.publish.lastError : ''}`;
   };
   const busy = new Set(), unready = new Set();
+  /* ---- video posts: the MP4 is prepared once, when the post is scheduled (post-video.js), with a progress panel ---- */
+  let vq = Promise.resolve(); // one video at a time: a recording uses this tab's canvas and audio
+  const postPath = (post) => `${brandPath()}/posts/${encodeURIComponent(post.id)}`;
+  function vpanel(d) {
+    const el = document.createElement('div'); el.className = 'vprep'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+    el.innerHTML = `<span class="vprep-i">${ic('play37', 16)}</span><div class="vprep-b"><b>Preparing “${esc(d.name || 'video')}” for publishing</b><small data-v>Starting…</small><div class="prog"><i style="width:0%"></i></div>${d.motion ? '<small class="vprep-keep">Keep this tab open: the video is recorded in it.</small>' : ''}</div><button class="btn ghost icon sm" data-vstop aria-label="Stop preparing the video" title="Stop">${ic('x', 15)}</button>`;
+    document.body.append(el);
+    return el;
+  }
+  async function prepareVideoPost(post, d) {
+    if (busy.has(post.id)) return null; busy.add(post.id);
+    const kind = d.footage ? 'footage' : 'motion', signal = { stop: false }, el = vpanel(d);
+    el.querySelector('[data-vstop]').addEventListener('click', () => { signal.stop = true; });
+    const show = (step, p) => { const t = overall(kind, step, p), b = el.querySelector('.prog i'), m = el.querySelector('[data-v]'); if (b) b.style.width = Math.round(t * 100) + '%'; if (m) m.textContent = `${STEPS[step] ? STEPS[step][1] : ''} ${Math.round(t * 100)}%`; };
+    const run = () => prepareVideo(d, {
+      api, postPath: postPath(post), post: plain(post), hash: videoHash(d), exportPayload, exportSizes, fps: (d.motion && d.motion.fps) || 30,
+      record: RT.motion && RT.motion.record, mimes: () => (RT.motion && RT.motion.mimes ? RT.motion.mimes() : []), onProgress: show, signal,
+    });
+    const job = vq.then(run, run); vq = job.catch(() => {});
+    try { const st = await job; if (merge(st)) save(); return st; }
+    catch (e) {
+      toast(e && e.stopped ? 'Stopped. The post has no video yet: open it and schedule it again.' : 'Could not prepare the video: ' + ((e && e.message) || 'unknown error'));
+      return null;
+    } finally { el.remove(); busy.delete(post.id); refreshViews(); }
+  }
   PUB = {
     renderPages,
-    /** Scheduled post: upload its slides so the API can publish it on time, even with the studio closed */
+    /** Scheduled post: upload its slides (or prepare its video) so the API can publish it on time, even with the studio closed */
     async prepare(post) {
+      const dv = getD(post.d);
+      if (dv && isVideoPost(dv)) { const st = await prepareVideoPost(post, dv); if (st) toast(`Video ready. It goes out ${dlabel(post.date)} at ${post.time}`); return; }
       const d = getD(post.d); if (!d || busy.has(post.id)) return; busy.add(post.id);
       try { const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/media`, { method: 'PUT', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } }); if (merge(st)) save(); }
       catch (e) { toast('Could not prepare the post for publishing: ' + e.message); }
@@ -5546,6 +6243,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     },
     async publishNow(post) {
       const d = getD(post.d); if (!d) return; if (busy.has(post.id)) return toast('Already publishing this post');
+      if (isVideoPost(d)) { // prepare the video, then publish it
+        const ready = await prepareVideoPost(post, d); if (!ready) return;
+        busy.add(post.id); toast(`Publishing to ${post.pf.map(net).join(', ')}…`);
+        try { const st = await api(`${postPath(post)}/publish`, { method: 'POST', body: { post: plain(post) } }); merge(st); save(); toast(summary(st)); }
+        catch (e) { toast('Publishing failed: ' + e.message); }
+        finally { busy.delete(post.id); refreshViews(); }
+        return;
+      }
       busy.add(post.id); toast(`Publishing to ${post.pf.map(net).join(', ')}…`);
       try {
         const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/publish`, { method: 'POST', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } });
@@ -5560,10 +6265,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       let changed = false; list.forEach((st) => { changed = merge(st) || changed; });
       if (changed) { save(); refreshViews(); }
       // automation runs are rendered and captioned by the API: the studio leaves their slides alone
-      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
+      // (a video is prepared only when the post is scheduled: recording or exporting it again on its own would be too heavy)
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && !isVideoPost(d) && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
       // scheduled posts without rendered slides (created before the API had them, or a failed upload): render once per session
       if (persist.readOnly) return;
-      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && !isVideoPost(getD(p.d)) && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
         .forEach((p) => { unready.add(p.id); PUB.prepare(p); });
     },
   };
@@ -5988,7 +6694,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -6616,6 +7322,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     } catch (e) { closeWait(); toast('Import failed: ' + e.message); }
   }
   document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('lv-imp')) { e.preventDefault(); ACT.lvPickFile(e.target, e); } });
+  IMPORT_FILE = importDesign;
   document.addEventListener('change', (e) => { const t = e.target; if (t.id === 'lvFile' && t.files && t.files[0]) { const f = t.files[0]; t.value = ''; importDesign(f); } });
   // drop a file on the Live data panel
   document.addEventListener('dragover', (e) => { const p = e.target.closest && e.target.closest('#edPanel.lv-panel'); if (p && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); p.classList.add('drop'); } }, true);
@@ -6940,7 +7647,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7346,17 +8053,34 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (l.feed) o.live = l.feed === '@image' ? 'live headline photo' : l.feed === '@pos' ? 'live range marker' : 'live text: ' + l.feed;
     return o;
   }
-  const slideOf = (pg, i) => ({ number: i + 1, background: pg.bg, live: pg.live ? (pg.live.kind || 'calendar') : undefined, layers: pg.layers.map(compact) });
+  /** The agent's mode (agent-motion.js): 'animate' on a video in the editor's Animate mode, else 'design'. Read again on every turn: make_video changes it */
+  const agMode = () => (ED.d && agentMode(ED.d.footage ? 'video' : ED.d.motion ? 'reel' : 'still', VS.mode())) || 'design';
+  /** In animate a slide is a scene: each moving layer also shows its animation */
+  const slideOf = (pg, i) => { const an = agMode() === 'animate'; return { number: i + 1, background: pg.bg, live: pg.live ? (pg.live.kind || 'calendar') : undefined, layers: pg.layers.map((l) => { const o = compact(l), a = an ? animOut(l) : undefined; if (a) o.anim = a; return o; }) }; };
+  /** The uploaded video as the agent reads it (agent-video.js) */
+  const FA = () => FOOTAGE.agent;
+  function videoState() { const r = FA().records(); return analysisState(r.rec, r.ref); }
   function context() {
-    const d = ED.d, b = brand(), [W, H] = dim(), all = ED.agScope === 'all';
+    const d = ED.d, b = brand(), [W, H] = dim(), all = ED.agScope === 'all', mode = agMode();
+    if (mode === 'video') {
+      const ft = d.footage, c = capsView(d);
+      return JSON.stringify({
+        design: { name: d.name, mode, kind: 'video', width: (ft.out || {}).w || W, height: (ft.out || {}).h || H },
+        brand: { name: b.name, website: b.website || '', handle: b.handle || '', industry: b.industry || '', language: b.lang || 'English', voice: String(b.voice || '').slice(0, 800), hashtags: b.hashtags || '', colors: b.colors.map((x) => ({ name: x.name, hex: x.hex })) },
+        video: footageCtx({ d: { footage: { ...ft, dur: ft.dur || FA().records().dur } }, caps: c, style: styleOfD(d), state: videoState(), looks: FA().looks(), matched: FA().matched(), maxLines: 120 }),
+      });
+    }
     return JSON.stringify({
-      design: { name: d.name, format: d.ratio, width: W, height: H, slides: d.pages.length, currentSlide: ED.pi + 1, selectedLayer: ED.sel || null, scope: all ? 'all slides' : 'current slide' },
+      design: { name: d.name, mode, kind: d.motion ? 'video' : 'still', format: d.ratio, width: W, height: H, slides: d.pages.length, currentSlide: ED.pi + 1, selectedLayer: ED.sel || null, scope: all ? 'all slides' : 'current slide' },
+      video: mode === 'animate' ? videoCtx(d.pages, d.motion.fps || 30) : undefined,
+      sound: mode === 'animate' ? soundNow() : undefined,
       brand: {
         name: b.name, website: b.website || '', handle: b.handle || '', industry: b.industry || '', language: b.lang || 'English',
         voice: String(b.voice || '').slice(0, 800), dos: String(b.dos || '').slice(0, 400), donts: String(b.donts || '').slice(0, 400), cta: b.cta || '', hashtags: b.hashtags || '',
         colors: b.colors.map((c) => ({ name: c.name, hex: c.hex })), fonts: b.fonts,
         logos: (b.logos || []).filter((l) => l.src).map((l) => ({ id: l.id, kind: l.kind, name: l.name })), assets: (b.assets || []).map((a) => ({ id: a.id, name: a.name })),
         templates: (b.templates || []).map((t) => ({ id: t.id, name: t.name, format: t.ratio, live: !!t.live })),
+        ...agentExtras(b.designSystem),
       },
       slides: all ? d.pages.map(slideOf) : [slideOf(curP(), ED.pi)],
       otherSlides: all ? undefined : d.pages.map((pg, i) => (i === ED.pi ? null : { number: i + 1, texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden).slice(0, 4).map((l) => String(l.text).slice(0, 80)) })).filter(Boolean),
@@ -7369,11 +8093,47 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     try { const blob = await renderSlide(ED.d, i, s, 'jpeg'); return await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { return null; }
   }
 
+  /** A picture of the video at a moment, as it plays (JPEG data URL, long side ≤ 1000 px), or null */
+  const frameImage = (ms) => { const [w, h] = dim(); return RT.motion.frameAt(ms, Math.min(1, 1000 / Math.max(w, h))); };
+  /** What the model is shown with the user's message: the slide, or in animate the open scene at 60 % of its length */
+  async function shot() {
+    if (agMode() === 'video') return FA().frameAt(0.4 * (FA().records().dur || 0), videoScale());
+    if (agMode() !== 'animate') return picture(ED.pi);
+    try { return await frameImage(frameTime(MO.timeline(ED.d.pages), {}, ED.pi).ms); } catch (e) { return null; }
+  }
+
+  /** Whether a run may still change its design: not stopped, and the same design still open (a slow step must not write after Stop or a switch) */
+  const still = (run) => !!run && RUN === run && ED.d === run.d;
+  const halt = (run) => { if (!still(run)) throw new Error('Stopped before this change was made'); };
+  /* ---------- sound on animated designs (agent-sound.js; RT.reelSound does the work) ---------- */
+  let soundOpts = null; // the server's voices, read at the start of each run on an animated design
+  const RS = () => RT.reelSound;
+  function voices() { const a = RS().A(); return soundOpts ? RS().voiceChoice(a, soundOpts) : { list: [], cur: null, missing: false }; }
+  function soundNow() {
+    const a = RS().A(), v = voices();
+    return soundCtx({ pages: ED.d.pages, audio: a, voices: v.list, ready: !!(soundOpts && soundOpts.ready), voiceId: v.cur ? v.cur.id : null, voiceName: v.cur ? v.cur.name : null, language: RS().langOf(a), caps: capsView(ED.d) });
+  }
+  const soundGate = () => { if (!ED.d.motion) throw new Error('Only for an animated design'); if (RS().busy()) throw new Error('The Audio panel is working on something; try again when it is done'); };
+  const setVoText = (pg, text) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), text } }; };
+  /** A video frame's scale: long side ≤ 1000 px */
+  const videoScale = () => { const o = (ED.d.footage && ED.d.footage.out) || { w: 1080, h: 1920 }; return Math.min(1, 1000 / Math.max(o.w, o.h)); };
+  /** Before a video tool: a video must be there, and for the caption and grade tools its analysis must be done */
+  function videoGate(name) {
+    if (!ED.d.footage && ED.d.motion) return; // an animated design: captions without a video or an analysis
+    if (!ED.d.footage || !ED.d.footage.src) throw new Error('Add your video first');
+    if (['edit_captions', 'style_captions', 'set_grade'].includes(name)) { const v = videoState(); if (v.state !== 'ready') throw new Error(v.state === 'failed' ? `The video's analysis failed (${v.label}). Use Retry in the panel, then try again.` : `The video is still being analysed (${v.label}). Try again when it is done.`); }
+  }
   /* ---------- tools: the editor's actions ---------- */
   const NUM = ['x', 'y', 'w', 'h', 'rot', 'op', 'size', 'weight', 'lh', 'ls', 'sw', 'r', 'shx', 'shy', 'shb', 'sha', 'bl', 'bbl'];
   const STR = ['name', 'text', 'color', 'fill', 'stroke', 'shc'];
   const BOOL = ['hidden', 'locked', 'it', 'ul', 'up', 'fx', 'fy'];
   const pageIx = (n) => { const i = n == null ? ED.pi : Math.round(+n) - 1; if (!(i >= 0 && i < ED.d.pages.length)) throw new Error(`There is no slide ${n}`); return i; };
+  /** The next free posting slot for these networks, in the workspace time zone (agent-plan.js freeSlot): a best time with no post on the same networks within the hour */
+  const slot = (nets) => {
+    const m = (t) => { const [h, x] = String(t || '0:0').split(':').map(Number); return h * 60 + (x || 0); };
+    return freeSlot({ now: nowIn(schedTz()), timesFor: (k) => PLAN.bestTimes(nets, k, 3).map((b) => b.t), taken: (k, t) => S.posts.some((p) => p.date === k && (p.pf || []).some((n) => nets.includes(n)) && Math.abs(m(p.time) - m(t)) < 60) });
+  };
+  const sceneIx = (n) => { const i = n == null ? ED.pi : Math.round(+n) - 1; if (!(i >= 0 && i < ED.d.pages.length)) throw new Error(`There is no scene ${n}`); return i; };
   const layerIn = (pg, id) => { const l = pg.layers.find((x) => x.id === id); if (!l) throw new Error(`No layer ${id} on this slide`); return l; };
   /** Copies only known, well-formed properties (styles end up in an HTML attribute: no quotes, url() or ;) */
   function setProps(l, p) {
@@ -7499,14 +8259,236 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     async select_layer(a) { ED.sel = a.id && curP().layers.some((l) => l.id === a.id) ? a.id : null; drawSel(); edProps(); return ED.sel ? `Selected ${ED.sel}.` : 'Nothing selected.'; },
     async get_slide(a) { const i = pageIx(a.index); return JSON.stringify(slideOf(ED.d.pages[i], i)); },
     async view_slide(a) { const i = a.index == null ? ED.pi : pageIx(a.index), img = await picture(i); return img ? { text: `Picture of slide ${i + 1} attached.`, image: img } : 'The slide could not be rendered.'; },
+    async view_reference(a) {
+      const b = brand(), src = ((b.designSystem && b.designSystem.sources) || []).find((x) => x.id === (a && a.id));
+      if (src && src.kind === 'inspiration') {
+        // another brand's picture: no layer list, only the picture (smaller when it is too heavy to send)
+        const p = dsPics(b).find((x) => x.id === src.id), image = p && (await dsPicImage(p.src));
+        if (!p || !image) throw new Error('No such reference');
+        return { text: `Inspiration “${String(p.name || '').trim() || 'Picture'}” (${p.w}×${p.h}): another brand's work. Use its composition only, with this brand's colours, fonts and logo.`, image };
+      }
+      const t = src && (src.kind === 'template' ? (b.templates || []).find((x) => x.id === src.id) : getD(src.id));
+      if (!src || !t) throw new Error('No such reference');
+      const ratio = ensureRatio(t.ratio);
+      if (!RATIOS[ratio]) throw new Error('No such reference');
+      const [w, h] = RATIOS[ratio], pg = t.pages ? t.pages[0] : { id: t.id, bg: t.bg, layers: t.layers };
+      const text = `Reference \u201c${t.name}\u201d (${src.kind}, ${ratio}, ${w}\u00d7${h}):\n` + JSON.stringify((pg.layers || []).map(compact)).slice(0, 12000);
+      let img = null;
+      if (renderSlide) try { const blob = await renderSlide(t.pages ? t : { id: t.id, ratio, pages: [pg] }, 0, Math.min(1, 1000 / Math.max(w, h)), 'jpeg'); img = await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { img = null; }
+      return img ? { text, image: img } : { text };
+    },
+    /* ----- video (agent-motion.js holds the rules; the motion block, RT.motion, does the work) ----- */
+    async make_video(a, run) {
+      const step = videoStep(ED.d.footage ? 'video' : ED.d.motion ? 'reel' : 'still', VS.mode()), n = () => ED.d.pages.length;
+      if (step === 'none') throw new Error('This design is already a video, open in Animate mode');
+      if (step === 'convert') { RT.motion.make(); run.moved = true; }
+      VS.setMode('animate'); // the editor (and the next turn) in Animate, also when this design was last shown in Design mode
+      return step === 'convert' ? `The design is now a video with ${n()} scene${n() === 1 ? '' : 's'}. You are in Animate mode.` : `This design is already a video (${n()} scene${n() === 1 ? '' : 's'}). Switched the editor to Animate mode.`;
+    },
+    async animate_layers(a, run) {
+      const i = sceneIx(a.scene), pg = ED.d.pages[i], dur = MO.sceneOf(pg).dur, notes = []; let n = 0;
+      mutate(() => (a.updates || []).forEach((u) => { try { const l = layerIn(pg, u && u.id), r = animPatch(l, u.anim, dur); l.anim = r.anim; n++; r.notes.forEach((t) => notes.push(`${u.id}: ${t}`)); } catch (e) { notes.push(e.message); } }));
+      run.moved = true;
+      return `Animated ${n} layer(s) of scene ${i + 1}.${notes.length ? ' ' + notes.join('; ') : ''}`;
+    },
+    async auto_animate(a, run) {
+      const [w, h] = dim(), P = ED.d.pages, which = String(a.scenes == null ? 'current' : a.scenes).trim().toLowerCase();
+      const ix = which === 'all' ? P.map((_, k) => k) : [which === 'current' ? ED.pi : sceneIx(which)];
+      mutate(() => ix.forEach((k) => MO.autoAnimate(P[k].layers, MO.sceneOf(P[k]), w, h)));
+      run.moved = true;
+      return which === 'all' ? `Animated every scene (${P.length}).` : `Animated scene ${ix[0] + 1} (${P[ix[0]].layers.filter((l) => animOut(l)).length} layers).`;
+    },
+    async manage_scenes(a, run) {
+      const d = ED.d, i = a.index == null ? ED.pi : sceneIx(a.index), full = () => { if (d.pages.length >= MAX_SCENES) throw new Error(`${MAX_SCENES} scenes at most`); };
+      if (a.action === 'go') { ACT.mo37Scene({ dataset: { i } }); return `Showing scene ${i + 1}.`; }
+      run.moved = true;
+      if (a.action === 'add') {
+        full(); const st = starterFor(a.role || 'body', a.starter || 'blank');
+        RT.motion.addScene(st.role, st.key, i + 1);
+        return `Added ${{ intro: 'an intro', body: 'a scene', outro: 'an outro' }[st.role]} (${st.key}) as scene ${ED.pi + 1}; it is now the current scene. The video has ${d.pages.length} scenes.`;
+      }
+      if (a.action === 'duplicate') { full(); RT.motion.dupScene(i); return `Duplicated scene ${i + 1} as scene ${ED.pi + 1}; it is now the current scene.`; }
+      if (a.action === 'delete') { if (d.pages.length < 2) throw new Error('A video keeps at least one scene'); RT.motion.delScene(i); return `Deleted scene ${i + 1}. ${d.pages.length} left; scene ${ED.pi + 1} is the current scene.`; }
+      if (a.action === 'move') {
+        const to = sceneIx(a.to); if (MO.sceneOf(d.pages[i]).k !== MO.sceneOf(d.pages[to]).k) throw new Error('A scene can only move among the scenes of its role (intro, body, outro)');
+        const by = Math.sign(to - i); let at = i;
+        while (at !== to && RT.motion.canMove(at, by)) { RT.motion.moveScene(at, by); at += by; }
+        return `Moved scene ${i + 1} to position ${at + 1}.`;
+      }
+      throw new Error('Unknown action');
+    },
+    async set_scene(a, run) {
+      const d = ED.d, i = sceneIx(a.scene), pg = d.pages[i], was = MO.sceneOf(pg), r = scenePatch(was, a, i === 0); let fitted = 0;
+      RT.motion.exitPreview(true);
+      mutate(() => {
+        pg.scene = r.scene; fitted = fitAnims(pg.layers, r.scene.dur);
+        if (r.scene.k !== was.k) { RT.motion.order(d); d.pages.forEach((p, k) => { const sc = MO.sceneOf(p); if (!k && sc.tr !== 'cut') p.scene = { ...sc, tr: 'cut' }; }); } // the first scene opens on a cut
+      });
+      run.moved = true;
+      const at = d.pages.indexOf(pg), sc = MO.sceneOf(pg);
+      return `Scene ${at + 1}${at !== i ? ` (was scene ${i + 1})` : ''}: ${sec(sc.dur)} s, ${at ? `${sc.tr} transition` : 'opens the video'}. The video is ${sec(MO.timeline(d.pages).total)} s long.${fitted ? ` Adjusted ${fitted} layer timing(s) to fit.` : ''}${r.notes.length ? ' ' + r.notes.join('; ') : ''}`;
+    },
+    async view_frame(a) {
+      if (agMode() === 'video') {
+        videoGate('view_frame');
+        const dur = FA().records().dur || 0, at = a.at == null ? 0.4 * dur : Math.max(0, Math.min(+a.at * 1000 || 0, Math.max(0, dur - 50))), img = await FA().frameAt(at, videoScale());
+        return img ? { text: `Frame at ${sec(at)} s, with the captions; the colours are the original's, before the grade.`, image: img } : "This frame can't be read here.";
+      }
+      const f = frameTime(MO.timeline(ED.d.pages), a, ED.pi), img = await frameImage(f.ms);
+      return img ? { text: `Frame at ${sec(f.ms)} s: scene ${f.scene}, ${sec(f.offsetMs)} s in.`, image: img } : 'The frame could not be rendered.';
+    },
+    /* ----- publishing (agent-plan.js): read the planner, propose; the card opens the dialog where the user confirms ----- */
+    async read_planner(a) {
+      // (slot() and the best times below are in the workspace time zone, as the planner and the checks are)
+      let autos = AUTOS ? AUTOS.list() : null, autosErr = '';
+      if (!autos && AUTOS) { try { await AUTOS.load(); autos = AUTOS.list(); } catch (e) { autosErr = e.message; } if (!autos && !autosErr) autosErr = 'The automations could not be read'; }
+      const tz = schedTz(), now = nowIn(tz), nets = PLAN.conn(), d = ED.d, best = {};
+      for (let k = 0; k < (nets.length ? 7 : 0); k++) { const key = new Date(Date.UTC(...now.date.split('-').map((v, j) => (j === 1 ? v - 1 : +v))) + k * 864e5).toISOString().slice(0, 10); best[key] = upcomingTimes(now, key, PLAN.bestTimes(nets, key, 3).map((b) => b.t)); }
+      return JSON.stringify(plannerView({
+        posts: S.posts, designs: S.designs.map((x) => ({ id: x.id, name: x.name })), automations: autos, automationsError: autosErr, connected: nets, tz, today: now.date, now: now.time,
+        days: a.days, openDesign: { id: d.id, name: d.name, kind: d.footage ? 'video' : d.motion ? 'reel' : 'still' }, bestTimes: best, nextFreeSlot: nets.length ? slot(nets) : null, // nothing connected: no times to suggest
+      }));
+    },
+    async propose_schedule(a, run) {
+      const nets = PLAN.conn(), r = checkSchedule(a, { connected: nets, now: nowIn(schedTz()), nextFreeSlot: nets.length ? slot(nets) : null, blocked: videoBlocked(ED.d) });
+      if (r.error) throw new Error(r.error);
+      run.msg.proposal = { kind: 'post', d: ED.d.id, ...r.value, state: 'open' };
+      return `A post card is shown: ${r.value.date} at ${r.value.time} on ${r.value.networks.join(', ')}. The user opens it to review and schedule. Nothing is scheduled yet.`;
+    },
+    async propose_automation(a, run) {
+      const d = ED.d, r = checkAutomation(a, { connected: PLAN.conn(), kind: d.footage ? 'video' : d.motion ? 'reel' : 'still', aiReady: !!(AUTOS && AUTOS.aiReady()), designName: d.name });
+      if (r.error) throw new Error(r.error);
+      run.msg.proposal = { kind: 'automation', d: d.id, ...r.value, state: 'open' };
+      return `An automation card is shown: “${r.value.name}”, ${r.value.cadence.kind} at ${r.value.cadence.time} on ${r.value.networks.join(', ')}. The user opens it to review and create it. Nothing is created yet.${r.note ? ' ' + r.note : ''}`;
+    },
+    /* ----- uploaded videos (agent-video.js decides; FOOTAGE.agent and the caption panels apply, undoably) ----- */
+    async read_captions(a) { videoGate('read_captions'); return JSON.stringify(linesIn(captionLinesOf(ED.d), a.from, a.to, 200)); },
+    async edit_captions(a) {
+      videoGate('edit_captions');
+      const dur = ED.d.footage ? FA().records().dur || ED.d.footage.dur || 0 : MO.timeline(ED.d.pages).total, r = captionEdits(captionLinesOf(ED.d), a.edits, dur);
+      // nothing applied: no change at all (an edit marks the lines as hand-made, which stops regrouping later)
+      if (r.done.length) { let ok = false; VS.captions.edit(() => { ok = true; return r.lines; }); if (!ok) throw new Error('The captions could not be edited'); }
+      return `${r.done.length} edit(s) applied${r.done.length ? ': ' + r.done.join('; ') : ''}.${r.notes.length ? ' Skipped or adjusted: ' + r.notes.join('; ') + '.' : ''}${capsView(ED.d).on === false ? ' Captions are turned off.' : ''}`;
+    },
+    async style_captions(a, run) {
+      videoGate('style_captions');
+      const d = ED.d, notes = [], st = a.style && typeof a.style === 'object' ? a.style : {};
+      const PATH = { highlightMode: 'highlight.mode', highlightColor: 'highlight.color' };
+      if (a.preset != null && !PRESETS.some((p) => p.id === a.preset)) notes.push(`Unknown preset "${String(a.preset).slice(0, 40)}"`);
+      // the style the change ends with: the preset first, then each field through the inspector's own checks
+      const probe = JSON.parse(JSON.stringify(d)); if (a.preset != null && PRESETS.some((p) => p.id === a.preset)) applyPresetTo(probe, a.preset);
+      let next = styleOfD(probe); const fields = [];
+      Object.entries(st).forEach(([k, v]) => { const path = PATH[k] || k, n = setStyleField(next, path, v); if (JSON.stringify(n) === JSON.stringify(next)) notes.push(`${k}: not changed (out of range or unknown)`); else { next = n; fields.push(path); } });
+      const regroups = fields.some((f) => REGROUP_FIELDS.has(f)) && captionLinesOf(d).length;
+      let words = null;
+      if (regroups) {
+        const from = regroupFrom(d.footage ? 'video' : 'reel', capsView(d));
+        if (from === 'lines') throw new Error('Regrouping would undo hand edits to the lines; ask the user');
+        if (from === 'speech') { words = await FA().words(); halt(run); if (!words.length) throw new Error('There are no words to group yet'); } // built from the voice-over: the style alone regroups them
+      }
+      const wantOn = a.on == null ? null : !!a.on;
+      mutate(() => {
+        if (wantOn != null && (capsView(ED.d).on !== false) !== wantOn) toggleCaptions(ED.d);
+        if (a.preset != null && PRESETS.some((p) => p.id === a.preset)) applyPresetTo(ED.d, a.preset);
+        if (fields.length) editStyle(ED.d, next);
+        if (words) { const c = capsOfD(ED.d); c.lines = groupWords(words, c.style); }
+      });
+      save(); if (FOOTAGE.sync) FOOTAGE.sync();
+      return `Captions ${capsView(ED.d).on === false ? 'off' : 'on'}${a.preset != null && !notes.some((n) => n.startsWith('Unknown preset')) ? `, preset ${a.preset}` : ''}${fields.length ? `, set ${fields.join(', ')}` : ''}${words ? ', lines regrouped' : ''}.${notes.length ? ' ' + notes.join('; ') + '.' : ''}`;
+    },
+    async set_grade(a, run) {
+      videoGate('set_grade');
+      const r = gradeInput(ED.d.footage.look, a, { looks: FA().looks(), matched: FA().matched() }), out = [], ok = () => still(run);
+      if (r.look === 'matched') out.push(await FA().useMatched(ok));
+      else if (r.look) out.push(await FA().applyLook(r.look, ok));
+      if (Object.keys(r.values).length) { FA().setLook(r.values); out.push(`Set ${Object.keys(r.values).join(', ')}.`); }
+      return (out.join(' ') || 'Nothing changed.') + (r.notes.length ? ' ' + r.notes.join('; ') + '.' : '');
+    },
+    async set_audio(a, run) {
+      videoGate('set_audio');
+      const ft = ED.d.footage, cur = { vol: ft.audio && ft.audio.vol != null ? ft.audio.vol : 1, music: (ft.audio && ft.audio.music) || null };
+      const r = audioInput(cur, a, { hasMusic: !!cur.music }); let audio = r.audio, made = '';
+      if (r.compose) {
+        const st = { l: 'Composing music', done: false }; run.msg.steps.push(st); agThread();
+        try { const made0 = await RT.composeMusic(r.compose, (FA().records().dur || 30000) / 1000); halt(run); const rec = FA().musicRecord(made0); if (!rec) throw new Error('The composed music could not be used'); audio = { ...audio, music: { ...rec, ...r.musicPatch } }; made = ` Composed ${rec.name} music.`; }
+        finally { st.done = true; agThread(); }
+      }
+      FA().setAudio(audio);
+      const m = audio.music;
+      return `Original sound ${Math.round(audio.vol * 100)}%; ${m ? `music “${m.name}” at ${Math.round((m.vol == null ? 0.6 : m.vol) * 100)}%, ducking ${m.duck === false ? 'off' : 'on'}` : 'no music'}.${made}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    /* ----- sound on animated designs ----- */
+    async write_voiceover(a) {
+      soundGate(); const r = voiceoverLines(ED.d.pages, a.lines);
+      if (r.set.length) mutate(() => r.set.forEach(({ i, text }) => setVoText(ED.d.pages[i], text)), () => {});
+      const need = scenesToVoice(ED.d.pages).map((i) => i + 1);
+      return `Voice-over written for ${r.set.length} scene(s).${need.length ? ` Scenes that need a voice: ${need.join(', ')} (call make_voices).` : ''}${capsView(ED.d).source === 'manual' ? ' The captions were edited by hand, so they keep their own text.' : ''}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    async make_voices(a, run) {
+      soundGate();
+      if (!soundOpts) soundOpts = await RS().options();
+      if (!soundOpts.ready) throw new Error('The voice engines are not available on the server' + (soundOpts.error ? ` (${soundOpts.error})` : ''));
+      if (voices().missing || !voices().cur) throw new Error(`No ${RS().langOf(RS().A())} voice is installed on the server`);
+      const todo = scenesToVoice(ED.d.pages, a.scenes), done = [], failed = [];
+      if (!todo.length) return 'No scene needs a voice (every scene with text is voiced). Name scenes to voice them again.';
+      for (const [n, i] of todo.entries()) {
+        halt(run);
+        const st = { l: `Voicing ${n + 1}/${todo.length}`, done: false }; run.msg.steps.push(st); agThread();
+        try { const c = await RS().voiceClip(i); halt(run); if (c) { RS().putClip(i, c); done.push(i + 1); } } // a clip made after Stop or a switch is not written
+        catch (e) { if (!still(run)) throw e; failed.push(`scene ${i + 1} (${e.message})`); st.err = true; }
+        st.done = true; agThread();
+      }
+      halt(run);
+      const grown = a.fit === false ? 0 : RS().fitToVoices();
+      return `Voiced scene(s) ${done.join(', ') || 'none'}.${failed.length ? ' Failed: ' + failed.join('; ') + '.' : ''}${grown ? ` ${grown} scene(s) grew to fit their voice; the video is now ${sec(MO.timeline(ED.d.pages).total)} s.` : ''}`;
+    },
+    async set_voice(a) {
+      soundGate(); if (!soundOpts) soundOpts = await RS().options();
+      const r = voiceInput(RS().A(), a, { voices: voices().list, languages: RS().LANGUAGES });
+      if (Object.keys(r.patch).length) mutate(() => { ED.d.audio = { ...RS().A(), ...r.patch }; }, () => {});
+      return `${Object.keys(r.patch).length ? 'Set ' + Object.entries(r.patch).map(([k, v]) => `${k} ${v}`).join(', ') + '. Call make_voices with the scenes to re-voice for the change to be heard.' : 'Nothing changed.'}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    async remove_voice(a) {
+      soundGate(); const idx = (Array.isArray(a.scenes) ? a.scenes : []).map((n) => Math.round(+n) - 1).filter((i) => i >= 0 && i < ED.d.pages.length);
+      if (!idx.length) throw new Error('Name the scenes, 1-based');
+      mutate(() => idx.forEach((i) => { const pg = ED.d.pages[i], vo = (pg.scene && pg.scene.vo) || {}; if (vo.src) RS().drop(vo.src); pg.scene = { ...MO.sceneOf(pg), vo: { ...vo, src: '', dur: 0, by: '', srcText: '' } }; }), () => {});
+      return `Removed the voice of scene(s) ${idx.map((i) => i + 1).join(', ')}; their text is kept.`;
+    },
+    async set_music(a, run) {
+      soundGate(); const cur = RS().A().music || null, r = musicInput(cur, a);
+      let made = '', track = null;
+      if (r.compose) { track = await RT.composeMusic(r.compose, RS().seconds()); halt(run); made = ` Composed ${r.compose} music.`; } // nothing is written before the run is checked
+      mutate(() => {
+        const au = { ...RS().A() };
+        if (track) { if (cur && cur.src && cur.src !== track.src) RS().drop(cur.src); au.music = { ...track, vol: cur && cur.vol != null ? cur.vol : 0.35, ...(cur && cur.fadeIn === false ? { fadeIn: false } : {}), ...(cur && cur.fadeOut === false ? { fadeOut: false } : {}), ...r.music }; }
+        else { if (!r.music && cur && cur.src) RS().drop(cur.src); au.music = r.music; }
+        if (r.duck !== undefined) au.duck = r.duck;
+        ED.d.audio = au;
+      }, () => {});
+      const m = RS().A().music;
+      return `${m ? `Music “${m.name}” at ${Math.round((m.vol == null ? 0.35 : m.vol) * 100)}%, fade in ${m.fadeIn === false ? 'off' : 'on'}, fade out ${m.fadeOut === false ? 'off' : 'on'}` : 'No music'}, ducking ${RS().A().duck === false ? 'off' : 'on'}.${made}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    async check_design(a) {
+      const i = a && a.page != null ? pageIx(a.page) : ED.pi, pg = ED.d.pages[i], [w, h] = dim(), b = brand(), sys = b.designSystem ? tidySystem(b.designSystem, dsSourceIds(b.designSystem)) : null;
+      return `Slide ${i + 1}: ` + lintText(lintSlide(pg, { w, h }, b, sys), (id) => (pg.layers.find((l) => l.id === id) || {}).name || '');
+    },
   };
   const n = (a, k) => ((a && a[k]) || []).length;
   const STEP = {
     update_layers: (a) => `Editing ${n(a, 'updates')} layer${n(a, 'updates') === 1 ? '' : 's'}`, add_layers: (a) => `Adding ${n(a, 'layers')} layer${n(a, 'layers') === 1 ? '' : 's'}`,
     delete_layers: (a) => `Deleting ${n(a, 'ids')} layer${n(a, 'ids') === 1 ? '' : 's'}`, duplicate_layers: () => 'Duplicating layers', arrange_layers: (a) => `Moving layers ${a.to || ''}`,
-    align_layers: (a) => `Aligning: ${a.align || ''}`, set_background: () => 'Changing the background', manage_slides: (a) => ({ add: 'Adding a slide', duplicate: 'Duplicating a slide', delete: 'Deleting a slide', move: 'Moving a slide', go: 'Opening a slide' }[a.action] || 'Slides'),
+    align_layers: (a) => `Aligning: ${a.align || ''}`, set_background: () => 'Changing the background', manage_slides: (a) => ({ add: 'Adding a page', duplicate: 'Duplicating a page', delete: 'Deleting a page', move: 'Moving a page', go: 'Opening a page' }[a.action] || 'Pages'),
     resize_canvas: (a) => `Resizing to ${a.ratio}`, rename_design: () => 'Renaming the design', apply_brand_template: () => 'Applying a brand template', build_live_slide: (a) => `Building a live ${a.kind || ''} slide`,
     write_caption: () => 'Writing the caption', select_layer: () => 'Selecting a layer', get_slide: (a) => `Reading slide ${a.index}`, view_slide: () => 'Looking at the slide',
+    view_reference: () => 'Looking at a reference', check_design: () => 'Checking the design',
+    make_video: () => 'Turning the design into a video', animate_layers: (a) => `Animating ${n(a, 'updates')} layer${n(a, 'updates') === 1 ? '' : 's'}`,
+    auto_animate: (a) => (String(a.scenes).toLowerCase() === 'all' ? 'Animating every scene' : 'Animating the scene'),
+    manage_scenes: (a) => ({ add: 'Adding a scene', duplicate: 'Duplicating a scene', delete: 'Deleting a scene', move: 'Moving a scene', go: 'Opening a scene' }[a.action] || 'Scenes'),
+    set_scene: () => 'Updating the scene', view_frame: () => 'Looking at the video',
+    read_captions: () => 'Reading the captions', edit_captions: (a) => `Editing ${n(a, 'edits')} caption line${n(a, 'edits') === 1 ? '' : 's'}`, style_captions: () => 'Styling the captions',
+    set_grade: () => 'Changing the colours', set_audio: () => 'Changing the sound',
+    write_voiceover: () => 'Writing the voice-over', make_voices: () => 'Making the voices', set_voice: () => 'Choosing the voice', remove_voice: () => 'Removing voices', set_music: () => 'Changing the music',
+    read_planner: () => 'Reading the planner', propose_schedule: () => 'Proposing a post', propose_automation: () => 'Proposing an automation',
   };
 
   /* ---------- the loop ---------- */
@@ -7518,19 +8500,22 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (snap() === run.pre) return;
     ED.undo.length = Math.min(run.startLen, ED.undo.length); ED.undo.push(run.pre); ED.redo = []; run.msg.after = ED.undo.length; touch(); edTop();
   }
-  async function agAI(text) {
+  /** note: words for the model only, not shown in the chat (the Overview's prompt box says the design is new) */
+  async function agAI(text, note, refs) {
     const d = ED.d, model = current(); if (!d || !model) return;
-    d.chat = d.chat || [];
+    d.chat = d.chat || []; refs = refs || ED.agRefs || []; ED.agRefs = []; agRefsDraw(); ED.agHist = false;
     const msg = { r: 'a', steps: [], done: false, t: '', ai: true, model: modelName(model) };
-    d.chat.push({ r: 'u', t: text }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
-    const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length };
+    d.chat.push({ r: 'u', t: text, ...(refs.length ? { refs: refs.map((r) => r.thumb) } : {}) }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
+    const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length, d };
     const alive = () => id === ED.agRun && ED.d === d;
     const c = conv(); trim(c);
     try {
-      c.push({ role: 'user', text: ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text, image: await picture(ED.pi) || undefined });
+      if (ED.d.motion) { RT.motion.exitPreview(true); soundOpts = await RT.reelSound.options().catch(() => null); } // a run works on the editing view; the voices for the context
+      const why = [note, refsNote(refs.length)].filter(Boolean).join(' ');
+      c.push({ role: 'user', text: (ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text) + (why ? `\n\n(${why})` : ''), image: await shot() || undefined, ...(refs.length ? { refs: refs.map((r) => r.full) } : {}) });
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         if (!alive()) return;
-        const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, context: context(), messages: c } });
+        const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, mode: agMode(), context: context(), messages: c } });
         if (!alive()) return;
         c.push({ role: 'assistant', text: r.text || '', calls: r.calls || [] });
         if (r.text) { msg.t = r.text; agThread(); }
@@ -7539,8 +8524,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         for (const call of r.calls) {
           const st = { l: (STEP[call.name] || (() => call.name))(call.input || {}), done: false }; msg.steps.push(st); agThread();
           let out;
-          try { if (!T[call.name]) throw new Error('Unknown tool'); if (call.input && call.input._error) throw new Error(call.input._error); out = await T[call.name](call.input || {}, run); }
-          catch (e) { out = 'Error: ' + e.message; st.err = true; }
+          try {
+            if (!T[call.name]) throw new Error('Unknown tool'); if (call.input && call.input._error) throw new Error(call.input._error);
+            if (!allowed(call.name, agMode())) throw new Error('This tool is not available in this mode');
+            out = await T[call.name](call.input || {}, run);
+          } catch (e) { out = 'Error: ' + e.message; st.err = true; }
+          if (call.name !== 'view_frame') RT.motion.dropFrames(); // the design may have changed: the next frame is prepared again
           if (!alive()) return;
           st.done = true; agThread();
           results.push(typeof out === 'string' ? { id: call.id, text: out } : { id: call.id, text: out.text, image: out.image });
@@ -7554,7 +8543,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       // a turn without its tool results would break the next request
       while (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop();
     } finally {
-      if (RUN === run) { finishUndo(run); RUN = null; }
+      if (RUN === run || !RUN) { RT.motion.dropFrames(); if (FOOTAGE.agent) FOOTAGE.agent.dropFrame(); } // a newer run may be using the frames
+      if (RUN === run) {
+        if (ED.d === run.d) finishUndo(run); // another design opened meanwhile has its own history
+        RUN = null;
+        if (run.moved && alive() && agMode() === 'animate') RT.motion.previewScene(ED.pi); // the result plays once, as after Magic animate
+      }
       if (alive()) { msg.done = true; ED.agBusy = false; agThread(); }
     }
   }
@@ -7562,19 +8556,27 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _stop = agStop;
   agStop = function () {
     const run = RUN; _stop();
-    if (run) { RUN = null; finishUndo(run); if (run.msg.after) { run.msg.t = 'Stopped. The changes made so far are kept: use Undo to revert them.'; agThread(); } const c = conv(); while (c.length && c[c.length - 1].role !== 'tool' && c[c.length - 1].role !== 'assistant') c.pop(); if (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop(); }
+    if (run) { RUN = null; if (ED.d === run.d) finishUndo(run); if (run.msg.after) { run.msg.t = 'Stopped. The changes made so far are kept: use Undo to revert them.'; agThread(); } const c = conv(); while (c.length && c[c.length - 1].role !== 'tool' && c[c.length - 1].role !== 'assistant') c.pop(); if (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop(); }
   };
 
   /* ---------- wiring into the panel ---------- */
   const PROMPTS = { headline: 'Write a stronger, punchier headline for this slide in our brand voice', carousel: 'Turn this slide into a 3-slide carousel that tells a short story, with consistent design and page numbers', caption: 'Write a caption for this post in our brand voice, with a few relevant hashtags', story: 'Adapt this design to a Story (9:16) and fix the layout so everything sits well' };
   const _run = agRun;
+  const NO_KEY_VIDEO = 'Add an AI key in Settings to use the agent on videos.';
   agRun = function (text, key) {
     if (!AGM.list) { loadModels(); }
     if (aiOn()) return agAI(key && PROMPTS[key] ? PROMPTS[key] : text);
+    if (agMode() !== 'design') return toast(NO_KEY_VIDEO); // the rule-based actions are for static designs
+    if ((ED.agRefs || []).length) { ED.agRefs = []; agRefsDraw(); toast('Add an AI key in Settings to use inspiration pictures'); }
     return _run(text, key);
   };
   const _empty = agEmpty;
   agEmpty = function () {
+    if (agMode() !== 'design') { // a video: its own prompts with a model, the setup line without one
+      const w = agWords();
+      return `<div class="ag-empty"><div class="ag-hero"><div class="ag-orb">${ic('studio', 26)}</div><h3>What’s next?</h3><p>${esc(aiOn() ? w.empty : NO_KEY_VIDEO)}</p></div>${aiOn()
+        ? `<div class="ag-lbl">Quick actions</div><div class="ag-quick">${w.prompts.map(([k, l]) => `<button class="ag-qa" data-act="agAnim" data-k="${esc(k)}"><span class="ag-ti">${ic('wand', 16)}</span><b>${esc(l)}</b></button>`).join('')}</div>` : ''}</div>`;
+    }
     const h = _empty(); if (!aiOn()) return h;
     return h.replace('Pick an action, or describe the change you want.', 'Describe any change: layout, copy, colours, new slides, live data… I edit the design for you.');
   };
@@ -7584,12 +8586,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _nw = ACT.agNew;
   Object.assign(ACT, {
     agNew: (a) => { if (ED.d) mem.delete(ED.d.id); RUN = null; _nw(a); },
+    agHistOpen: ((open) => (a) => { const had = ED.d && ED.d.chat; open(a); if (ED.d && ED.d.chat !== had) mem.delete(ED.d.id); })(ACT.agHistOpen),
     agModel: () => { AGM.open = !AGM.open; agModelChip(); if (AGM.open) { const on = $('.ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
     agPickModel: (a) => { remember(a.dataset.p ? { provider: a.dataset.p, model: a.dataset.m } : null); AGM.open = false; agModelChip(); const v = current(); toast(`The agent now uses ${modelName(v)}`); },
     agModelSetup: () => { S.set.sec = 'ai'; save(); location.hash = '#/settings'; },
+    agAnim: (a) => { const p = agWords().prompts.find((x) => x[0] === a.dataset.k); if (p) agRun(p[2]); },
   });
   document.addEventListener('click', (e) => { if (AGM.open && e.target.isConnected && !e.target.closest('.ag-mw')) { AGM.open = false; agModelChip(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && AGM.open) { AGM.open = false; agModelChip(); } });
+  AGAPI = { list: () => AGM.list, load: loadModels, current, modelName, modelMenu, run: agAI, compact, mode: agMode };
 }
 
 /* ============ v26 · Automations: recurring posts with live data ============ */
@@ -7725,11 +8730,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   NAV.splice(NAV.findIndex((n) => n[0] === 'planner') + 1, 0, ['automations', 'Automations', 'refresh', 'New']);
 
   /* ---------- editor ---------- */
-  function openAuto(a, preset) {
+  /** a: an automation to edit; preset: a starting point from the presets; prefill: a proposal from the Studio Agent (new automation only), with onDone after it is created */
+  function openAuto(a, preset, prefill) {
     const tz = schedTz(), b = brand();
     const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false, approval: !!a.approval }
       : { id: null, name: preset ? preset.t : '', d: null, build: preset ? preset.build : null, cadence: preset ? { ...preset.cadence, days: [...preset.cadence.days] } : { kind: 'weekly', days: [1], time: '09:00' },
           pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true, approval: false };
+    if (prefill && !a) {
+      const p = prefill;
+      if (p.name) st.name = p.name;
+      if (p.d) { st.d = p.d; st.build = null; }
+      if (p.cadence) st.cadence = { ...p.cadence, days: [...(p.cadence.days || [])] };
+      if (p.pf) st.pf = new Set(p.pf.filter((k) => S.platforms[k]));
+      if (p.caption) st.caption = { ...p.caption };
+      if (p.startDate) st.startDate = p.startDate; if (p.endDate) st.endDate = p.endDate;
+    }
     const designs = () => [...S.designs].sort((x, y) => (liveOf(y).length ? 1 : 0) - (liveOf(x).length ? 1 : 0)).slice(0, 12);
     const FIELDS = [['{date}', 'Date'], ['{weekday}', 'Weekday'], ['{week}', 'Week'], ['{headline}', 'Headline'], ['{price}', 'Price'], ['{website}', 'Website'], ['{hashtags}', 'Hashtags']];
     let close = () => {}, root = null;
@@ -7809,10 +8824,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         close(); await load(true); pull();
         const n = r && r.next && r.next[0];
         toast(a ? 'Automation saved' : `Automation created.${n ? ` First post: ${whenLabel(n.date, n.time)}` : ''}`);
-        if (!onPage()) location.hash = '#/automations';
+        if (prefill && prefill.onDone && !a) prefill.onDone(); // opened from an agent card: the user stays where they are; the card links to Automations
+        else if (!onPage()) location.hash = '#/automations';
       } catch (e) { btn.isConnected && busy(btn, false); toast('Couldn’t save the automation: ' + e.message); }
     }
   }
+  AUTOS = { list: () => mine(), load, open: openAuto, aiReady };
   function confirmDelete(a) {
     modal(`<div class="mh"><h2>Delete “${esc(a.name)}”?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
       <div class="mb"><p class="sm-t">Its upcoming posts are removed from the planner. Posts already published stay where they are. The design is kept.</p></div>
@@ -9792,7 +10809,7 @@ function clipCss(l, frames) {
 
   function historyHTML() {
     const L = H.list || [], edit = canEdit();
-    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn primary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
+    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn secondary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
       + '<p class="xs-t muted">Saved versions of this design. One is taken automatically when you open it; give it a name to keep it.</p>';
     if (H.loading && !H.list) return head + '<p class="sm-t muted">Loading…</p>';
     if (H.err) return head + `<div class="note warn"><span>${H.err} <button class="btn link sm" data-act="hv35Retry">Try again</button></span></div>`;
@@ -9936,8 +10953,8 @@ function clipCss(l, frames) {
   /* ---------- the Comments tab ---------- */
   function listHTML() {
     const ts = threads(), open = ts.filter((t) => !t.resolved), done = ts.filter((t) => t.resolved);
-    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · slide ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
-    return `<button class="btn ${C.mode ? 'secondary' : 'primary'} sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
+    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · page ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
+    return `<button class="btn secondary sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
       + (open.length ? `<div class="c36-l">${open.map(row).join('')}</div>` : '<p class="sm-t muted">No open comments on this design.</p>')
       + (done.length ? `<button class="btn link sm" data-act="cm36Done">${C.showDone ? 'Hide' : 'Show'} ${done.length} resolved</button>${C.showDone ? `<div class="c36-l">${done.map(row).join('')}</div>` : ''}` : '');
   }
@@ -10012,13 +11029,16 @@ function clipCss(l, frames) {
   PAGES.studio.view = function () {
     const html = _sv37.apply(this, arguments), m = /<div class="tiles">([\s\S]*?)<\/div>\s*<div class="lib-bar">/.exec(html);
     if (!m) return html;
-    const posts = m[1].replace('<b>Story / Reel</b><small>1080 × 1920</small>', '<b>Story</b><small>1080 × 1920 · still</small>');
-    const videos = MO.FORMATS.map((f) => `<button class="tile vt37" data-act="mo37New" data-f="${f.k}" title="${esc(f.n)} for ${esc(f.nets)}: opens an empty video"><span class="shape"><i style="${shapeOf(f.ratio)}">${ic('play37', 9)}</i></span><span><b>${f.n}</b><small>${f.s.split(' · ')[1]}</small></span></button>`).join('');
-    const block = `<section class="cr37" aria-label="Create">
-      <div class="cr37-g"><div class="cr37-h"><b>Posts</b><small>Still images and carousels</small></div><div class="cr37-row">${posts}</div></div>
-      <div class="cr37-g"><div class="cr37-h"><b>Videos</b><span class="cr37-new">New</span><small>Intro, scenes and outro, animated with your brand kit</small></div><div class="cr37-row">${videos}</div></div></section>`;
+    // Unified Studio: a size or a starting point, never an editor (home.js); the old Posts and Videos rows are gone
+    const block = createBlockHTML({ ic, esc, shapeOf });
     return html.replace(m[0], block + '<div class="lib-bar">');
   };
+  /** A size: a blank still at that size (it becomes a carousel with pages, a video with Animate) */
+  ACT.crSize = (a) => { if (!canEdit() || !a) return; ACT.newDesign({ dataset: { ratio: ensureRatio(a.dataset.r), slides: a.dataset.n || '1' } }); };
+  /** Template: the Templates tab of the library, scrolled into view */
+  ACT.crTemplates = () => { ST.tab = 1; ST.page = 0; route(); const b = $('.lib-bar'); if (b) b.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+  /** Upload a video: an empty video, then the file picker (the empty video also says "Add your video") */
+  ACT.crUpload = () => { if (!canEdit() || !ACT.ftBlank) return; ACT.ftBlank(); setTimeout(() => { if (ACT.ftPick) ACT.ftPick(); }, 400); };
   /** A video tile opens the editor right away on an empty video: one blank scene in the brand's background color */
   ACT.mo37New = (a) => { if (canEdit()) createMotion(MO.formatOf(a && a.dataset.f)); };
   function createMotion(F) {
@@ -10038,13 +11058,14 @@ function clipCss(l, frames) {
 
   /* ---------- playback on the canvas ---------- */
   /** Audio hooks, filled in by the audio section (v38): what plays, the caption, the timeline lanes, the export mix */
-  const AU = RT.moAudio = { tick() {}, stop() {}, caption: () => null, labels: () => '', lanes: () => '', exportSetup: async () => null, drawCaption() {} };
+  const AU = RT.moAudio = { tick() {}, stop() {}, exportSetup: async () => null, drawCaption() {}, muted: { voice: false, music: false }, capsPreview: null };
   const PL = { on: false, t: 0, at: 0, raf: 0, view: null, cache: new Map(), loop: false, stopAt: 0, autoExit: false };
   function view() {
     if (PL.view && PL.view.isConnected) return PL.view;
     const sc = $('#scaler'); if (!sc) return null; const [w, h] = dim();
     const v = document.createElement('div'); v.className = 'mo-view'; v.style.cssText = `width:${w}px;height:${h}px`;
-    v.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); exitPreview(); });
+    // a press on the caption drags it (the Video Studio, reel-source.js); anywhere else goes back to editing
+    v.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); if (RT.moReel.viewDown && RT.moReel.viewDown(e, v)) return; exitPreview(); });
     sc.append(v); PL.view = v; PL.cache.clear();
     const ed = $('.ed'); ed && ed.classList.add('mo-live');
     return v;
@@ -10082,8 +11103,18 @@ function clipCss(l, frames) {
       const el = sceneEl(sc.i); el.style.display = ''; el.style.zIndex = z; paint(el, st);
       el._ly.forEach((r) => paint(r.x, stateOf(el._T, r.l, local, sc.dur, D), r.op, r.f, r.c));
     });
-    const cap = AU.caption(t), v = PL.view; let ce = v.querySelector('.mo-cap');
-    if (cap) { if (!ce) { ce = document.createElement('div'); ce.className = 'mo-cap'; v.append(ce); } if (ce.textContent !== cap) ce.textContent = cap; ce.hidden = false; } else if (ce) ce.hidden = true;
+    // the captions: drawn by captions.js on a canvas over the scenes (the export draws them the same way, in frame())
+    // at the size it is shown (× devicePixelRatio, at most the design size); nothing is cleared or drawn while it stays blank
+    const v = PL.view, cap = captionFrame(ED.d, t, AU.capsPreview); let ce = v.querySelector('canvas.mo-capc');
+    if (!ce) { ce = document.createElement('canvas'); ce.className = 'mo-capc'; ce.setAttribute('aria-hidden', 'true'); ce._blank = true; v.append(ce); }
+    if (cap || !ce._blank) {
+      const r = v.getBoundingClientRect(), s = Math.min(1, ((r.width || W) * Math.min(2, window.devicePixelRatio || 1)) / W);
+      const cw = Math.max(1, Math.round(W * s)), ch = Math.max(1, Math.round(H * s));
+      if (ce.width !== cw || ce.height !== ch) { ce.width = cw; ce.height = ch; } // a resize clears it
+      const cx = ce.getContext('2d');
+      if (cx) { cx.setTransform(1, 0, 0, 1, 0, 0); cx.clearRect(0, 0, cw, ch); if (cap) AU.drawCaption(cx, ED.d, tl, t, s, W, H, cap); }
+      ce._blank = !cap;
+    }
     if (PL.on) AU.tick(t);
     head(t);
   }
@@ -10114,70 +11145,42 @@ function clipCss(l, frames) {
   function previewScene(i, until) { const s = TL().scenes[i]; if (!s) return; exitPreview(true); play(s.start, s.start + Math.min(s.dur, until || s.dur), true); }
   const toggle = () => (PL.on ? pause() : (PL.view && PL.t > 0 ? play() : play(TL().scenes[ED.pi] ? TL().scenes[ED.pi].start : 0)));
 
-  /* ---------- timeline (the slide strip of a motion design) ---------- */
-  let folded = false; try { folded = localStorage.getItem('boga.mo37Folded') === '1'; } catch (e) {}
-  const lbl = () => (innerWidth < 700 ? 96 : 148); // the layer names column
-  let K = 0.1; // px per ms
+  /* ---------- timeline: the Video Studio shell draws it (reel-source.js); the scene blocks and layer lanes come from here ---------- */
   function head(t) {
-    const ph = $('#mo37Ph'); if (ph) ph.style.transform = `translateX(${t * K}px)`;
-    const tt = $('#mo37T'); if (tt) tt.textContent = MO.fmtTime(t);
+    if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(t, PL.on); // the Video Studio shell's transport and playhead
   }
   function controls() {
-    const b = $('#mo37Play'); if (b) { b.innerHTML = ic(PL.on ? 'pause37' : 'play37', 16); b.title = (PL.on ? 'Pause' : 'Play') + ' (K)'; b.setAttribute('aria-label', PL.on ? 'Pause' : 'Play'); }
     const pv = $('#mo37Pv'); if (pv) pv.hidden = !PL.view || PL.on;
+    if (RT.moReel && RT.moReel.onTime) RT.moReel.onTime(PL.t, PL.on);
   }
   const trIcon = (k) => ({ cut: '│', fade: '◐', slide: '→', push: '↑', zoom: '⤢', wipe: '▸' }[k] || '◐');
-  function tlHTML() {
-    const d = ED.d, tl = TL(), host = $('#edPages'), LBL = lbl(), avail = Math.max(200, (host ? host.clientWidth : 900) - LBL - 150); // room for the + Scene button at the end
-    // fit the whole video, but never squeeze a scene under ~84 px: the timeline scrolls sideways instead
-    K = clamp(Math.max(avail / Math.max(1000, tl.total), 84 / Math.max(500, Math.min(...tl.scenes.map((s) => s.dur)))), 0.02, 0.3);
-    const span = tl.total * K, step = [1000, 2000, 5000, 10000].find((s) => s * K >= 40) || 10000;
-    const ticks = Array.from({ length: Math.floor(tl.total / step) + 1 }, (_, i) => `<span style="left:${i * step * K}px">${MO.fmtTime(i * step, false)}</span>`).join('');
-    const scenes = tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
-      return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${s.dur * K < 130 ? ' sm' : ''}" style="left:${s.start * K}px;width:${s.dur * K}px">
+  /** The scene blocks with their + buttons. pos(ms): a CSS length (% in the shell's timeline), px(ms): its width on screen */
+  function sceneBlocks(pos, px) {
+    const d = ED.d, tl = TL();
+    return tl.scenes.map((s) => { const lab = kindLabel(d, s.i);
+      return `<div class="mo-sc k-${s.k}${s.i === ED.pi ? ' on' : ''}${px(s.dur) < 130 ? ' sm' : ''}" style="left:${pos(s.start)};width:${pos(s.dur)}">
         <button class="mo-sc-b" data-act="mo37Scene" data-i="${s.i}" title="${esc(lab)} · ${secs(s.dur)}" aria-label="${esc(lab)}, ${secs(s.dur)}" aria-current="${s.i === ED.pi}">${thumb(d.pages[s.i], d.ratio, 34, 44)}<span class="mo-sc-l"><b>${esc(lab)}</b><small>${secs(s.dur)}${s.i && s.tr !== 'cut' ? ` · ${trIcon(s.tr)} ${MO.TRANSITIONS[s.tr]}` : ''}</small></span></button>
-        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${s.start * K}px" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('')
-      + `<button class="mo-addend${insAt === tl.scenes.length && ED.tab === 'motion' ? ' on' : ''}" data-act="mo37Ins" data-at="${tl.scenes.length}" style="left:${span + 10}px" title="Add a scene at the end">${ic('plus', 16)}<span>Scene</span></button>`;
-    const cur = tl.scenes[ED.pi], pg = curP(), sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
-    const rows = pg.layers.filter((l) => l.type !== 'group' && !isBg(l)).reverse();
-    const lane = (l) => { const a = MO.anim(l), on = a.in !== 'none';
-      return `<div class="mo-lane${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}"><span class="mo-life" style="left:${cur.start * K}px;width:${cur.dur * K}px"></span>
-        ${on ? `<span class="mo-bar" data-bar="${l.id}" style="left:${(cur.start + a.d) * K}px;width:${Math.max(6, a.t * K)}px" title="${MO.ENTER[a.in][0]} · starts at ${secs(a.d)} · lasts ${secs(a.t)}. Drag to move, drag the end to change the length.">${a.t * K >= 44 ? `<span>${MO.ENTER[a.in][0]}</span>` : ''}<i class="mo-bh"></i></span>` : ''}
-        ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${(cur.start + cur.dur - a.ot) * K}px;width:${Math.max(6, a.ot * K)}px" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
-        ${a.loop !== 'none' ? `<span class="mo-lp" style="left:${(cur.start + cur.dur) * K - 18}px" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; };
-    return `<div class="pgs-head mo-head">
-        <span class="mo-ctl"><button class="tb" data-act="mo37Rew" title="Back to the start" aria-label="Back to the start">${ic('rew37', 15)}</button><button class="mo-play" id="mo37Play" data-act="mo37Play"></button><button class="tb ${PL.loop ? 'on' : ''}" data-act="mo37Loop" title="Loop playback" aria-label="Loop playback" aria-pressed="${PL.loop}">${ic('loop37', 15)}</button></span>
-        <span class="mo-time"><b id="mo37T">${MO.fmtTime(PL.t)}</b><span> / ${MO.fmtTime(tl.total)}</span></span>
-        <button class="btn link sm mo-pv" id="mo37Pv" data-act="mo37Edit" hidden>Previewing · back to editing</button>
-        <span class="sp"></span>
-        <button class="tb" data-act="mo37More" title="More" aria-label="More video actions" aria-haspopup="menu">${ic('more', 16)}</button>
-        <button class="tb fold" data-act="mo37Fold" title="${folded ? 'Show timeline' : 'Hide timeline'}" aria-label="${folded ? 'Show timeline' : 'Hide timeline'}" aria-expanded="${!folded}">${ic('chevD', 16)}</button>
-      </div>
-      <div class="mo-tl"><div class="mo-grid" style="--lbl:${LBL}px">
-        <div class="mo-gl"><div class="mo-gl-r mo-r0">Time</div><div class="mo-gl-r mo-r1">Scenes</div>${AU.labels()}
-          ${rows.map((l) => `<button class="mo-gl-r mo-nm${sel.has(l.id) ? ' on' : ''}" data-act="mo37Pick" data-id="${l.id}" title="${esc(l.name)}">${ic(l.type === 'text' ? 'type' : l.type === 'image' ? 'image' : 'shapes', 13, 'faint')}<span>${esc(l.name)}</span></button>`).join('')}
-          ${rows.length ? '' : '<div class="mo-gl-r mo-nm muted">No layers</div>'}</div>
-        <div class="mo-gr" id="mo37Lanes" style="width:${span + 130}px">
-          <div class="mo-ruler" data-scrub>${ticks}</div>
-          <div class="mo-scrow">${scenes}</div>${AU.lanes(K, tl)}
-          ${rows.map(lane).join('')}${rows.length ? '' : '<div class="mo-lane"></div>'}
-          <div class="mo-ph" id="mo37Ph" style="transform:translateX(${PL.t * K}px)"><i data-scrub></i></div>
-        </div></div></div>`;
+        <i class="mo-rs" data-rs="${s.i}" title="Drag to change the length"></i></div>${s.i ? `<button class="mo-ins${insAt === s.i && ED.tab === 'scenes' ? ' on' : ''}" data-act="mo37Ins" data-at="${s.i}" style="left:${pos(s.start)}" title="Add a scene here" aria-label="Add a scene before ${esc(lab)}">${ic('plus', 12)}</button>` : ''}`; }).join('');
   }
-  const _pg37 = edPages;
-  edPages = function () {
-    const host = $('#edPages'); if (!host || !ED.d) return;
-    if (!isMo(ED.d)) { host.classList.remove('mo37'); return _pg37.apply(this, arguments); }
-    const stage = host.closest('.ed-stage'), old = $('.mo-tl', host), sl = old ? [old.scrollLeft, old.scrollTop] : null;
-    if (stage) stage.dataset.pgs = folded ? 'c' : 'o';
-    host.classList.add('mo37'); host.innerHTML = tlHTML(); controls();
-    const tl = $('.mo-tl', host); if (tl && sl) { tl.scrollLeft = sl[0]; tl.scrollTop = sl[1]; }
-  };
-
-  /* drags in the timeline: scrub the playhead, change a scene's length, move or stretch an animation */
+  /** The layers of the open scene, top first, with their animation lane (same units as sceneBlocks; html(px) may give another px) */
+  function layerLanes(pos, px0) {
+    const cur = TL().scenes[ED.pi], sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
+    return curP().layers.filter((l) => l.type !== 'group' && !isBg(l)).reverse().map((l) => ({ l, html: (px = px0) => { const a = MO.anim(l), on = a.in !== 'none';
+      return `<div class="mo-lane${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}"><span class="mo-life" style="left:${pos(cur.start)};width:${pos(cur.dur)}"></span>
+        ${on ? `<span class="mo-bar" data-bar="${l.id}" style="left:${pos(cur.start + a.d)};width:max(6px,${pos(a.t)})" title="${MO.ENTER[a.in][0]} · starts at ${secs(a.d)} · lasts ${secs(a.t)}. Drag to move, drag the end to change the length.">${px(a.t) >= 44 ? `<span>${MO.ENTER[a.in][0]}</span>` : ''}<i class="mo-bh"></i></span>` : ''}
+        ${a.out !== 'none' ? `<span class="mo-bar out" style="left:${pos(cur.start + cur.dur - a.ot)};width:max(6px,${pos(a.ot)})" title="Exit: ${MO.EXIT[a.out][0]}"></span>` : ''}
+        ${a.loop !== 'none' ? `<span class="mo-lp" style="left:calc(${pos(cur.start + cur.dur)} - 18px)" title="Loop: ${MO.LOOP[a.loop][0]}">∞</span>` : ''}</div>`; } }));
+  }
+  /* the shell's timeline (reel-source.js): a scene's length and the animation bars drag here, the + / scene / clip buttons
+     act on click; its own lane seeks on everything else. Capture phase: ahead of the lane. */
   document.addEventListener('pointerdown', (e) => {
     if (!ED.d || !isMo(ED.d) || e.button !== 0) return;
-    const lanes = $('#mo37Lanes'); if (!lanes || !lanes.contains(e.target)) return;
+    const tr = e.target.closest && e.target.closest('.vs-tl-track'); if (!tr) return;
+    if (e.target.closest('[data-rs], [data-bar]')) { e.stopPropagation(); const w = tr.getBoundingClientRect().width, total = TL().total; if (w && total) tlDrag(e, tr, w / total); }
+    else if (e.target.closest('.vs-tl-row button')) e.stopPropagation();
+  }, true);
+  /** A drag in the timeline `lanes` drawn at `K` px per ms: scrub the playhead, change a scene's length, move or stretch an animation */
+  function tlDrag(e, lanes, K) {
     const x0 = lanes.getBoundingClientRect().left, at = (ev) => (ev.clientX - x0) / K, tl = TL();
     const rs = e.target.closest('[data-rs]'), bar = e.target.closest('[data-bar]'), scrub = e.target.closest('[data-scrub]') || (!e.target.closest('button') && !rs && !bar);
     let move = null, done = null;
@@ -10203,7 +11206,7 @@ function clipCss(l, frames) {
     e.preventDefault(); let moved = false;
     const mv = (ev) => { moved = true; move(ev); }, up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); done(moved); };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
-  });
+  }
 
   const isEmpty = (pg) => pg.layers.every((l) => isBg(l) || l.hidden);
   const KIND_GROUPS = { intro: 'Intros', body: 'Scenes', outro: 'Outros' };
@@ -10211,12 +11214,12 @@ function clipCss(l, frames) {
       (set by a + of the timeline). When the scene just before it is empty, the pick fills that scene instead. */
   let insAt = null;
   const target = () => { const at = insAt == null ? ED.pi + 1 : insAt, fill = at > 0 && ED.d.pages[at - 1] && isEmpty(ED.d.pages[at - 1]) ? at - 1 : -1; return { at, fill }; };
-  /** Opens the Motion sidebar on its library, aimed at `at` */
+  /** Opens the Scenes sidebar on its library, aimed at `at` */
   function openLibrary(at) {
-    insAt = at; ED.tab = 'motion'; ACT.edTab({ dataset: { k: 'motion' } }); edPages();
+    insAt = at; ACT.edTab({ dataset: { k: 'scenes' } }); edPages();
     requestAnimationFrame(() => { const lib = $('#mo37Lib'); if (!lib) return; lib.scrollIntoView({ block: 'start', behavior: 'smooth' }); lib.classList.remove('flash'); void lib.offsetWidth; lib.classList.add('flash'); });
   }
-  function addScene(kind, key, at, fill = -1) {
+  function addScene(kind, key, at, fill = -1, quiet = false) {
     const [w, h] = dim(), pg = newPage(kind, key, w, h), d = ED.d, label = MO.STARTERS[kind][key][0];
     exitPreview(true);
     mutate(() => {
@@ -10225,47 +11228,73 @@ function clipCss(l, frames) {
       order(d); ED.sel = null; ED.ms = [];
       d.pages.forEach((p, i) => { p.scene = { ...MO.sceneOf(p), tr: !i ? 'cut' : MO.sceneOf(p).tr === 'cut' && p === pg ? 'fade' : MO.sceneOf(p).tr }; });
     });
-    toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
-  }
-  function moreMenu(btn) {
-    const r = btn.getBoundingClientRect(), n = ED.d.pages.length; $$('#ctx').forEach((x) => x.remove());
-    const rows = [['Duplicate this scene', 'copy', () => dupScene(ED.pi)], ['Delete this scene', 'trash', () => delScene(ED.pi), n < 2, 'dng']]; // video-wide actions: the Motion panel's ⋯
-    const c = document.createElement('div'); c.className = 'ctx'; c.id = 'ctx'; c.setAttribute('role', 'menu');
-    c.innerHTML = rows.map((x, k) => (x === '-' ? '<hr>' : `<button role="menuitem" data-k="${k}" class="${x[4] || ''}" ${x[3] ? 'disabled' : ''}><span class="ci">${ic(x[1], 16)}${x[0]}</span></button>`)).join('');
-    document.body.append(c); const h = c.offsetHeight, w = c.offsetWidth;
-    c.style.left = clamp(r.right - w, 8, innerWidth - w - 8) + 'px'; c.style.top = clamp(r.top - h - 6, 8, innerHeight - h - 8) + 'px';
-    c.onclick = (e) => { const b = e.target.closest('button'); if (b && !b.disabled) { c.remove(); rows[+b.dataset.k][2](); } };
-    c.onkeydown = (e) => { e.stopPropagation(); const bs = $$('button:not(:disabled)', c), j = bs.indexOf(document.activeElement); if (e.key === 'ArrowDown') { e.preventDefault(); bs[(j + 1) % bs.length].focus(); } else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(j - 1 + bs.length) % bs.length].focus(); } else if (e.key === 'Escape') { c.remove(); btn.focus(); } };
-    const f = $('button', c); f && f.focus();
+    if (!quiet) toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
   }
   function dupScene(i) { exitPreview(true); mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; }); }
   function delScene(i) { if (ED.d.pages.length < 2) return toast('A video needs at least one scene'); exitPreview(true); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); }
 
   /* ---------- targets of the animation controls: the selection ---------- */
   const targets = () => { const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; return curP().layers.filter((l) => ids.includes(l.id)); };
-  function setAnim(patch, opts = {}) {
-    const ls = targets(); if (!ls.length) return;
+  function setAnim(patch, opts = {}, given) {
+    const ls = given || targets(); if (!ls.length) return;
     mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), ...patch }; if (opts.stagger) l.anim.d = (patch.d ?? MO.anim(l).d) + i * opts.stagger; }));
     if (opts.preview) { const a = MO.anim(ls[ls.length - 1]); previewScene(ED.pi, a.d + a.t + 500); }
   }
 
-  /* ---------- left panel: Motion. A video: what it is, then the scene library (the + of the timeline aim it).
-     A still design: turn it into a video. ---------- */
+  /* ---------- left panels of Animate mode (video-studio.js): Scenes (the scene list, then the scene library the + of the
+     timeline aim) and Animation (presets for the selection, or for every layer of the open scene) ---------- */
   const ti = RAIL.findIndex((r) => r[0] === 'templates'); RAIL.splice(ti + 1, 0, ['motion', 'Motion', 'film37']);
+  /** The layers the Animation panel acts on: the selection, else every visible layer of the open scene */
+  const animOn = () => { const ls = targets(); return ls.length ? { ls, all: false } : { ls: curP().layers.filter((l) => !isBg(l) && !l.hidden && !l.pid), all: true }; };
+  const fxChipsP = (set, cur, key) => fxChips(set, cur, key).replaceAll('data-act="mo37Fx"', 'data-act="an40Fx"');
+  function animPanelHTML() {
+    const { ls, all } = animOn();
+    if (!ls.length) return `<h3>Animation</h3><div class="vs-soon an40-none"><p class="sm-t muted">Add a layer in Design to animate it.</p><button class="btn secondary sm" data-act="vsMode" data-v="design">${ic('layout', 15)}Open Design</button></div>`;
+    const same = (k) => { const v = MO.anim(ls[0])[k]; return ls.every((l) => MO.anim(l)[k] === v) ? v : null; };
+    const what = all ? 'Applies to every layer of this scene' : ls.length > 1 ? `Applies to ${ls.length} selected layers` : 'Applies to the selected layer';
+    return `<h3>Animation</h3>
+      <div class="an40">
+        <p class="xs-t muted an40-on" aria-live="polite">${what}</p>
+        <button class="btn secondary sm mo-magic" data-act="mo37Magic" data-all="0" ${canEdit37() ? '' : 'disabled'}>${ic('wand', 15)}Magic animate this scene</button>
+        <span class="label">Enter</span>${fxChipsP(MO.ENTER, same('in'), 'in')}
+        <span class="label">Exit</span>${fxChipsP(MO.EXIT, same('out'), 'out')}
+        <span class="label">Loop</span>${fxChipsP(MO.LOOP, same('loop'), 'loop')}
+      </div>`;
+  }
+  const canEdit37 = () => !persist.readOnly;
+  /** Draws the Animation panel when what it shows changed (`force`: always): the panel and the selection never disagree */
+  let anShown = null;
+  function drawAnim(p, force = true) { const h = animPanelHTML(); if (!force && anShown === h && p.querySelector('.an40, .an40-none')) return; anShown = h; p.innerHTML = h; }
+  function scenesListHTML(d) {
+    return `<ol class="sc40-list" aria-label="Scenes">${d.pages.map((pg, i) => `<li class="sc40-row${i === ED.pi ? ' on' : ''}">
+      <button class="sc40-go" data-act="sc40Go" data-i="${i}"${i === ED.pi ? ' aria-current="true"' : ''}>${thumb(pg, d.ratio, 44, 54)}<span class="sc40-n"><b>${esc(kindLabel(d, i))}</b><small>${secs(MO.sceneOf(pg).dur)}</small></span></button>
+      <button class="btn ghost icon sm" data-act="sc40Menu" data-i="${i}" aria-label="More for ${esc(kindLabel(d, i))}" data-tip="More">${ic('more', 16)}</button></li>`).join('')}</ol>`;
+  }
+  /** Moves scene i one place earlier (-1) or later (1) inside its part of the video (intro, scenes, outro stay grouped) */
+  const canMove = (i, by) => { const P = ED.d.pages, a = P[i], b = P[i + by]; return !!a && !!b && MO.sceneOf(a).k === MO.sceneOf(b).k; };
+  function moveScene(i, by) {
+    if (!canMove(i, by)) return;
+    exitPreview(true);
+    mutate(() => {
+      const P = ED.d.pages, pg = P[i], other = P[i + by], wasFirst = Math.min(i, i + by) === 0; P[i] = P[i + by]; P[i + by] = pg; ED.pi = i + by; ED.sel = null; ED.ms = [];
+      order(ED.d);
+      ED.d.pages.forEach((p, k) => { const sc = MO.sceneOf(p); p.scene = { ...sc, tr: !k ? 'cut' : wasFirst && sc.tr === 'cut' && (p === pg || p === other) ? 'fade' : sc.tr }; }); // the first scene opens on a cut; one moved off first place fades in
+    });
+  }
   const _pn37 = edPanel;
   edPanel = function () {
-    if (ED.tab !== 'motion') return _pn37.apply(this, arguments);
-    const p = $('#edPanel'), d = ED.d; p.classList.remove('agent');
-    if (!isMo(d)) {
-      p.innerHTML = `<h3>Motion</h3><div class="mo2-hero">${ic('film37', 22)}<b>Make it a video</b><span>Each slide becomes an animated scene.</span><button class="btn primary" data-act="mo37Make">${ic('play37', 14)}Animate this design</button></div>`;
-      return;
-    }
+    const d = ED.d;
+    if (!d || !isMo(d) || (ED.tab !== 'scenes' && ED.tab !== 'animation')) return _pn37.apply(this, arguments);
+    const p = $('#edPanel'); p.classList.remove('agent');
+    if (ED.tab === 'animation') { drawAnim(p); return; }
     const tl = TL(), [w, h] = dim(), o = look(), F = MO.formatOf(d.motion.fmt), n = tl.scenes.length, { at, fill } = target(), kind = S37.kind;
     const where = fill >= 0 ? `Fills ${esc(kindLabel(d, fill))}` : at >= n ? 'Adds at the end' : `Adds before ${esc(kindLabel(d, at))}`;
     const KINDS = [['all', 'layout', 'All'], ['intro', 'play37', 'Intro'], ['body', 'slides', 'Scene'], ['outro', 'stop38', 'Outro']];
     const cards = Object.entries(MO.STARTERS).filter(([k]) => kind === 'all' || kind === k).flatMap(([k, set]) => Object.entries(set).map(([v, st]) => `<button class="mo2-card" data-act="mo37Lib" data-k="${k}" data-v="${v}" title="${esc(st[0])} · ${MO.KINDS[k]}">${thumb({ bg: o.bg, layers: st[1](w, h, o) }, d.ratio, 76, 92)}<span><i class="mo2-dot k-${k}"></i>${esc(st[0])}</span></button>`)).join('');
-    p.innerHTML = `<div class="au2-head"><h3>Motion</h3><button type="button" class="btn ghost icon sm" data-act="mo37PanelMenu" data-tip="More" aria-label="More">${ic('more', 16)}</button></div>
+    p.innerHTML = `<div class="au2-head"><h3>Scenes</h3><button type="button" class="btn ghost icon sm" data-act="mo37PanelMenu" data-tip="More" aria-label="More">${ic('more', 16)}</button></div>
       <div class="mo2-info"><span data-tip="Format">${ic('film37', 14)}${esc(F.n)}</span><span data-tip="Length">${ic('clock', 14)}${MO.fmtTime(tl.total, false)}</span><span data-tip="Scenes">${ic('slides', 14)}${n}</span></div>
+      ${scenesListHTML(d)}
+      <span class="label sc40-add">Add a scene</span>
       <div class="mo-lib" id="mo37Lib">
         <div class="mo2-filter" role="tablist" aria-label="Scene types">${KINDS.map(([k, icon, l]) => `<button role="tab" aria-selected="${kind === k}" class="${kind === k ? 'on' : ''}" data-act="mo37Kind" data-k="${k}">${ic(icon, 14)}<span>${l}</span></button>`).join('')}</div>
         <div class="mo2-where">${ic(fill >= 0 ? 'layout' : 'plus', 13)}<span>${where}</span>${insAt != null ? `<button class="btn ghost icon sm" data-act="mo37Aim" aria-label="Add after the open scene instead" data-tip="Reset">${ic('x', 12)}</button>` : ''}</div>
@@ -10305,19 +11334,18 @@ function clipCss(l, frames) {
       <label class="lab">Length <output class="mo-out">${secs(s.dur)}</output><input type="range" min="500" max="20000" step="100" data-mo="dur" value="${s.dur}"></label>
       ${first ? '<p class="xs-t muted">The first scene opens the video: it has no transition.</p>' : `<div><span class="label">Transition in</span><div class="chips mo-trs">${Object.entries(MO.TRANSITIONS).map(([k, l]) => `<button class="chip ${s.tr === k ? 'on' : ''}" data-act="mo37SetTr" data-k="${k}"><span class="mo-tri">${trIcon(k)}</span>${l}</button>`).join('')}</div></div>
         ${s.tr !== 'cut' ? `<label class="lab">Transition length <output class="mo-out">${secs(s.trd)}</output><input type="range" min="200" max="1500" step="50" data-mo="trd" value="${s.trd}"></label>` : ''}`}
-      <button class="btn secondary sm mo-magic" data-act="mo37Magic" data-all="0">${ic('wand', 15)}Magic animate this scene</button>`,
+      <button class="btn link sm" data-act="edTab" data-k="animation">${ic('wand', 15)}Animate this scene</button>`,
       `<button class="btn ghost icon sm" data-act="mo37Dup" data-tip="Duplicate scene" aria-label="Duplicate scene">${ic('copy', 14)}</button>${n > 1 ? `<button class="btn ghost icon sm" data-act="mo37Del" data-tip="Delete scene" aria-label="Delete scene">${ic('trash', 14)}</button>` : ''}`);
   }
   function animSec(ls) {
     const a = MO.anim(ls[0]), s = MO.sceneOf(curP()), many = ls.length > 1;
     return sec('anim', many ? `Animation · ${ls.length} layers` : 'Animation', `
-      <span class="label">Enter</span>${fxChips(MO.ENTER, a.in, 'in')}
-      ${a.in !== 'none' ? `<div class="g2f">${numS('Start', 'd', a.d, s.dur / 1000)}${numS('Length', 't', a.t, 10)}</div>
+      <p class="sm-t an40-sum">${esc([MO.ENTER[a.in] ? MO.ENTER[a.in][0] : a.in, a.out !== 'none' && MO.EXIT[a.out] ? MO.EXIT[a.out][0] + ' out' : 'no exit', a.loop !== 'none' && MO.LOOP[a.loop] ? MO.LOOP[a.loop][0] + ' loop' : 'no loop'].join(' · '))}</p>
+      <button class="btn secondary sm" data-act="edTab" data-k="animation">${ic('wand', 15)}Change animation</button>
+      ${a.in !== 'none' ? `<span class="label">Enter timing</span><div class="g2f">${numS('Start', 'd', a.d, s.dur / 1000)}${numS('Length', 't', a.t, 10)}</div>
         <label class="lab">Easing<select class="field sm" data-mo="e">${Object.entries(MO.EASES).map(([k, [n]]) => `<option value="${k}" ${a.e === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         ${many ? `<button class="btn secondary sm" data-act="mo37Stagger">${ic('slides', 15)}Stagger, one after the other</button>` : ''}` : ''}
-      <span class="label">Exit</span>${fxChips(MO.EXIT, a.out, 'out')}
-      ${a.out !== 'none' ? `<div class="g2f">${numS('Length', 'ot', a.ot, 5)}</div>` : ''}
-      <span class="label">Loop</span>${fxChips(MO.LOOP, a.loop, 'loop')}`,
+      ${a.out !== 'none' ? `<span class="label">Exit timing</span><div class="g2f">${numS('Length', 'ot', a.ot, 5)}</div>` : ''}`,
       `<button class="btn ghost icon sm" data-act="mo37PlayScene" data-tip="Preview (K plays the video)" aria-label="Preview the animation">${ic('play37', 13)}</button>`);
   }
   const _ep37 = edProps;
@@ -10328,19 +11356,19 @@ function clipCss(l, frames) {
       if (blk && blk !== pb && blk.querySelector(':scope > .label')) blk.remove();
       const sw = pb.querySelector('.switch[data-act=edSafe]'), row = sw && sw.closest('.row'); if (row && row !== pb) row.remove();
     }
-    if (!ED.d || !isMo(ED.d) || ED.rtab !== 'design') return r;
+    // the Animation panel follows the selection (edProps runs on every selection change)
+    if (ED.d && isMo(ED.d) && ED.tab === 'animation') { const ap = $('#edPanel'); if (ap) drawAnim(ap, false); }
+    // the Animate tab: a selected layer's timing, else the scene's role, length and transition
+    if (!ED.d || !isMo(ED.d) || ED.rtab !== 'animate') return r;
     const b = $('#edProps .body'); if (!b) return r;
-    const ls = targets(), tmp = document.createElement('div');
-    tmp.innerHTML = ls.length ? animSec(ls) : sceneSec();
-    const after = ls.length && b.querySelector('.ps9[data-sec=pos]');
-    if (after) after.after(...tmp.children); else { const h = b.querySelector(':scope > .row'); h && ls.length ? h.after(...tmp.children) : b.prepend(...tmp.children); }
+    const ls = targets();
+    b.className = 'body vs-anim'; b.innerHTML = ls.length ? animSec(ls) : sceneSec();
     return r;
   };
   /* number, range and select inputs of the Motion panel and the Scene / Animation sections */
   document.addEventListener('input', (e) => {
     const t = e.target; if (!t.dataset || !t.dataset.mo || t.type !== 'range') return;
     const o = t.closest('label') && t.closest('label').querySelector('.mo-out'); if (o) o.textContent = secs(+t.value);
-    if (t.dataset.mo === 'dur') { const s = TL().scenes[ED.pi], b = $(`#edPages .mo-sc-b[data-i="${ED.pi}"]`); if (s && b) b.parentNode.style.width = +t.value * K + 'px'; }
   });
   document.addEventListener('change', (e) => {
     const t = e.target, k = t.dataset && t.dataset.mo; if (!k || !ED.d || !t.closest('#edProps, #edPanel')) return;
@@ -10354,12 +11382,9 @@ function clipCss(l, frames) {
   /* ---------- actions ---------- */
   Object.assign(ACT, {
     mo37Play: () => toggle(),
-    mo37Rew: () => { pause(); PL.t = 0; if (PL.view) draw(0); else head(0); },
     mo37Loop: () => { PL.loop = !PL.loop; edPages(); },
     mo37Edit: () => exitPreview(),
-    mo37Fold: () => { folded = !folded; try { localStorage.setItem('boga.mo37Folded', folded ? '1' : '0'); } catch (e) {} edPages(); if (ED.fit) requestAnimationFrame(fitZoom); },
     mo37Scene: (a) => { const i = +a.dataset.i, s = TL().scenes[i]; exitPreview(true); insAt = null; PL.t = s ? s.start : 0; if (i !== ED.pi) { ED.pi = i; ED.sel = null; ED.ms = []; edAll(); } else head(PL.t); },
-    mo37Pick: (a) => { exitPreview(true); ED.sel = a.dataset.id; ED.ms = []; ED.rtab = 'design'; edAll(); },
     mo37Ins: (a) => openLibrary(+a.dataset.at),
     mo37Fill: () => openLibrary(ED.pi + 1),
     mo37Aim: () => { insAt = null; edPanel(); edPages(); },
@@ -10370,19 +11395,27 @@ function clipCss(l, frames) {
       ['Make it a still design', 'image', () => ACT.mo37Off()],
     ]); },
     mo37Lib: (a) => { const { at, fill } = target(); insAt = null; addScene(a.dataset.k, a.dataset.v, at, fill); },
-    mo37More: (a) => moreMenu(a),
     mo37Dup: () => dupScene(ED.pi), mo37Del: () => delScene(ED.pi),
     mo37PlayScene: () => previewScene(ED.pi),
     mo37SetKind: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), k: a.dataset.k }; order(ED.d); ED.d.pages.forEach((p, i) => { if (!i) p.scene = { ...MO.sceneOf(p), tr: 'cut' }; }); }); },
     mo37SetTr: (a) => { exitPreview(true); mutate(() => { const pg = curP(); pg.scene = { ...MO.sceneOf(pg), tr: a.dataset.k }; }); if (a.dataset.k !== 'cut') { const s = TL().scenes[ED.pi]; play(Math.max(0, s.start - 600), s.start + s.trd + 400, true); } },
     mo37Fx: (a) => { const k = a.dataset.key, v = a.dataset.v; setAnim({ [k]: v }, { preview: v !== 'none' }); },
+    /* the Animation panel's presets: the selection, else every layer of the open scene */
+    an40Fx: (a) => { const k = a.dataset.key, v = a.dataset.v, { ls } = animOn(); exitPreview(true); setAnim({ [k]: v }, { preview: v !== 'none' }, ls); },
+    sc40Go: (a) => ACT.mo37Scene(a),
+    sc40Menu: (b) => { const i = +b.dataset.i, n = ED.d.pages.length; menu37(b, [
+      ['Duplicate', 'copy', () => dupScene(i)],
+      ['Move earlier', 'arrowUp', () => moveScene(i, -1), !canMove(i, -1)],
+      ['Move later', 'arrowDown', () => moveScene(i, 1), !canMove(i, 1)],
+      '-', ['Delete', 'trash', () => delScene(i), n < 2],
+    ]); },
     mo37Stagger: () => { const ls = targets().sort((x, y) => x.y - y.y || x.x - y.x); if (ls.length < 2) return; const base = MO.anim(ls[0]).d; mutate(() => ls.forEach((l, i) => { l.anim = { ...MO.anim(l), d: base + i * 150 }; if (l.anim.in === 'none') l.anim.in = 'fade'; })); previewScene(ED.pi); },
     mo37Magic: (a) => {
       const [w, h] = dim(), all = a.dataset.all === '1';
       exitPreview(true); mutate(() => (all ? ED.d.pages : [curP()]).forEach((pg) => MO.autoAnimate(pg.layers, MO.sceneOf(pg), w, h)));
       toast(all ? 'Every scene is animated' : 'Scene animated'); previewScene(ED.pi);
     },
-    mo37Make: () => { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); toast('Your design is now a video. Press K to play it'); },
+    mo37Make: () => { makeVideo(); toast('Your design is now a video. Press K to play it'); },
     mo37Off: () => {
       modal(`<div class="mh"><h2>Make it a still design?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div><div class="mb"><p class="sm-t">The scenes become slides again and the animations are removed. You can undo this with <span class="kbd">Ctrl Z</span>.</p></div><div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mo37OffGo">Make it still</button></div>`, {
         onMount: (bg, close) => $('#mo37OffGo', bg).addEventListener('click', () => {
@@ -10414,6 +11447,7 @@ function clipCss(l, frames) {
   /* keyboard: K play / pause, comma / period previous / next scene (motion designs) */
   addEventListener('keydown', (e) => {
     if (!document.body.classList.contains('in-editor') || !ED.d || !isMo(ED.d) || ED.editing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (VS.mode() !== 'animate') return; // Design mode: the editor's own keys, nothing plays
     const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
     const k = e.key.toLowerCase();
     if (k === 'k') { e.preventDefault(); toggle(); }
@@ -10426,7 +11460,7 @@ function clipCss(l, frames) {
   openEditor = function () {
     pause(); PL.view = null; PL.cache.clear(); PL.t = 0;
     const r = _oe37.apply(this, arguments);
-    if (isMo(ED.d)) { order(ED.d); insAt = null; ED.tab = 'motion'; edRail(); edPanel(); edPages(); emptyCard(); requestAnimationFrame(fitZoom); }
+    if (isMo(ED.d)) { order(ED.d); insAt = null; ED.tab = 'scenes'; edRail(); edPanel(); edPages(); emptyCard(); requestAnimationFrame(fitZoom); }
     return r;
   };
   const _st37 = edStage;
@@ -10434,7 +11468,6 @@ function clipCss(l, frames) {
   const _ds37 = drawSel;
   drawSel = function () { const r = _ds37.apply(this, arguments); if (PL.view) { const s = $('#sel'); s && (s.hidden = true); } return r; };
   addEventListener('hashchange', () => pause());
-  addEventListener('resize', () => { if (ED.d && isMo(ED.d) && $('#mo37Lanes')) edPages(); });
 
   /* ---------- export: a video, recorded from the scenes ----------
      Each layer is rendered once to its own bitmap (the same renderer as image exports), then every frame is
@@ -10533,6 +11566,44 @@ function clipCss(l, frames) {
     rec.stop(); await stopped; stream.getTracks().forEach((x) => x.stop()); au && au.stop(); PAD.clear();
     return signal.stop ? null : new Blob(chunks, { type: mime.split(';')[0] });
   }
+  /** An animated GIF of the video: the same frames as the recording, rendered one by one (not in real time), no sound */
+  async function recordGif(d, { short, fps, onStep, signal }) {
+    const [W, H] = RATIOS[d.ratio], { w, h, s } = gifSize(W, H, short);
+    const prep = await prepare(d, s, (p) => onStep('prep', p)); if (signal.stop) return null;
+    const tl = MO.timeline(d.pages), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true }), n = Math.max(1, Math.round((tl.total / 1000) * fps));
+    const at = (i) => Math.min(tl.total - 1, (i * 1000) / fps), shot = (i) => { frame(ctx, d, prep, tl, at(i), s); return ctx.getImageData(0, 0, w, h).data; };
+    const breathe = () => new Promise((r) => setTimeout(r));
+    // the palette: colours of frames spread over the whole video
+    const samples = [], every = Math.max(1, Math.floor(n / 16));
+    for (let i = 0; i < n; i += every) { samples.push(shot(i)); if (signal.stop) return null; await breathe(); }
+    const gif = gifWriter({ width: w, height: h, fps, palette: buildPalette(samples) }); samples.length = 0;
+    for (let i = 0; i < n; i++) {
+      if (signal.stop) return null;
+      gif.add(shot(i)); onStep('gif', (i + 1) / n);
+      if (i % 2 === 1) await breathe();
+    }
+    PAD.clear();
+    return signal.stop ? null : new Blob([gif.done()], { type: 'image/gif' });
+  }
+  /** A library card's hover preview: the design's frames, looping, on `cv` while alive(); shown() once the first frame is drawn */
+  const CARD_PREP = new Map();
+  RT.moCardPlay = async (d, cv, alive, shown) => {
+    const [W] = RATIOS[d.ratio], s = cv.width / W;
+    // the layers' bitmaps are kept for the last few cards: hovering one again starts at once (an edit changes d.at)
+    const key = d.id + '|' + (d.at || 0) + '|' + cv.width; let prep = CARD_PREP.get(key);
+    if (!prep) { prep = await prepare(d, s, () => {}); CARD_PREP.set(key, prep); while (CARD_PREP.size > 4) CARD_PREP.delete(CARD_PREP.keys().next().value); }
+    if (!alive()) return;
+    const tl = MO.timeline(d.pages), ctx = cv.getContext('2d'), t0 = performance.now(); let first = true;
+    const step = () => {
+      if (!alive()) return;
+      frame(ctx, d, prep, tl, Math.min(tl.total - 1, loopTime(performance.now() - t0, tl.total)), s);
+      if (first) { first = false; shown(); }
+      requestAnimationFrame(step);
+    };
+    step();
+  };
+  const mb = (bytes) => (bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB');
   const _ox37 = openExport;
   openExport = function (d, pi) {
     if (!isMo(d)) return _ox37.apply(this, arguments);
@@ -10543,19 +11614,46 @@ function clipCss(l, frames) {
     let job = null;
     modal(`<div class="mh"><h2>Export video</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
       <div class="mb mo-ex"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 80, 100)}<div class="grow"><b class="sm-t">${esc(d.name)}</b><p class="xs-t muted">${tl.scenes.length} scene${tl.scenes.length > 1 ? 's' : ''} · ${MO.fmtTime(tl.total)} · ${W} × ${H}</p></div></div>
-        ${kinds.length ? `<div class="g2f"><label class="lab">Format<select class="field sm" id="mxF">${kinds.map(([e]) => `<option value="${e}">${e === 'mp4' ? 'MP4 (H.264)' : 'WebM'}</option>`).join('')}</select></label>
+        ${`<div class="g2f"><label class="lab">Format<select class="field sm" id="mxF">${kinds.map(([e]) => `<option value="${e}">${e === 'mp4' ? 'MP4 (H.264)' : 'WebM'}</option>`).join('')}<option value="gif">Animated GIF</option></select></label>
           <label class="lab">Frame rate<select class="field sm" id="mxR">${[24, 30, 60].map((f) => `<option value="${f}" ${(d.motion.fps || 30) === f ? 'selected' : ''}>${f} fps</option>`).join('')}</select></label></div>
           <label class="lab">Size<select class="field sm" id="mxS">${sizes.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
-          ${kinds.some(([e]) => e === 'mp4') ? '' : `<div class="note warn">${ic('alert', 16)}<span>This browser records WebM only. Instagram and TikTok need MP4: export from Chrome or Safari, or convert the file.</span></div>`}
+          ${!kinds.length ? `<div class="note warn" data-mx="video">${ic('alert', 16)}<span>This browser can’t record video, so only GIF is offered. Use a recent Chrome, Edge or Safari for MP4.</span></div>` : kinds.some(([e]) => e === 'mp4') ? '' : `<div class="note warn" data-mx="video">${ic('alert', 16)}<span>This browser records WebM only. Instagram and TikTok need MP4: export from Chrome or Safari, or convert the file.</span></div>`}
           <div class="mo-prog" id="mxP" hidden><div class="mo-bar2"><i></i></div><span class="xs-t muted" id="mxPt"></span></div>
-          <p class="xs-t muted">The video records in real time (${Math.ceil(tl.total / 1000)} s). Keep this tab open and visible until it finishes.</p>`
-        : `<div class="note warn">${ic('alert', 16)}<span>This browser can’t record video. Use a recent Chrome, Edge or Safari, or export the scenes as images.</span></div>`}</div>
-      <div class="mf"><button class="btn link sm" id="mxStill">Export still images instead</button><span class="grow"></span><button class="btn secondary" data-close>Cancel</button>${kinds.length ? `<button class="btn primary" id="mxGo">${ic('download', 16)}Export video</button>` : ''}</div>`, {
+          <p class="xs-t muted" id="mxNote"></p>`}</div>
+      <div class="mf"><button class="btn link sm" id="mxStill">Export still images instead</button><span class="grow"></span><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mxGo">${ic('download', 16)}<span id="mxGoL">Export video</span></button></div>`, {
       onClose: () => { if (job) job.stop = true; },
       onMount: (bg, close) => {
         $('#mxStill', bg).addEventListener('click', () => { close(); _ox37.call(this, d, pi); });
         const go = $('#mxGo', bg); if (!go) return;
+        /* the options follow the format: a video has 24 / 30 / 60 fps and full or 720 px; a GIF 10 / 12 / 15 fps and 360 / 540 / 720 px */
+        const fmt = $('#mxF', bg), rate = $('#mxR', bg), size = $('#mxS', bg), note = $('#mxNote', bg);
+        const videoRates = rate.innerHTML, videoSizes = size.innerHTML;
+        const gifNote = () => {
+          const g = gifSize(W, H, +size.value), est = gifEstimate(g.w, g.h, +rate.value, tl.total);
+          note.textContent = `About ${mb(est)}, no sound, 256 colours.${tl.total > GIF_LONG_MS ? ' A GIF this long is heavy: MP4 is smaller and sharper.' : ''}`;
+        };
+        const sync = () => {
+          const gif = fmt.value === 'gif';
+          if (gif && rate.dataset.f !== 'gif') {
+            rate.innerHTML = GIF_FPS.map((f) => `<option value="${f}" ${f === 12 ? 'selected' : ''}>${f} fps</option>`).join('');
+            size.innerHTML = GIF_SIZES.filter((px, i) => !i || px <= short).map((px) => { const g = gifSize(W, H, px); return `<option value="${px}" ${px === 540 ? 'selected' : ''}>${g.w} × ${g.h}</option>`; }).join('');
+          } else if (!gif && rate.dataset.f === 'gif') { rate.innerHTML = videoRates; size.innerHTML = videoSizes; }
+          rate.dataset.f = gif ? 'gif' : 'video';
+          $$('[data-mx=video]', bg).forEach((x) => (x.hidden = gif && !!kinds.length));
+          $('#mxGoL', bg).textContent = gif ? 'Export GIF' : 'Export video';
+          if (gif) gifNote(); else note.textContent = `The video records in real time (${Math.ceil(tl.total / 1000)} s). Keep this tab open and visible until it finishes.`;
+        };
+        [fmt, rate, size].forEach((x) => x.addEventListener('change', sync)); sync();
         go.addEventListener('click', async () => {
+          if (fmt.value === 'gif') {
+            const bar = $('#mxP i', bg), txt = $('#mxPt', bg); $('#mxP', bg).hidden = false; go.disabled = true; $$('select', bg).forEach((x) => (x.disabled = true));
+            job = { stop: false };
+            try {
+              const blob = await recordGif(d, { short: +size.value, fps: +rate.value, signal: job, onStep: (k, p) => { bar.style.width = (k === 'prep' ? p * 20 : 20 + p * 80).toFixed(1) + '%'; txt.textContent = k === 'prep' ? 'Preparing layers…' : `Drawing frames… ${Math.round(p * 100)}%`; } });
+              if (!blob) return; RT.download(blob, RT.fileBase(d) + '.gif'); job = null; close(); toast(`GIF exported (${mb(blob.size)})`);
+            } catch (e) { console.error('[motion] gif export failed', e); job = null; go.disabled = false; $$('select', bg).forEach((x) => (x.disabled = false)); txt.textContent = 'The GIF could not be made. Try a smaller size.'; }
+            return;
+          }
           const ext = $('#mxF', bg).value, mime = kinds.find(([e]) => e === ext)[1], fps = +$('#mxR', bg).value, s = +$('#mxS', bg).value;
           const bar = $('#mxP i', bg), txt = $('#mxPt', bg); $('#mxP', bg).hidden = false; go.disabled = true; $$('select', bg).forEach((x) => (x.disabled = true));
           job = { stop: false };
@@ -10567,7 +11665,55 @@ function clipCss(l, frames) {
       },
     });
   };
-  RT.motion = { play, pause, exitPreview, record }; // for the agent and tests
+  /** A still becomes a video: one Undo step (the Animate button, and the agent's make_video) */
+  function makeVideo() { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); }
+  /* One frame of the video as a JPEG data URL, drawn as the recording draws it (prepare + frame), for the agent's view_frame.
+     The prepared layers are kept until dropFrames(): the agent drops them after each change it makes and when its run ends. */
+  let FR = null;
+  async function frameAt(ms, s) {
+    const d = ED.d; if (!d || !isMo(d)) return null;
+    try {
+      if (!FR || FR.d !== d || FR.s !== s) { const made = { d, s, prep: await prepare(d, s, () => {}) }; if (ED.d !== d) return null; FR = made; }
+      const [W, H] = RATIOS[d.ratio], c = document.createElement('canvas'); c.width = Math.round(W * s); c.height = Math.round(H * s);
+      frame(c.getContext('2d'), d, FR.prep, TL(), ms, s);
+      return c.toDataURL('image/jpeg', 0.85);
+    } catch (e) { console.error('[motion] frame failed', e); FR = null; return null; }
+  }
+  const dropFrames = () => { FR = null; };
+  // for the agent (make … dropFrames), tests and video posts (post-video.js)
+  RT.motion = { play, pause, exitPreview, record, mimes, make: makeVideo, addScene: (role, key, at) => addScene(role, key, at, -1, true), dupScene, delScene, moveScene, canMove, order, previewScene, frameAt, dropFrames };
+  /* the Video Studio shell (reel-source.js) drives reels: the player under its transport, the scene blocks and the
+     layer lanes in its timeline (in % of the video, the timeline zooms them), and onTime, set by the source */
+  const pct = (ms) => { const t = TL().total; return (t ? Math.max(0, (ms / t) * 100) : 0).toFixed(3) + '%'; };
+  function seek(ms) {
+    if (!ED.d || !isMo(ED.d)) return; const total = TL().total;
+    PL.t = clamp(+ms || 0, 0, Math.max(0, total - 1)); if (PL.on) PL.at = performance.now() - PL.t;
+    draw(PL.t); controls();
+  }
+  RT.moReel = {
+    player: {
+      toggle: () => (PL.on ? pause() : play()), play: () => play(), pause, seek,
+      time: () => PL.t, duration: () => (ED.d && isMo(ED.d) ? TL().total : 0), playing: () => PL.on,
+      frameMs: () => 1000 / ((ED.d && ED.d.motion && ED.d.motion.fps) || 30),
+    },
+    loop: () => PL.loop,
+    scenesHTML: (pps) => (ED.d && isMo(ED.d) ? sceneBlocks(pct, (ms) => (ms / 1000) * pps) : ''),
+    /** Opens the scene library aimed at the end of the video (the transport's + Scene) */
+    addAtEnd: () => { if (ED.d && isMo(ED.d)) openLibrary(ED.d.pages.length); },
+    clipsHTML: () => (ED.d && isMo(ED.d) ? AU.clipsHTML(TL(), pct) : { music: '', voice: '' }),
+    layers: () => (ED.d && isMo(ED.d) ? layerLanes(pct, () => 0)
+      .map(({ l, html }) => ({ id: l.id, name: l.name, type: l.type, html: (pps) => html((ms) => (ms / 1000) * pps) })) : []),
+    fit: () => { if (ED.fit) requestAnimationFrame(fitZoom); },
+    /** The preview again at the playhead (after a caption edit), when it shows */
+    redraw: () => { if (PL.view && PL.view.isConnected && ED.d && isMo(ED.d)) draw(PL.t); },
+    /** Lines shown instead of the design's while a caption block is dragged on the timeline (null: the design's again) */
+    previewCaptions: (lines) => { AU.capsPreview = lines || null; RT.moReel.redraw(); },
+    /** "Mute preview" of the voice or the music: session only, the export keeps the sound */
+    setMuted: (id, on) => { AU.muted = { ...AU.muted, [id]: !!on }; if (PL.on) AU.tick(PL.t); },
+    onTime: null,
+    /** (e, view) -> true when the press was taken (a caption drag); set by reel-source.js */
+    viewDown: null,
+  };
 })();
 
 /* ============ v38 · audio in videos: music, a voice-over per scene (script by Claude, voice by AI or recorded), captions ============ */
@@ -10584,7 +11730,8 @@ function clipCss(l, frames) {
     stop38: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   });
   const isMo = (d) => !!(d && d.motion), TL = () => MO.timeline(ED.d.pages), A = () => AUD.audioOf(ED.d);
-  const setA = (patch) => { ED.d.audio = { ...A(), ...patch }; touch(); save(); };
+  // one Undo step per change (sound settings are part of snap() since the Studio Agent phase 4); callers redraw the panel themselves
+  const setA = (patch) => { mutate(() => { ED.d.audio = { ...A(), ...patch }; if (ED.d.captions) delete ED.d.audio.captions; }, () => edTop()); save(); }; // the captions switch lives in d.captions
   const label = (i) => { const k = MO.sceneOf(ED.d.pages[i]).k; return k !== 'body' ? MO.KINDS[k] : 'Scene ' + ED.d.pages.slice(0, i + 1).filter((p) => MO.sceneOf(p).k === 'body').length; };
   const setVo = (pg, patch) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), ...patch } }; };
   const S = { opts: null, busy: '', rec: null, play: null, prompt: '' }; // panel state: AI options, running job, recording, clip preview
@@ -10607,12 +11754,11 @@ function clipCss(l, frames) {
   const AU = RT.moAudio;
   AU.tick = (t) => {
     const d = ED.d; if (!d) return; const a = A(), tl = TL(), cl = AUD.clips(d.pages, tl, a), on = new Set();
-    if (a.music && a.music.src) { const m = el(a.music.src); m.loop = true; on.add(m); m.volume = AUD.musicGain(t, tl.total, a, cl); if (m.duration) sync(m, (t / 1000) % m.duration); else if (m.paused) m.play().catch(() => {}); }
-    cl.filter((c) => t >= c.start && t < c.end).forEach((c) => { const v = el(c.src); on.add(v); v.volume = Math.min(1, c.vol); sync(v, (t - c.start) / 1000); });
+    if (a.music && a.music.src) { const m = el(a.music.src); m.loop = true; on.add(m); m.volume = AU.muted.music ? 0 : AUD.musicGain(t, tl.total, a, cl); if (m.duration) sync(m, (t / 1000) % m.duration); else if (m.paused) m.play().catch(() => {}); }
+    cl.filter((c) => t >= c.start && t < c.end).forEach((c) => { const v = el(c.src); on.add(v); v.volume = AU.muted.voice ? 0 : Math.min(1, c.vol); sync(v, (t - c.start) / 1000); });
     els.forEach((x) => { if (!on.has(x) && !x.paused && x !== S.play) x.pause(); });
   };
   AU.stop = () => els.forEach((x) => { if (x !== S.play) x.pause(); });
-  AU.caption = (t) => (ED.d ? AUD.captionAt(ED.d.pages, TL(), t, A()) : null);
 
   /* ---------- export: decoded buffers scheduled on a Web Audio graph, recorded with the frames ---------- */
   AU.exportSetup = async (d, tl) => {
@@ -10634,28 +11780,24 @@ function clipCss(l, frames) {
       stop() { ctx.close().catch(() => {}); },
     };
   };
-  AU.drawCaption = (ctx, d, tl, t, s, W, H) => {
-    const text = AUD.captionAt(d.pages, tl, t, AUD.audioOf(d)); if (!text) return;
-    const fs = Math.round(W * 0.046) * s, pad = fs * 0.55, maxW = W * s * 0.84, font = (brand().fonts && brand().fonts.body) || 'Inter';
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.font = `700 ${fs}px '${font}', sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const lines = AUD.wrap(text, maxW - pad * 2, (x) => ctx.measureText(x).width), lh = fs * 1.25, bw = Math.min(maxW, Math.max(...lines.map((x) => ctx.measureText(x).width)) + pad * 2), bh = lines.length * lh + pad * 1.2;
-    const cx = W * s / 2, y = H * s * (H > W ? 0.72 : 0.82) - bh / 2;
-    ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(cx - bw / 2, y, bw, bh, fs * 0.4) : ctx.rect(cx - bw / 2, y, bw, bh); ctx.fill();
-    ctx.fillStyle = '#fff'; lines.forEach((x, i) => ctx.fillText(x, cx, y + pad * 0.6 + lh * (i + 0.5)));
+  /** The captions of a reel on a frame of W×H design px at scale s (preview and recorded export): captions.js, the design's style */
+  AU.drawCaption = (ctx, d, tl, t, s, W, H, cap = captionFrame(d, t, d === ED.d ? AU.capsPreview : null)) => {
+    if (!cap) return; // captions off, or no line at t
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none'; ctx.globalCompositeOperation = 'source-over';
+    drawCaptionLines(ctx, cap.lines, cap.style || CAPTION_STYLE, t, W * s, H * s);
     ctx.restore();
   };
 
-  /* ---------- timeline: a Music and a Voice lane under the scenes ---------- */
-  AU.labels = () => (ED.d && isMo(ED.d) ? `<div class="mo-gl-r au-lbl">${ic('music38', 13, 'faint')}<span>Music</span></div><div class="mo-gl-r au-lbl">${ic('mic38', 13, 'faint')}<span>Voice</span></div>` : '');
-  AU.lanes = (K, tl) => {
-    const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track);
-    const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${tl.total * K}px" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
+  /* ---------- timeline: the music clip and the voice clips; pos(ms) is a CSS length (% in the shell's timeline) ---------- */
+  AU.clipsHTML = (tl, pos) => {
+    const d = ED.d, a = A(), cl = AUD.clips(d.pages, tl, a), tr = cl.find((c) => c.track), w = (ms) => `max(8px,${pos(ms)})`;
+    const music = a.music ? `<button class="au-clip au-m" data-act="au38Open" style="left:0;width:${pos(tl.total)}" title="${esc(a.music.name || 'Music')} · volume ${Math.round((a.music.vol ?? 0.6) * 100)}%">${ic('music38', 11)}<span>${esc(a.music.name || 'Music')}</span></button>` : `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Music</button>`;
     const lines = tl.scenes.map((s) => { const vo = AUD.voOf(d.pages[s.i]), c = cl.find((x) => x.i === s.i), text = vo && String(vo.text || '').trim(); if (!c && !text) return '';
       const name = text || vo.name || 'Voice';
-      return c ? `<button class="au-clip au-v${c.over ? ' over' : ''}" data-act="au38Open" style="left:${c.start * K}px;width:${Math.max(8, c.dur * K)}px" title="${esc(label(s.i))}: ${text ? `“${esc(text)}”` : esc(name)}${c.over ? ' · runs past the scene' : ''}">${ic('wave38', 11)}<span>${esc(name)}</span></button>`
-        : `<button class="au-clip au-s" data-act="au38Open" style="left:${(s.start + AUD.LEAD) * K}px;width:${Math.max(8, s.dur * K - AUD.LEAD * K - 4)}px" title="Script only: no voice yet">${esc(text)}</button>`; }).join('');
-    const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${tr.start * K}px;width:${Math.max(8, tr.dur * K)}px" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
-    return `<div class="mo-lane au-lane">${music}</div><div class="mo-lane au-lane">${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}</div>`;
+      return c ? `<button class="au-clip au-v${c.over ? ' over' : ''}" data-act="au38Open" style="left:${pos(c.start)};width:${w(c.dur)}" title="${esc(label(s.i))}: ${text ? `“${esc(text)}”` : esc(name)}${c.over ? ' · runs past the scene' : ''}">${ic('wave38', 11)}<span>${esc(name)}</span></button>`
+        : `<button class="au-clip au-s" data-act="au38Open" style="left:${pos(s.start + AUD.LEAD)};width:max(8px,calc(${pos(s.dur - AUD.LEAD)} - 4px))" title="Script only: no voice yet">${esc(text)}</button>`; }).join('');
+    const track = tr ? `<button class="au-clip au-v au-t${tr.over ? ' over' : ''}" data-act="au38Open" style="left:${pos(tr.start)};width:${w(tr.dur)}" title="${esc(a.track.name || 'Voiceover')} · ${AUD.fmtSec(tr.dur)}${tr.over ? ' · longer than the video' : ''}">${ic('wave38', 11)}<span>${esc(a.track.name || 'Voiceover')}</span></button>` : '';
+    return { music, voice: `${track}${tr ? lines.replace(/au-clip au-s/g, 'au-clip au-s au-under') : lines || `<button class="au-add" data-act="au38Open" style="left:0">${ic('plus', 11)}Voice-over</button>`}` };
   };
 
   /* ---------- left rail: Audio, for videos ---------- */
@@ -10739,7 +11881,7 @@ function clipCss(l, frames) {
         <span class="grow"></span><select class="au2-lang" data-au="language" aria-label="Language">${AUD.LANGUAGES.map((x) => `<option ${langOf(a) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         ${ibtn('au38Script', 'studio', texted ? 'Rewrite with Claude' : 'Write with Claude', busy ? 'disabled' : '')}</div>
       ${S.scriptOpen ? `<div class="au2-lines">${lines.map(lineHTML).join('')}</div>` : ''}</div>`;
-    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(!!a.captions, 'au38Cc', 'Show captions')}</div>
+    const opts = `<div class="au2-opts"><div class="au2-opt">${ic('cc38', 15)}<span>Captions</span>${sw(captionsOn(ED.d), 'au38Cc', 'Show captions')}</div>
         <div class="au2-opt">${ic('music38', 15)}<span>Lower music under the voice</span>${sw(a.duck !== false, 'au38Duck', 'Lower the music under the voice')}</div></div>`;
     return `<div class="au2-head"><h3>Audio</h3>${user.role === 'admin' ? ibtn('au38PanelMenu', 'more', 'More') : ''}</div>${gen}<div class="au2-tracks">${musicRow}${voiceRow}</div>${script}${opts}`;
   }
@@ -10754,16 +11896,22 @@ function clipCss(l, frames) {
 
   /* ---------- AI: script (Claude), voice (Kokoro / Piper on the server, free), music (in the browser) ---------- */
   const scenesBrief = () => { const tl = TL(); return ED.d.pages.map((pg, i) => ({ kind: MO.sceneOf(pg).k, seconds: Math.max(0.5, tl.scenes[i].dur / 1000), texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim()).sort((x, y) => (y.size || 0) - (x.size || 0)).map((l) => String(l.text).replace(/\s+/g, ' ').trim().slice(0, 400)).slice(0, 12) })); };
-  async function voiceFor(i) {
-    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {}, text = String(vo.text || '').trim(); if (!text) return;
+  /** A voice clip for scene i's text, made and measured on the server, without touching the design: { src, dur, srcText } or null (no text) */
+  async function voiceClip(i) {
+    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {}, text = String(vo.text || '').trim(); if (!text) return null;
     const o = await options(), a = A(), { cur } = voiceChoice(a, o);
     if (!cur) throw new Error(`No ${langOf(a)} voice is installed`);
     const voice = cur.own ? { voice: `f5:${cur.model}:custom`, refMedia: mediaId(cur.own.src), refText: cur.own.text } : { voice: cur.id };
     const r = await api('/ai/voiceover', { method: 'POST', body: { text, ...voice, speed: a.speed || 1, ...(cur.engine === 'kokoro' ? { lang: cur.lang } : {}) } });
-    const dur = await lengthOf(r.url);
-    if (vo.src && vo.src !== r.url) drop(vo.src);
-    const pre = snap(); setVo(pg, { src: r.url, dur, by: 'ai', srcText: vo.text }); commit(pre);
+    return { src: r.url, dur: await lengthOf(r.url), srcText: vo.text };
   }
+  /** Scene i takes a clip (one Undo step); the clip it had is let go */
+  function putClip(i, c) {
+    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {};
+    if (vo.src && vo.src !== c.src) drop(vo.src);
+    const pre = snap(); setVo(pg, { src: c.src, dur: c.dur, by: 'ai', srcText: c.srcText }); commit(pre);
+  }
+  async function voiceFor(i) { const d = ED.d, c = await voiceClip(i); if (c && ED.d === d) putClip(i, c); }
   async function job(kind, fn, done) {
     if (!canEdit() || S.busy) return; S.busy = kind; redraw();
     try { await fn(); done && toast(done); } catch (e) { toast(e.message || 'Something went wrong'); }
@@ -10860,7 +12008,7 @@ function clipCss(l, frames) {
     au38FadeIn: () => { const m = A().music; m && setA({ music: { ...m, fadeIn: m.fadeIn === false } }); redraw(); },
     au38FadeOut: () => { const m = A().music; m && setA({ music: { ...m, fadeOut: m.fadeOut === false } }); redraw(); },
     au38Duck: () => { setA({ duck: A().duck === false }); redraw(); },
-    au38Cc: () => { setA({ captions: !A().captions }); redraw(); },
+    au38Cc: () => { if (!canEdit()) return; mutate(() => toggleCaptions(ED.d), () => {}); save(); redraw(); RT.moReel.redraw(); }, // d.captions.on, one undo step
     au38Prev: (a) => { const src = a.dataset.src; RT.motion.pause(); if (S.play && S.play.src === src && !S.play.paused) stopPreview(); else { stopPreview(); const x = new Audio(src); x.crossOrigin = 'anonymous'; x.onended = () => { S.play = null; redraw(); }; x.play().catch(() => toast('This audio can’t be played')); S.play = x; } redraw(); },
     au38Script: () => job('script', async () => {
       const a = A(), r = await api('/ai/voice-script', { method: 'POST', body: { brand: brand().name, voice: brand().voice || '', language: a.language || brand().lang || 'English', tone: a.tone || 'Auto', topic: a.topic || '', scenes: scenesBrief() } });
@@ -10905,6 +12053,35 @@ function clipCss(l, frames) {
     return need.filter(Boolean).length;
   }
   const step = (t) => { S.progress = t; redraw(); };
+  /**
+   * The reel's music choices for another editor (a video's Audio panel): a menu under `btn` with Compose (one row per mood,
+   * made in the browser and stored) and Upload your own. cb({ src, name, dur, gen? }) once the file is stored on the server.
+   * opts: { seconds (how long a composed bed is, at most 120 s: it loops under longer videos), onBusy(on) }.
+   */
+  /** A music track composed in the browser for a video of `seconds` (8–120 s), uploaded: { src, name, dur, gen } (the picker and the agent) */
+  RT.composeMusic = async (mood, seconds) => {
+    const M = COMP.MOODS[mood] || COMP.MOODS.corporate, secs = Math.min(120, Math.max(8, +seconds || 30));
+    const buf = await COMP.compose({ seconds: secs, mood, pace: 3500, seed: Math.floor(Math.random() * 1e9) });
+    const r = await upload(wavOf(buf));
+    return { src: r.url, name: M.name, dur: Math.round(buf.duration * 1000), gen: { mood } };
+  };
+  /** The Studio Agent's hands on an animated design's sound (engine.js agent block, agent-sound.js) */
+  RT.reelSound = { options, voiceChoice, voiceClip, putClip, fitToVoices, drop, langOf, busy: () => S.busy, A, LANGUAGES: AUD.LANGUAGES, seconds: () => TL().total / 1000 };
+  RT.pickMusic = (btn, opts, cb) => {
+    const o = opts || {};
+    const run = async (fn, done) => {
+      o.onBusy && o.onBusy(true);
+      try { const m = await fn(); cb(m); done && toast(done); } catch (e) { toast((e && e.message) || 'The music could not be added'); } finally { o.onBusy && o.onBusy(false); }
+    };
+    const compose = (mood) => run(() => RT.composeMusic(mood, o.seconds), 'Music composed for this video');
+    menu(btn, [
+      ...Object.entries(COMP.MOODS).map(([k, M]) => [`Compose: ${M.name}`, 'wand', () => compose(k)]),
+      '-', ['Upload your own…', 'upload', () => pick(false, (files) => {
+        const f = [...files].find(isAudio); if (!f) return toast('Choose an audio file (MP3, WAV, M4A or OGG)');
+        run(async () => { const r = await upload(f); return { src: r.url, name: nameOf(f), dur: await lengthOf(r.url) }; }, 'Music added');
+      })],
+    ]);
+  };
   /** File picker opened from a menu */
   const pick = (multiple, cb) => { const i = document.createElement('input'); i.type = 'file'; i.accept = 'audio/*'; i.multiple = multiple; i.onchange = () => i.files && i.files.length && cb(i.files); i.click(); };
   /** A small menu under a ⋯ button: rows [label, icon, fn, disabled, cls] or '-' */
@@ -11004,7 +12181,9 @@ function clipCss(l, frames) {
   });
   /* inputs of the Audio tab */
   let pre = null;
-  document.addEventListener('focusin', (e) => { if (e.target.dataset && e.target.dataset.au === 'line') pre = snap(); });
+  // a text line or a volume slider: one Undo step from focus (or the first press) to the change
+  const preFor = (e) => { const k = e.target.dataset && e.target.dataset.au; if (ED.d && (k === 'line' || k === 'mvol' || k === 'tvol')) pre = snap(); };
+  document.addEventListener('focusin', preFor); document.addEventListener('pointerdown', preFor, true);
   document.addEventListener('input', (e) => {
     const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
     if (k === 'line') { const i = +t.dataset.i, pg = ED.d.pages[i]; setVo(pg, { text: t.value }); touch();
@@ -11016,7 +12195,7 @@ function clipCss(l, frames) {
   document.addEventListener('change', async (e) => {
     const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
     if (k === 'line') { if (pre) commit(pre); pre = null; edPages(); if (ED.tab === 'audio') redraw(); }
-    else if (k === 'mvol' || k === 'tvol') { save(); edPages(); }
+    else if (k === 'mvol' || k === 'tvol') { if (pre) commit(pre); pre = null; save(); edPages(); edTop(); }
     else if (k === 'tat') { const tk = A().track; if (tk) { setA({ track: { ...tk, at: Math.max(0, Math.round((+t.value || 0) * 1000)) } }); redraw(); } }
     else if (k === 'vfiles') { const f = t.files; t.value = ''; if (f && f.length && canEdit()) importVoice(f); }
     else if (k === 'lfile') { const f = t.files && t.files[0]; t.value = ''; if (canEdit()) importLine(+t.dataset.i, f); }
@@ -11030,6 +12209,42 @@ function clipCss(l, frames) {
   });
   addEventListener('hashchange', () => { stopPreview(); AU.stop(); if (S.rec) S.rec.rec.stop(); });
 })();
+
+/* ============ footage style match: Match a reference tile, upload modal, footage designs (see footage.js) ============ */
+/* the Video Studio shell and the footage editor wrap the editor's drawing like the blocks above do: wrapEd({ edStage: (orig) => fn, ... }) */
+const wrapEd = (w) => {
+  if (w.edStage) edStage = w.edStage(edStage); if (w.edPanel) edPanel = w.edPanel(edPanel); if (w.edProps) edProps = w.edProps(edProps);
+  if (w.edPages) edPages = w.edPages(edPages); if (w.edRail) edRail = w.edRail(edRail);
+};
+const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel(), props: () => edProps(), pages: () => edPages(), rail: () => edRail() };
+/* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
+const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi, editable: () => !persist.readOnly });
+/* the shared caption panels (Captions, for videos and reels) */
+installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi }, VS);
+/* the caption style tabs on the right (a caption line selected, or Captions / Styles open), for videos and reels */
+installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi, api }, VS);
+/* reels: the motion editor (v37 / v38) is the shell's `reel` source */
+installReelSource({ ED, ACT, VS, M: RT.moReel, ic, esc, canEdit, mutate, save, ed: edApi });
+/* stills: the shell's `still` source (the editor still draws their rail, panels, slide strip and properties) */
+installStillSource({ VS });
+const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mutate, save, touch, uid, brand, canEdit, createDesign, ensureRatio, RATIOS, BG, openEditor, openSchedule,
+  wrapEd, ed: edApi, VS, pickMusic: (...a) => RT.pickMusic(...a) });
+/* footage cards: a video badge with the length, "Video" instead of the custom ratio, and the poster made on first sight */
+{
+  const _dcFt = designCard;
+  designCard = function (d) {
+    let html = _dcFt.apply(this, arguments); const dd = getD(d.id);
+    if (!dd || !dd.footage) return html;
+    const dur = dd.footage.dur;
+    html = html.replace('<span class="st">', `<span class="badge b-mo37">${ic('play37', 10)}${dur ? fmtDur(dur) : 'Video'}</span><span class="st">`)
+      .replace(/<small>[^·<]*·/, '<small>Video ·');
+    if (FOOTAGE.needsPoster(dd)) setTimeout(() => FOOTAGE.ensurePoster(dd).then((ok) => { if (ok) document.querySelectorAll(`.card.dc[data-id="${CSS.escape(dd.id)}"]`).forEach((c) => { c.outerHTML = designCard(dd); }); }));
+    return html;
+  };
+}
+
+/* library cards: a video (an animated design or an uploaded one) plays while the pointer rests on its preview */
+installCardPreview({ getD, reel: (...a) => RT.moCardPlay(...a), videoUrl: (d) => FOOTAGE.playUrl(d) });
 
 /* ============ v39 · select several designs in the Studio and delete them at once ============ */
 /* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a
@@ -11083,7 +12298,7 @@ function clipCss(l, frames) {
     if (!/^#\/studio/.test(location.hash) || persist.readOnly) return;
     const chk = e.target.closest('[data-sel39]'), card = e.target.closest('.card.dc');
     if (chk) { e.preventDefault(); e.stopPropagation(); if (!canEdit()) return; SEL.on = true; return toggle(chk.dataset.sel39, e.shiftKey); }
-    if (SEL.on && card && !e.target.closest('.dc-more')) { e.preventDefault(); e.stopPropagation(); toggle(card.dataset.id, e.shiftKey); }
+    if (SEL.on && card && !e.target.closest('.dc-more,.dc-nav')) { e.preventDefault(); e.stopPropagation(); toggle(card.dataset.id, e.shiftKey); }
   }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && SEL.on && /^#\/studio/.test(location.hash) && !$('.modal-bg')) { exit(); redraw(); } });
   addEventListener('hashchange', () => { if (!/^#\/studio/.test(location.hash)) exit(); });
@@ -11111,6 +12326,81 @@ function clipCss(l, frames) {
 })();
 
  
+
+/* ============ Overview · Prompt box: describe it, the agent builds it ============ */
+/* The box sits at the top of the Overview (home.js draws it). Sending creates a new design at the chosen size
+   (Auto: the agent chooses), opens the editor on the Agent tab and runs the prompt there, so the work, Stop
+   and Undo are the editor's. The model is the Agent's own choice (same picker, same memory). */
+{
+  const HP = { text: '', size: 'auto', open: '', pending: null, refs: [] };
+  const h = { ic, esc };
+  const onHome = () => !!$('#hpBar');
+  /** null while the models load · { none } without a key · { name, menu } */
+  const model = () => { if (!AGAPI.list()) return null; const v = AGAPI.current(); return v ? { name: AGAPI.modelName(v), menu: AGAPI.modelMenu(v) } : { none: true }; };
+  const state = () => ({ text: HP.text, size: HP.size, open: HP.open, model: model(), refs: HP.refs, greeting: promptGreeting(user && user.name, new Date().getHours()) });
+  const drawBar = () => { const b = $('#hpBar'); if (b) b.innerHTML = promptBarHTML(h, state()); };
+  const grow = (i) => { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 220) + 'px'; };
+  const syncSend = () => { const b = $('#hpSend'); if (b) b.disabled = !HP.text.trim() && !HP.refs.length; };
+  const drawRefs = () => { const e = $('#hpRefs'); if (e) e.innerHTML = refsStripHTML({ ic, esc }, HP.refs, 'hpRefDrop'); syncSend(); };
+  const addPics = async (files) => { HP.refs = await takeRefs(HP.refs, files); drawRefs(); const i = $('#hpIn'); i && i.focus(); };
+  let asked = 0;
+
+  /* the Overview is redrawn in the background (its data arrives, automations load): the box keeps its text, its focus and its caret */
+  const _svHP = PAGES.overview.view;
+  PAGES.overview.view = function () {
+    const html = _svHP.apply(this, arguments);
+    if (persist.readOnly || !html.includes('<div class="ov-wrap">')) return html;
+    // keys or models may have changed in Settings → AI: read again after a while, then redraw the row
+    if (!AGAPI.list() || Date.now() - asked > 120_000) { asked = Date.now(); AGAPI.load(!!AGAPI.list()).then(() => { if (onHome()) drawBar(); }); }
+    const was = $('#hpIn'), caret = was && document.activeElement === was ? [was.selectionStart, was.selectionEnd] : null;
+    if (!was) HP.open = '';
+    requestAnimationFrame(() => { const i = $('#hpIn'); if (!i) return; if (i.value) grow(i); if (caret) { i.focus({ preventScroll: true }); i.setSelectionRange(caret[0], caret[1]); } });
+    return html.replace('<div class="ov-wrap">', () => promptBlockHTML(h, state()) + '<div class="ov-wrap">');
+  };
+
+  async function send() {
+    const text = HP.text.trim() || (HP.refs.length ? 'A post inspired by these pictures' : ''); if (!text || HP.sending || !canEdit()) return;
+    if (!AGAPI.list()) { HP.sending = true; try { await AGAPI.load(); } finally { HP.sending = false; } if (!onHome()) return; }
+    if (!AGAPI.current()) { drawBar(); return toast('Add a Claude or Groq key in Settings → AI to create with AI'); }
+    const s = promptSize(HP.size);
+    const d = createDesign({ name: promptName(text), ratio: ensureRatio(s.ratio || brand().defaultRatio || '4:5'), slides: s.pages });
+    HP.pending = { id: d.id, text, note: promptNote(HP.size), refs: HP.refs }; HP.text = ''; HP.open = ''; HP.refs = [];
+    location.hash = '#/editor/' + d.id;
+  }
+  Object.assign(ACT, {
+    hpSend: send,
+    hpAttach: () => pickPictures(addPics),
+    hpRefDrop: (a) => { HP.refs.splice(+a.dataset.i, 1); drawRefs(); },
+    hpSize: () => { HP.open = HP.open === 'size' ? '' : 'size'; drawBar(); },
+    hpModel: () => { HP.open = HP.open === 'model' ? '' : 'model'; drawBar(); if (HP.open) { const on = $('#hpBar .ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
+    hpPickSize: (a) => { HP.size = promptSize(a.dataset.k).k; HP.open = ''; drawBar(); const b = $('#hpBar [data-act="hpSize"]'); b && b.focus(); },
+    hpIdea: (a) => { const p = PROMPT_IDEAS[+a.dataset.i], i = $('#hpIn'); if (!p || !i) return; HP.text = i.value = p[1]; grow(i); syncSend(); i.focus(); i.setSelectionRange(i.value.length, i.value.length); },
+  });
+  // the Agent's model menu is reused here: picking a model also closes this box's menu
+  const _pick = ACT.agPickModel;
+  ACT.agPickModel = function (a) { const r = _pick.apply(this, arguments); if (onHome()) { HP.open = ''; drawBar(); } return r; };
+  document.addEventListener('paste', (e) => { if (e.target.id !== 'hpIn') return; const f = [...((e.clipboardData && e.clipboardData.files) || [])].filter((x) => /^image\//.test(x.type)); if (f.length) { e.preventDefault(); addPics(f); } });
+  document.addEventListener('dragover', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (b && [...(e.dataTransfer.types || [])].includes('Files')) { e.preventDefault(); b.classList.add('drop'); } });
+  document.addEventListener('dragleave', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (b && !b.contains(e.relatedTarget)) b.classList.remove('drop'); });
+  document.addEventListener('drop', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (!b) return; e.preventDefault(); e.stopPropagation(); b.classList.remove('drop'); addPics(e.dataTransfer.files); }, true);
+  document.addEventListener('input', (e) => { const t = e.target; if (t.id !== 'hpIn') return; HP.text = t.value; grow(t); syncSend(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.id === 'hpIn' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape' && HP.open && onHome()) { const was = HP.open; HP.open = ''; drawBar(); const b = $(`#hpBar [data-act="${was === 'size' ? 'hpSize' : 'hpModel'}"]`); b && b.focus(); }
+  });
+  document.addEventListener('click', (e) => { if (HP.open && onHome() && e.target.isConnected && !e.target.closest('.hp-w')) { HP.open = ''; drawBar(); } });
+
+  /* the new design opens on the Agent tab and the prompt runs there */
+  const _oeHP = openEditor;
+  openEditor = function (id) {
+    const r = _oeHP.apply(this, arguments), p = HP.pending; HP.pending = null;
+    if (p && ED.d && ED.d.id === p.id && $('.ed')) { ACT.edTab({ dataset: { k: 'agent' } }); AGAPI.run(p.text, p.note, p.refs); } // edTab also slides the panel in on narrow screens
+    return r;
+  };
+}
+
+/* Import → Image or file: once its new design is open, the file is imported into it */
+{ const _oeImp = openEditor; openEditor = function () { const r = _oeImp.apply(this, arguments), p = importPending; importPending = null; if (p && ED.d && ED.d.id === p.id && IMPORT_FILE) IMPORT_FILE(p.file); return r; }; }
 
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle

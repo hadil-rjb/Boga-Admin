@@ -14,6 +14,7 @@ import { NotionService } from "./notion/notion.service";
 import { PublisherService } from "./publishing/publisher.service";
 import { VersionsService } from "./versions.service";
 import { CommentsService } from "./comments.service";
+import { keepDesignSystem } from "./design-system/keep";
 
 type Item = Record<string, any> & { id: string };
 
@@ -138,9 +139,16 @@ export class WorkspaceService {
         const i = dto.brandOrder?.indexOf(id) ?? -1;
         return i >= 0 ? i : existing.get(id) ?? next++;
       };
+      // A kit sent without designSystem (a tab loaded before the analysis) keeps the stored one
+      const bare = dto.brands.filter((b) => b.kit && b.kit.designSystem === undefined).map((b) => b.id);
+      const systems = new Map<string, unknown>(
+        bare.length
+          ? (await this.brands.find({ _id: { $in: bare } }, { designSystem: 1 }).lean<{ _id: string; designSystem?: unknown }[]>()).map((b) => [b._id, b.designSystem])
+          : [],
+      );
       await this.brands.bulkWrite(
         dto.brands.map((b): AnyBulkWriteOperation => ({
-          replaceOne: { filter: { _id: b.id }, replacement: this.brandDoc(b, orderOf(b.id)), upsert: true },
+          replaceOne: { filter: { _id: b.id }, replacement: this.brandDoc({ ...b, kit: keepDesignSystem(b.kit, systems.get(b.id)) }, orderOf(b.id)), upsert: true },
         })),
         { ordered: false },
       );
@@ -167,17 +175,22 @@ export class WorkspaceService {
    * Design upserts with optimistic concurrency. Each one carries `rev`, the revision the client's copy is based on:
    * - same content as stored (hash): nothing is written;
    * - `rev` is the stored revision: the design is replaced and its revision goes up by one;
-   * - `rev` is older (another tab or user saved meanwhile): refused, the stored design comes back in `conflicts`.
+   * - `rev` is older (another tab or user saved meanwhile): refused, the stored design comes back in `conflicts`;
+   * - `rev` is older but the stored revision was written by this client (its `wid` is in `mine`, the client's
+   *   writes it never heard back about: keepalive on page exit, reload or closed tab mid-request): replaced.
+   *   Every revision after `rev` is then the client's own, so its newer copy already includes them.
    * Upserts without `rev` (older clients) are written as before. Returns the revision of every design listed.
+   * The stored `wid` names the last studio write; a server-side render ($set) keeps it, other writers clear it.
    */
-  private async applyDesigns(upserts: { brandId: string; item: Item; rev?: number }[] = []) {
+  private async applyDesigns(upserts: { brandId: string; item: Item; rev?: number; wid?: string; mine?: string[] }[] = []) {
     const revs: Record<string, number> = {};
     const conflicts: { brandId: string; item: Item; rev: number }[] = [];
     const list = upserts.filter((u) => u.item && u.item.id).map((u) => ({ ...u, item: dropAt(u.item) as Item }));
     if (!list.length) return { revs, conflicts };
-    type Row = { brandId: string; id: string; order: number; hash?: string; rev?: number };
+    type Row = { brandId: string; id: string; order: number; hash?: string; rev?: number; wid?: string };
+    const ROW = { brandId: 1, id: 1, order: 1, hash: 1, rev: 1, wid: 1 };
     const stored = new Map(
-      (await this.designs.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }, { brandId: 1, id: 1, order: 1, hash: 1, rev: 1 }).lean<Row[]>())
+      (await this.designs.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }, ROW).lean<Row[]>())
         .map((r) => [`${r.brandId}|${r.id}`, r]),
     );
     /** Refused save; when the stored design already has this content (the same save delivered twice), it's not a conflict */
@@ -189,22 +202,32 @@ export class WorkspaceService {
       conflicts.push({ brandId, item: item as Item, rev });
     };
 
-    await Promise.all(list.map(async ({ brandId, item: raw, rev }) => {
-      const { rev: _ignored, ...item } = raw as Item & { rev?: number };
-      const key = `${brandId}|${item.id}`, prev = stored.get(key), cur = prev?.rev ?? 0, hash = hashOf(item);
-      if (prev && prev.hash === hash) return void (revs[key] = cur);
-      if (prev && rev !== undefined && rev !== cur) return conflict(brandId, item.id, hash);
-      const replacement = { ...item, brandId, order: prev?.order ?? Number.MAX_SAFE_INTEGER, hash, rev: cur + 1 };
-      // The filter repeats the revision just read, so a save that lands in between matches nothing: a conflict, not an overwrite
-      const filter = prev ? { brandId, id: item.id, rev: prev.rev ?? { $exists: false } } : { brandId, id: item.id };
-      try {
-        const r = await this.designs.replaceOne(filter, replacement, { upsert: !prev });
-        if (prev && !r.matchedCount) return conflict(brandId, item.id, hash);
-      } catch (e: any) {
-        if (e?.code === 11000) return conflict(brandId, item.id, hash); // created by another client at the same moment
-        throw e;
+    await Promise.all(list.map(async ({ brandId, item: raw, rev, wid, mine }) => {
+      const { rev: _ignored, wid: _stored, ...item } = raw as Item & { rev?: number; wid?: string };
+      const key = `${brandId}|${item.id}`, hash = hashOf(item);
+      const own = (r?: Row) => !!r?.wid && Array.isArray(mine) && mine.includes(r.wid);
+      let prev = stored.get(key);
+      // a save racing this one (e.g. this client's own keepalive still landing) is read again once
+      for (let attempt = 0; ; attempt++) {
+        const cur = prev?.rev ?? 0;
+        if (prev && prev.hash === hash) return void (revs[key] = cur);
+        if (prev && rev !== undefined && rev !== cur && !own(prev)) return conflict(brandId, item.id, hash);
+        const replacement = { ...item, brandId, order: prev?.order ?? Number.MAX_SAFE_INTEGER, hash, rev: cur + 1, ...(wid ? { wid } : {}) };
+        // The filter repeats the revision just read, so a save that lands in between matches nothing: a conflict, not an overwrite
+        const filter = prev ? { brandId, id: item.id, rev: prev.rev ?? { $exists: false } } : { brandId, id: item.id };
+        try {
+          const r = await this.designs.replaceOne(filter, replacement, { upsert: !prev });
+          if (prev && !r.matchedCount) {
+            if (attempt) return conflict(brandId, item.id, hash);
+            prev = (await this.designs.findOne({ brandId, id: item.id }, ROW).lean<Row>()) ?? undefined;
+            continue;
+          }
+        } catch (e: any) {
+          if (e?.code === 11000) return conflict(brandId, item.id, hash); // created by another client at the same moment
+          throw e;
+        }
+        return void (revs[key] = cur + 1);
       }
-      revs[key] = cur + 1;
     }));
     return { revs, conflicts };
   }
@@ -248,7 +271,8 @@ export class WorkspaceService {
   }
 
   private async syncItems(model: Model<any>, brandId: string, items: Item[]) {
-    const list = items.filter((i) => i && i.id).map((i) => dropAt(i) as Item);
+    // `wid` names a studio write (applyDesigns): never taken from a snapshot
+    const list = items.filter((i) => i && i.id).map((i) => { const { wid: _wid, ...item } = dropAt(i) as Item; return item as Item; });
     const existing = new Map(
       (await model.find({ brandId }, { id: 1, hash: 1, order: 1, rev: 1 }).lean<{ id: string; hash?: string; order: number; rev?: number }[]>()).map((e) => [e.id, e]),
     );

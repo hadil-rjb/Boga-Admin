@@ -11,6 +11,7 @@ import { SocialPost } from "../schemas/post.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
 import { strip } from "../social.util";
 import { launchChromium } from "./headless";
+import { isVideoDesign } from "./post-state";
 import { PublisherService } from "./publisher.service";
 
 const RENDER_TIMEOUT_MS = Number(process.env.SOCIAL_LIVE_RENDER_TIMEOUT_MS) || 120_000;
@@ -94,6 +95,7 @@ export class LiveRenderService implements OnModuleDestroy {
     if (!post?.d) return null;
     const design = await this.designs.findOne({ brandId, id: post.d }).lean<Record<string, any>>();
     if (!design) return null;
+    if (isVideoDesign(design)) return null; // a video publishes its prepared MP4: nothing to re-render
     const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
     const set = (ws?.set || {}) as Record<string, unknown>;
     const brand = await this.brands.findById(brandId).lean<Record<string, any>>();

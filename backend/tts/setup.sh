@@ -61,4 +61,15 @@ CATTEncoderOnly()
 PY
 fi
 
+# ---------- Footage Style Match: transcription + analysis deps (faster-whisper, numpy, pillow) ----------
+.tts/venv/bin/pip install --quiet -r tts/requirements-footage.txt
+# large-v3-turbo (MIT) downloads once into .tts/hf, then works offline; skipped when already present
+if ! ls -d .tts/hf/hub/models--*faster-whisper-large-v3-turbo >/dev/null 2>&1; then
+  echo "Downloading faster-whisper large-v3-turbo…"
+  HF_HOME="$PWD/.tts/hf" .tts/venv/bin/python - <<'PY'
+from faster_whisper import WhisperModel
+WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")
+PY
+fi
+
 echo "Local voices installed. Restart the API: the Audio tab lists them."

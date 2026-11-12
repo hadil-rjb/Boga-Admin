@@ -1,3 +1,4 @@
+import { readVideo } from "./video-file";
 import { ApiError, request } from "../http";
 import { blob, Env, Linked, PublishInput, TokenProvider } from "./types";
 
@@ -45,7 +46,17 @@ export function telegram(env: Env): TokenProvider {
       const token = link.tokens.accessToken, chat = link.extra.chatId, imgs = input.images.slice(0, 10);
       const text = input.text.trim(), long = text.length > 1024; // photo captions are limited to 1024 characters
       let first: any;
-      if (imgs.length === 1) {
+      if (input.video) {
+        const v = input.video, f = new FormData();
+        f.append("chat_id", chat);
+        f.append("video", blob(await readVideo(v), "video/mp4"), "video.mp4");
+        f.append("supports_streaming", "true");
+        if (v.width) f.append("width", String(v.width));
+        if (v.height) f.append("height", String(v.height));
+        if (v.durationMs) f.append("duration", String(Math.round(v.durationMs / 1000)));
+        if (text && !long) f.append("caption", text);
+        first = await call(token, "sendVideo", { body: f, timeoutMs: 5 * 60_000 });
+      } else if (imgs.length === 1) {
         const f = new FormData();
         f.append("chat_id", chat);
         f.append("photo", blob(imgs[0].buffer, imgs[0].mime), "slide-1.jpg");
@@ -58,7 +69,7 @@ export function telegram(env: Env): TokenProvider {
         imgs.forEach((im, i) => f.append(`p${i}`, blob(im.buffer, im.mime), `slide-${i + 1}.jpg`));
         first = (await call(token, "sendMediaGroup", { body: f, timeoutMs: 90_000 }))[0];
       }
-      if (text && (long || !imgs.length)) first = (await call(token, "sendMessage", { json: { chat_id: chat, text: text.slice(0, 4096) } })) || first;
+      if (text && (long || (!imgs.length && !input.video))) first = (await call(token, "sendMessage", { json: { chat_id: chat, text: text.slice(0, 4096) } })) || first;
       const id = String(first?.message_id ?? "");
       return { id, url: link.extra.username && id ? `https://t.me/${link.extra.username}/${id}` : undefined };
     },

@@ -298,16 +298,24 @@ Settings → Connected accounts has a **Connect** button per network, per brand.
 
 | Network | How it connects | What it publishes |
 | --- | --- | --- |
-| Instagram | Meta app (`META_APP_ID/SECRET`), professional account linked to a Facebook Page | image, carousel (≤10), 9:16 as a Story, first comment |
-| Facebook | Meta app, Facebook Page | photo or multi-photo post, first comment |
-| LinkedIn | `LINKEDIN_CLIENT_ID/SECRET` (OpenID + Share on LinkedIn) | image or multi-image post on the member's feed, first comment |
-| X | `X_CLIENT_ID/SECRET` (OAuth 2.0 with PKCE) | up to 4 images |
-| TikTok | `TIKTOK_CLIENT_KEY/SECRET` (Login Kit + Content Posting API) | photo post; private until TikTok audits the app |
-| Telegram | bot token + channel, entered in the Connect dialog | photo or album, long captions as a follow-up message |
+| Instagram | Meta app (`META_APP_ID/SECRET`), professional account linked to a Facebook Page | image, carousel (≤10), 9:16 as a Story, **video as a Reel** (or a video Story), first comment |
+| Facebook | Meta app, Facebook Page | photo or multi-photo post, **Page video**, first comment |
+| LinkedIn | `LINKEDIN_CLIENT_ID/SECRET` (OpenID + Share on LinkedIn) | image or multi-image post on the member's feed, **video**, first comment |
+| X | `X_CLIENT_ID/SECRET` (OAuth 2.0 with PKCE) | up to 4 images, **video up to 2:20** (chunked upload) |
+| TikTok | `TIKTOK_CLIENT_KEY/SECRET` (Login Kit + Content Posting API) | photo post, **video**; private until TikTok audits the app |
+| Telegram | bot token + channel, entered in the Connect dialog | photo or album, **video up to 50 MB**, long captions as a follow-up message |
 
 Until a network's credentials are in `backend/.env`, its Connect button explains the setup (steps, callback URL to
 register: `<PUBLIC_API_URL>/social/connections/callback/<network>`). Instagram and TikTok download images from
 `PUBLIC_API_URL`, so it must be a public https address in production.
+
+**Video posts.** An imported clip or an animated design is scheduled like an image post; what goes out is its MP4. The
+studio prepares it when the post is scheduled (a clip is exported on the server; an animated design is recorded in the
+browser tab, which must stay open until it's ready, then uploaded in 8 MB chunks and re-encoded to H.264 + AAC with
+ffmpeg). Each post keeps its own copy in `SOCIAL_VIDEO_DIR` (default `backend/storage/social-videos`), served publicly at
+`<PUBLIC_API_URL>/social/video/<id>.mp4` with Range requests; files no post uses are removed hourly. Instagram, Facebook
+and TikTok download the video from that URL (TikTok also needs the domain verified in its developer portal); LinkedIn,
+X and Telegram receive it as an upload. The Schedule dialog checks each network's length limit before you confirm.
 
 **Meta (Facebook and Instagram, one app):** besides the keys, the app must list the API's domain. *Setup help* next to
 Connect shows the exact values to copy: App settings → Basic → **App Domains** (`localhost` in development) and
