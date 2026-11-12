@@ -11,7 +11,7 @@
    Section 1: pure helpers. 2: session (polling, results, player). 3: drawing. 4: actions and keys.
    ============================================================ */
 import { apiUrl } from '../lib/api';
-import { group, retime, DEFAULT_STYLE, FONTS_CSS } from './captions.js';
+import { group, retime, DEFAULT_STYLE, FONTS_CSS, draw as drawCaptions } from './captions.js';
 import { lineText, captionsOn, langFromLines, editStyle, fileBase, NEEDS_VIDEO } from './caption-panels.js';
 import { dragCaption } from './caption-inspector.js';
 import { parseCube } from './look.js';
@@ -131,13 +131,28 @@ export function fitPeaks(peaks, w) {
 /* the caption rows' helpers live in caption-panels.js (the shared Captions panel) */
 export { textCommit, rangeLabel, lineText } from './caption-panels.js';
 
-/* ---- Scenes panel (the uploaded video's first rail item): the clip, then its Look, under one title ---- */
+/* ---- Scenes panel (the uploaded video's first rail item): the clip, then the reference to match. The Look itself
+   (grade, brand looks) is the inspector's, on the right: nothing is said twice ---- */
 const inner = (h) => { const m = /^\s*<div class="body ([^"]*)">\s*<h3>[^<]*<\/h3>([\s\S]*)<\/div>\s*$/.exec(h || ''); return m ? { cls: m[1], body: m[2] } : null; };
-/** The Scenes panel from the clip pane and the Look pane (each `<div class="body …"><h3>…</h3>…</div>`); no Look pane yet: the clip alone */
-export function scenesPane(clipHTML, lookHTML) {
-  const c = inner(clipHTML), l = inner(lookHTML); if (!c) return null;
-  return `<div class="body ft-scenes"><h3>Scenes</h3><div class="${c.cls}">${c.body}</div>${l ? `<span class="label ft-scenes-l">Look</span><div class="${l.cls}">${l.body}</div>` : ''}</div>`;
+/** The Scenes panel from the clip pane (`<div class="body …"><h3>…</h3>…</div>`) and the reference block (html, or '' / null for none) */
+export function scenesPane(clipHTML, refHTML) {
+  const c = inner(clipHTML); if (!c) return null;
+  return `<div class="body ft-scenes"><h3>Scenes</h3><div class="${c.cls}">${c.body}</div>${refHTML ? `<div class="ft-scenes-ref">${refHTML}</div>` : ''}</div>`;
 }
+/**
+ * Where the colours come from, as a chip of two or three words: { label, tone } (tone 'on': a grade is applied, 'warn', or '').
+ * own: the footage's own matched grade is selected; cube: it is loaded; ref: it was matched to a reference video;
+ * lut / applied: a brand look's file and its record; adjusted: no grade file but the sliders moved; gone: the look was deleted.
+ */
+export function gradeStatus({ own, cube, ref, lut, applied, adjusted, gone } = {}) {
+  if (gone) return { label: 'Look deleted', tone: 'warn' };
+  if (own && cube) return { label: ref ? 'Matched to reference' : 'Matched to brand look', tone: 'on' };
+  if (lut && !own) return { label: (applied && applied.name) || 'Brand look', tone: 'on' };
+  if (adjusted) return { label: 'Adjusted by hand', tone: '' };
+  return { label: 'No grade', tone: '' };
+}
+/** A slider row led by an icon: the name is its tooltip and accessible label (attr: the data attribute that carries `key`) */
+export const rgIconHTML = (attr, key, label, icon, min, max, step, val, dis) => `<label class="ft-rg ft-rgi" title="${label}"><span class="ft-rg-ic" aria-hidden="true">${icon}</span><input type="range"${min < 0 ? ' class="ctr"' : ''} ${attr}="${key}" aria-label="${label}" min="${min}" max="${max}" step="${step}" value="${val}" style="--p:${((val - min) / (max - min)) * 100}%" ${dis}><output>${val > 0 && min < 0 ? '+' + val : val}</output></label>`;
 
 /* ---- Look panel: grade sliders and brand looks (the caption style edits are caption-inspector.js's setStyleField) ---- */
 const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
@@ -600,8 +615,9 @@ export function installFootageEditor(ctx, FT) {
     const name = (rec && rec.name) || 'Video', busy = !!(up && !up.err);
     return `<div class="body ft-media"><h3>Media</h3>
       <div class="ft-mv">${poster ? `<img src="${esc(poster)}" alt="">` : `<span class="ft-mp">${ic('vsFilm', 22)}</span>`}
-        <div class="ft-mi"><b dir="auto" title="${esc(name)}">${esc(name)}</b><span class="xs-t muted">${ms ? esc(fmtMs(ms)) : '–'}${rec && rec.size ? ' · ' + fmtBytes(rec.size) : ''}</span></div></div>
-      ${busy ? addHTML(false) : can() ? `<button class="btn secondary sm" data-act="ftReplace">${ic('refresh', 15)}Replace video</button><input type="file" accept="${ACCEPT}" hidden data-ft-replace-file>` : ''}
+        <div class="ft-mi"><b dir="auto" title="${esc(name)}">${esc(name)}</b><span class="xs-t muted">${ms ? esc(fmtMs(ms)) : '–'}${rec && rec.size ? ' · ' + fmtBytes(rec.size) : ''}</span></div>
+        ${!busy && can() ? `<button class="btn ghost icon sm ft-mv-r" data-act="ftReplace" title="Replace video" aria-label="Replace video">${ic('refresh', 16)}</button><input type="file" accept="${ACCEPT}" hidden data-ft-replace-file>` : ''}</div>
+      ${busy ? addHTML(false) : ''}
       ${up && up.err ? `<p class="ft-err" role="alert">${esc(up.err)}</p>` : ''}</div>`;
   }
   /** Progress only: the bars move without redrawing the panels */
@@ -630,58 +646,40 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
   const brandLooks = () => (Array.isArray(brand().looks) ? brand().looks : []).filter((l) => l && l.id);
 
   function gradeHTML(ft, A, src, dis) {
-    if (!F.id) return '<p class="sm-t muted">Add your video to adjust its colours.</p>';
-    if (A.grade.state === 'failed') return failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
-    if (A.busy(A.grade) || !F.rec) return `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
+    const plain = '<div class="ft-sec-h"><span class="label">Colour grade</span></div>';
+    if (!F.id) return plain + '<p class="sm-t muted">Add your video to adjust its colours.</p>';
+    if (A.grade.state === 'failed') return plain + failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
+    if (A.busy(A.grade) || !F.rec) return `${plain}<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(3)}`;
     const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut), gone = !own && !!F.cubeGone[ft.look.lut];
-    const msg = own && F.cube ? `The colours match ${src}. Use <b>Before / After</b> under the video to compare.`
-      : gone ? esc(LOOK_DELETED)
-      : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : null;
     const L = ft.look, g = (k) => gradeToSlider(k, L[k]);
-    // no grade file, but the sliders were moved: say so, rather than "no colour grade yet" above non-zero values
-    const msg2 = msg != null ? msg : ['exposure', 'temp', 'sat'].some((k) => g(k)) ? 'Adjusted by hand. Match a reference or apply a brand look for a full grade.'
-      : esc(A.grade.state === 'skipped' ? NO_GRADE_YET : F.note || 'No colour grade yet.');
+    const st = gradeStatus({ own, cube: !!F.cube, ref: !!F.ref, lut: ft.look.lut, applied, gone, adjusted: ['exposure', 'temp', 'sat'].some((k) => g(k)) });
     // a brand look is applied (or was, and is gone): the footage's own matched grade is one click away
     const back = !dis && canUseMatched(ft, A.grade, F.id) ? `<button class="btn ${gone ? 'primary' : 'secondary'} sm ft-matched" data-act="ftUseMatched">${ic('refresh', 14)}Use the matched grade</button>` : '';
-    return `${gone ? `<div class="note warn" role="alert">${ic('alert', 15)}<span>${msg2}</span></div>${back}` : `<p class="sm-t ${own && F.cube || ft.look.lut ? '' : 'muted'}">${msg2}</p>${back}`}
-      ${rgHTML('data-ft-g', 'strength', 'Strength', 0, 100, 1, g('strength'), dis)}${rgHTML('data-ft-g', 'exposure', 'Exposure', -100, 100, 1, g('exposure'), dis)}
-      ${rgHTML('data-ft-g', 'temp', 'Temperature', -100, 100, 1, g('temp'), dis)}${rgHTML('data-ft-g', 'sat', 'Saturation', -100, 100, 1, g('sat'), dis)}
-      ${dis ? '' : `<button class="btn ghost sm ft-reset" data-act="ftGradeReset">${ic('refresh', 14)}Reset grade</button>`}`;
+    const head = `<div class="ft-sec-h"><span class="label">Colour grade</span><span class="ft-chip2${st.tone ? ' ' + st.tone : ''}" title="${st.tone === 'on' && own ? 'Use Before / After under the video to compare' : esc(st.label)}">${esc(st.label)}</span>
+      ${dis ? '' : `<button class="btn ghost icon sm" data-act="ftGradeReset" title="Reset grade" aria-label="Reset grade">${ic('refresh', 15)}</button>`}</div>`;
+    return `${head}${gone ? `<div class="note warn" role="alert">${ic('alert', 15)}<span>${esc(LOOK_DELETED)}</span></div>` : ''}${back}
+      ${rgIconHTML('data-ft-g', 'strength', 'Strength', ic('ftStrength', 16), 0, 100, 1, g('strength'), dis)}${rgIconHTML('data-ft-g', 'exposure', 'Exposure', ic('sun', 16), -100, 100, 1, g('exposure'), dis)}
+      ${rgIconHTML('data-ft-g', 'temp', 'Temperature', ic('ftTemp', 16), -100, 100, 1, g('temp'), dis)}${rgIconHTML('data-ft-g', 'sat', 'Saturation', ic('ftSat', 16), -100, 100, 1, g('sat'), dis)}`;
   }
-
   function looksHTML(ft, dis) {
     const list = brandLooks(), own = ft.look.lut === lookPath(F.id);
     const canSave = !dis && F.cube && own;
-    const save = dis ? '' : `<button class="btn secondary sm" data-act="ftSaveLook" ${canSave ? '' : 'disabled'} ${!canSave && F.cube && !own ? 'title="Undo the applied look to save the matched grade"' : ''}>${ic('plus', 15)}Save as brand look</button>`;
-    const rows = list.length ? `<ul class="ft-lks">${list.map((l) => `<li class="ft-lkr${l.lut === ft.look.lut ? ' on' : ''}">${l.refThumb && /^data:image\//.test(l.refThumb) ? `<img src="${esc(l.refThumb)}" alt="" width="40" height="40">` : '<span class="ft-th"></span>'}
-      <span class="ft-ln" title="${esc(l.name || l.id)}">${esc(l.name || l.id)}</span>
-      ${dis ? '' : `<button class="btn secondary sm" data-act="ftApplyLook" data-id="${esc(l.id)}" ${l.lut === ft.look.lut ? 'disabled' : ''}>${l.lut === ft.look.lut ? 'In use' : 'Apply'}</button>
-      <button class="btn ghost icon sm" data-act="ftDelLook" data-id="${esc(l.id)}" aria-label="Delete ${esc(l.name || l.id)}" title="Delete">${ic('trash', 15)}</button>`}</li>`).join('')}</ul>`
-      : '<p class="xs-t muted">No brand looks yet. Save this grade and caption style to reuse them on other videos.</p>';
-    return `${save}${rows}`;
+    const save = dis ? '' : `<button class="btn ghost icon sm" data-act="ftSaveLook" ${canSave ? '' : 'disabled'} aria-label="Save as brand look" title="${!canSave && F.cube && !own ? 'Undo the applied look to save the matched grade' : canSave ? 'Save this grade and caption style as a brand look' : 'Match a reference first, then save it as a brand look'}">${ic('plus', 16)}</button>`;
+    const rows = list.length ? `<ul class="ft-lks">${list.map((l) => { const on = l.lut === ft.look.lut, nm = esc(l.name || l.id); return `<li class="ft-lkr${on ? ' on' : ''}">
+      <button class="ft-lk-go" data-act="ftApplyLook" data-id="${esc(l.id)}" ${dis || on ? 'disabled' : ''} aria-pressed="${on}" title="${on ? 'In use' : 'Apply ' + nm}">${l.refThumb && /^data:image\//.test(l.refThumb) ? `<img src="${esc(l.refThumb)}" alt="" width="40" height="40">` : '<span class="ft-th"></span>'}
+        <span class="ft-ln">${nm}</span>${on ? ic('check', 15) : ''}</button>
+      ${dis ? '' : `<button class="btn ghost icon sm" data-act="ftDelLook" data-id="${esc(l.id)}" aria-label="Delete ${nm}" title="Delete">${ic('trash', 15)}</button>`}</li>`; }).join('')}</ul>`
+      : '<p class="xs-t muted">No brand looks yet.</p>';
+    return `<div class="ft-sec-h"><span class="label">Brand looks</span>${save}</div>${rows}`;
   }
-
-  /** The Look side panel (rail): the grade in one sentence, Match a reference, brand looks. The sliders stay in the inspector. */
-  function lookPanelHTML() {
-    const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = !can();
-    let grade;
-    if (!F.id) grade = '<p class="sm-t muted">Add your video first.</p>';
-    else if (A.grade.state === 'failed') grade = failBox(A.grade.error || 'The colour grade could not be matched.', F.id, 'grade');
-    else if (A.busy(A.grade) || !F.rec) grade = `<p class="xs-t muted">Matching the colours of ${src}…${pct(A.grade)}</p>${skel(2)}`;
-    else {
-      const own = ft.look.lut === lookPath(F.id), applied = brandLooks().find((l) => l.lut === ft.look.lut);
-      grade = `<p class="sm-t${ft.look.lut ? '' : ' muted'}">${own && F.cube ? `The colours match ${src}.` : !own && ft.look.lut ? `Using the brand look ${applied ? `“${esc(applied.name)}”` : ''}.` : esc(!ft.look.lut && A.grade.state === 'skipped' ? NO_GRADE_YET : 'No colour grade yet.')}</p>
-        <p class="xs-t muted">Adjust strength, exposure, temperature and saturation in Look settings.</p>`;
-    }
-    const paired = hasRefPair(F.rec) || !!F.ref, R = F.refUp;
-    const ref = R ? `<div class="ft-up" role="status"><b>Uploading the reference</b><div class="prog-w"><div class="prog"><i data-ft-refbar style="width:${Math.round(R.p * 100)}%"></i></div><span class="prog-pct" data-ft-refpct>${Math.round(R.p * 100)}%</span></div><button class="btn ghost sm" data-act="ftStopRef">Stop</button></div>`
-      : dis ? '' : `<p class="xs-t muted">${paired ? 'The colours and caption style come from your reference video.' : 'Drop an edited video to copy its colours and caption style.'}</p>
-        <button class="btn ${paired ? 'secondary' : 'primary'} sm" data-act="ftMatchRef" ${F.id && F.rec && !A.failed ? '' : 'disabled'}>${ic('upload', 15)}${paired ? 'Change the reference' : 'Match a reference'}</button>
-        <input type="file" accept="${ACCEPT}" hidden data-ft-ref-file>`;
-    return `<div class="body ft-look-p"><h3>Look</h3>
-      <section class="ft-sec"><span class="label">Colour grade</span>${grade}</section>
-      <section class="ft-sec"><span class="label">Reference</span>${ref}</section>
-      <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, dis)}</section></div>`;
+  /** Under the clip in Scenes: match a reference video (its colours and caption style), or its upload in progress */
+  function refHTML() {
+    if (!F.id) return '';
+    const A = analysis(F.rec, F.refRec), paired = hasRefPair(F.rec) || !!F.ref, R = F.refUp;
+    if (R) return `<div class="ft-up" role="status"><b>Uploading the reference</b><div class="prog-w"><div class="prog"><i data-ft-refbar style="width:${Math.round(R.p * 100)}%"></i></div><span class="prog-pct" data-ft-refpct>${Math.round(R.p * 100)}%</span></div><button class="btn ghost sm" data-act="ftStopRef">Stop</button></div>`;
+    if (!can()) return '';
+    return `<button class="btn secondary sm ft-ref-b" data-act="ftMatchRef" ${F.rec && !A.failed ? '' : 'disabled'} title="${paired ? 'The colours and caption style come from your reference video. Choose another one' : 'Choose an edited video to copy its colours and caption style'}">${ic('upload', 15)}${paired ? 'Change the reference' : 'Match a reference'}</button>
+      <input type="file" accept="${ACCEPT}" hidden data-ft-ref-file>`;
   }
   /** Look → Match a reference: uploads the reference, pairs it (the server matches the grade again and reads its caption style) */
   async function matchRef(file) {
@@ -710,8 +708,8 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
   function lookHTML() {
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = can() ? '' : 'disabled';
     return `<div class="body ft-look-p"><h3>Look</h3>
-      <section class="ft-sec"><span class="label">Colour grade</span>${gradeHTML(ft, A, src, dis)}</section>
-      <section class="ft-sec"><span class="label">Brand looks</span>${looksHTML(ft, !can())}</section></div>`;
+      <section class="ft-sec">${gradeHTML(ft, A, src, dis)}</section>
+      <section class="ft-sec">${looksHTML(ft, !can())}</section></div>`;
   }
 
   /* ---------- Audio panel: the original's volume, the music bed (the reel's picker: compose or upload), ducking ---------- */
@@ -774,7 +772,7 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     },
     player,
     tracks: tlTracks,
-    panel: (k) => (!F || F.d !== ED.d ? null : k === 'scenes' ? scenesPane(mediaHTML(), F.id ? lookPanelHTML() : null) : k === 'audio' ? audioPanelHTML() : null),
+    panel: (k) => (!F || F.d !== ED.d ? null : k === 'scenes' ? scenesPane(mediaHTML(), refHTML()) : k === 'audio' ? audioPanelHTML() : null),
     captions: {
       body: noLinesHTML, foot: retxHTML, light: () => sync(), ready: () => !!(F && F.id),
       /** the caption inspector's live preview: the player draws `style` until null puts the design's back */
@@ -1061,4 +1059,75 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
   FT.sync = () => { sync(); redraw(); };
   /** The open footage session (player, records) or null */
   FT.session = () => F;
+
+  /* ---- The Studio Agent's hands on this video (engine.js, agent-video.js): the same undoable steps as the panels,
+     with no dialog and no toast; each async one returns a sentence for the agent or throws ---- */
+  let FRAME = null; // an off-screen <video> on the proxy, kept for one agent run (dropFrame)
+  const live = () => { if (!F || !ED.d || ED.d !== F.d) throw new Error('The video is not open'); if (!can()) throw new Error('View only: this video cannot be changed'); return F; };
+  FT.agent = {
+    /** The session's server records, or nulls when no video is open */
+    records: () => (F ? { rec: F.rec, ref: F.refRec, id: F.id, dur: F.dur || (F.rec && F.rec.meta ? F.rec.meta.dur * 1000 : 0) } : { rec: null, ref: null, id: null, dur: 0 }),
+    looks: () => brandLooks(),
+    /** Whether the server matched a grade to the reference (the agent's look: 'matched') */
+    matched: () => !!(F && F.rec && F.ref && stepInfo(F.rec, 'grade').state === 'done'),
+    /** Grade slider values (stored units), one undoable step */
+    setLook(values) {
+      live(); if (!Object.keys(values || {}).length) return;
+      mutate(() => { Object.assign(ED.d.footage.look, values); }, () => { sync(); ed.props(); }); save();
+    },
+    resetGrade() { live(); mutate(() => { Object.assign(ED.d.footage.look, GRADE_RESET); ED.d.footage.look.lut = null; ED.d.footage.lookId = null; }, () => { sync(); F.sig = ''; redraw(); }); save(); },
+    /** A brand look; when its captions would regroup the user's lines, only its colours are applied */
+    async applyLook(id, ok) {
+      const S = live(), look = brandLooks().find((l) => l.id === id); if (!look) throw new Error('No such brand look');
+      let cube; try { cube = parseCube(await api(`/footage/looks/${encodeURIComponent(id)}`, { text: true })); } catch (e) { throw new Error('This brand look is no longer available'); }
+      if (!alive(S) || (ok && !ok())) throw new Error('Stopped before this change was made');
+      S.cubes[look.lut] = cube; delete S.cubeBad[look.lut];
+      const regroups = look.captionStyle && maxWordsOf(look.captionStyle) !== maxWordsOf(capsOf(ED.d).style) && (capsOf(ED.d).lines || []).length;
+      mutate(() => { applyLookTo(capsOf(ED.d), ED.d.footage, regroups ? { ...look, captionStyle: null } : look); }, () => { sync(); F.sig = ''; redraw(); }); save();
+      return regroups ? `Applied the colours of “${look.name}”. Its captions use ${maxWordsOf(look.captionStyle)} words per line, which would replace the line breaks, so the captions were left as they are.` : `Applied “${look.name}”${look.captionStyle ? ' with its caption style' : ''}.`;
+    },
+    /** Back to the grade matched to the reference */
+    async useMatched(ok) {
+      const S = live();
+      if (!S.cube) {
+        let text; try { text = await api(`/footage/${S.id}/look`, { text: true }); } catch (e) { throw new Error((e && e.message) || 'Could not load the matched grade'); }
+        if (!alive(S)) throw new Error('The video was closed');
+        try { S.cube = parseCube(text); } catch (e) { throw new Error('The colour grade file could not be read'); }
+      }
+      if (ok && !ok()) throw new Error('Stopped before this change was made');
+      if (!matchedGradePatch(ED.d.footage, S.id)) return 'The matched grade is already in use.';
+      S.note = null; mutate(() => { useMatchedGrade(ED.d, S.id); }, () => { sync(); S.sig = ''; redraw(); }); save();
+      return 'Using the matched grade.';
+    },
+    /** The sound ({ vol, music }), one undoable step */
+    setAudio(audio) { live(); setAudio(() => ({ vol: audio.vol, music: audio.music })); },
+    /** A music record for a file composed and uploaded by RT.composeMusic */
+    musicRecord: (f) => musicRecord(f, ftAudioOf(ED.d.footage).music),
+    /** The transcript's words (for regrouping speech captions) */
+    async words() { const S = live(); const w = await api(`/footage/${S.id}/words`); return Array.isArray(w) ? w : []; },
+    /**
+     * A JPEG data URL of the video at `ms` with the captions drawn on it, at `scale` of the output size; null when it can't
+     * be read. The colours are the original's (the grade is drawn by the player's shader, not here).
+     */
+    async frameAt(ms, scale) {
+      const S = F; if (!S || !S.rec || !S.rec.proxyUrl) return null;
+      try {
+        if (!FRAME || FRAME.S !== S) {
+          const v = document.createElement('video'); v.crossOrigin = 'anonymous'; v.muted = true; v.preload = 'auto'; v.src = apiUrl(S.rec.proxyUrl);
+          await new Promise((ok, no) => { v.onloadeddata = ok; v.onerror = () => no(new Error('load')); setTimeout(() => no(new Error('timeout')), 15000); });
+          FRAME = { S, v };
+        }
+        const v = FRAME.v, t = Math.max(0, Math.min((+ms || 0) / 1000, (v.duration || 0) - 0.05));
+        await new Promise((ok, no) => { v.onseeked = ok; setTimeout(() => no(new Error('timeout')), 8000); v.currentTime = t; });
+        const out = ED.d.footage.out || { w: v.videoWidth, h: v.videoHeight }, w = Math.round(out.w * scale), h = Math.round(out.h * scale);
+        const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
+        g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+        const k = Math.min(w / v.videoWidth, h / v.videoHeight), dw = v.videoWidth * k, dh = v.videoHeight * k;
+        g.drawImage(v, (w - dw) / 2, (h - dh) / 2, dw, dh);
+        const caps = capsOf(ED.d); if (caps.on !== false && (caps.lines || []).length) drawCaptions(g, caps.lines, styleOf(ED.d), +ms || 0, w, h);
+        return c.toDataURL('image/jpeg', 0.85);
+      } catch (e) { return null; }
+    },
+    dropFrame() { if (FRAME) { FRAME.v.removeAttribute('src'); FRAME.v.load(); FRAME = null; } },
+  };
 }

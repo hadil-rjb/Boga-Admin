@@ -22,13 +22,24 @@ import * as AUD from './audio';
 import * as COMP from './composer';
 import { installFootage, blockSchedule, fmtDur } from './footage';
 import { exportPayload, exportSizes } from './footage-editor.js';
-import { isVideoPost, videoProblem, videoKey, videoLength, prepareVideo, overall, STEPS } from './post-video.js';
+import { isVideoPost, videoProblem, videoKey, videoLength, prepareVideo, overall, STEPS, videoBlocked } from './post-video.js';
+import { checkSchedule, checkAutomation, plannerView, cardLines, freeSlot, upcomingTimes } from './agent-plan.js';
+import { captionEdits, linesIn, gradeInput, audioInput, analysisState, videoCtx as footageCtx } from './agent-video.js';
+import { setStyleField, REGROUP_FIELDS, regroupFrom } from './caption-inspector.js';
+import { applyPresetTo, editStyle, capsView, linesOf as captionLinesOf } from './caption-panels.js';
+import { voiceoverLines, scenesToVoice, voiceInput, musicInput, soundCtx } from './agent-sound.js';
+import { capsOf as capsOfD, styleOf as styleOfD } from './caption-store.js';
+import { group as groupWords } from './captions.js';
+import { PRESETS } from './caption-presets.js';
 import { buildPalette, gifWriter, gifSize, gifEstimate, GIF_FPS, GIF_SIZES, GIF_LONG_MS } from './gif.js';
+import { installCardPreview, loopTime } from './card-preview.js';
 import { installVideoStudio } from './video-studio.js';
 import { installReelSource } from './reel-source.js';
 import { installStillSource } from './still-source.js';
 import { createBlockHTML, promptBlockHTML, promptBarHTML, promptSize, promptNote, promptName, promptGreeting, PROMPT_IDEAS } from './home.js';
 import { agentExtras, lintSlide, lintText, tidySystem, mergeRules, LIMITS, patternWire, MAX_INSPIRATION, gatherSources, hasSources, gatheredSig, tidyGuideDesign, guideForRequest, withGuideRules, sourcesPhrase } from './design-system.js';
+import { chatTitle, archiveChat, restoreChat, dropChat, addRefs, refsNote, refsStripHTML, historyHTML, REFS_MAX } from './agent-history.js';
+import { agentCopy, agentMode, allowed, videoStep, animPatch, fitAnims, scenePatch, animOut, videoCtx, frameTime, starterFor, sec, MAX_SCENES } from './agent-motion.js';
 import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
 import { installCaptionInspector } from './caption-inspector.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
@@ -98,6 +109,8 @@ let LIVE = null;
 let FEEDS = null;
 let IMPORT_FILE = null; // importDesign(file): an image, SVG or HTML file becomes layers of the open design (set by the live-data block), for the top bar's Import menu
 let AGAPI = null; // the Studio Agent's models and loop, for the Overview's prompt box (set by the v25 block)
+let PLAN = null; // the planner's helpers (connected networks, best times, next free slot), for the agent's planning tools (set by the planner block)
+let AUTOS = null; // the brand's automations and their dialog, for the agent's planning tools (set by the v26 block)
 /** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
 let NOTION = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
@@ -637,15 +650,17 @@ function dcArt(d, i) {
   return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}</span>`;
 }
 function designCard(d, extra = '') {
-  const dd = getD(d.id), [w, h] = RATIOS[d.ratio], n = dd.pages.length, i = Math.min(DC_AT.get(d.id) || 0, n - 1);
+  const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
+  // an animated design is one video, not a carousel: its first scene alone, no stack, arrows or dots
+  const video = !!dd.motion, n = video ? 1 : dd.pages.length, i = Math.min(DC_AT.get(d.id) || 0, n - 1);
   const nav = n > 1 ? `<button type="button" class="dc-nav prev" data-act="dcSlide" data-n="-1" aria-label="Previous slide"${i ? '' : ' disabled'}>${ic('chevL', 16)}</button><button type="button" class="dc-nav next" data-act="dcSlide" data-n="1" aria-label="Next slide"${i < n - 1 ? '' : ' disabled'}>${ic('chevR', 16)}</button><span class="dc-dots" aria-hidden="true">${dcDots(n, i)}</span>` : '';
   return `<div class="card dc" data-id="${d.id}">
-    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
+    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(video ? { ...dd, pages: dd.pages.slice(0, 1) } : dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
 }
 /** Shows another slide on a carousel's card, in place */
 function dcShow(card, step) {
-  const d = card && getD(card.dataset.id); if (!d || d.pages.length < 2) return;
+  const d = card && getD(card.dataset.id); if (!d || d.motion || d.pages.length < 2) return; // a video card has no slides to step through
   const n = d.pages.length, i = Math.max(0, Math.min(n - 1, (DC_AT.get(d.id) || 0) + step)); if (i === (DC_AT.get(d.id) || 0)) return;
   DC_AT.set(d.id, i);
   const pv = card.querySelector('.pv'), art = pv.querySelector('.dc-art'); if (art) art.outerHTML = dcArt(d, i);
@@ -2655,8 +2670,9 @@ const curP = () => ED.d.pages[ED.pi];
 const curL = () => ED.sel && curP().layers.find((l) => l.id === ED.sel);
 const elOf = (id) => $(`#poster .ly[data-id="${id}"]`);
 /** Undo history: pages and canvas size (Magic resize changes the ratio), a footage design's footage (look) and the captions (d.captions) */
-const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages, ...(ED.d.footage ? { f: ED.d.footage } : {}), ...(ED.d.captions ? { c: ED.d.captions } : {}) });
-const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (v.c) ED.d.captions = v.c; if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
+const snap = () => JSON.stringify({ r: ED.d.ratio, p: ED.d.pages, ...(ED.d.footage ? { f: ED.d.footage } : {}), ...(ED.d.captions ? { c: ED.d.captions } : {}), ...(ED.d.motion ? { a: ED.d.audio || null } : {}) }); // a: null when the design has no sound settings yet, so Undo can remove the ones added after
+/** a: an animated design's sound settings (music, voice, speed…), undoable since the Studio Agent phase 4 */
+const restore = (str) => { const v = JSON.parse(str), changed = v.r !== ED.d.ratio; ED.d.pages = v.p; if (v.f) ED.d.footage = v.f; if (v.c) ED.d.captions = v.c; if ('a' in v) { if (v.a) ED.d.audio = v.a; else delete ED.d.audio; } if (changed) ED.d.ratio = ensureRatio(v.r); return changed; };
 const hex = (v) => {
   v = String(v || '').trim();
   if (/^#[0-9a-f]{6}$/i.test(v)) return v;
@@ -3146,7 +3162,7 @@ function agEmpty() {
     </div>`;
 }
 function agMsg(m, i, last) {
-  if (m.r === 'u') return `<div class="ag-u">${esc(m.t)}</div>`;
+  if (m.r === 'u') return `${m.refs && m.refs.length ? `<div class="ag-u-refs">${m.refs.map((r) => `<img src="${esc(r)}" alt="Inspiration picture">`).join('')}</div>` : ''}${m.t ? `<div class="ag-u">${esc(m.t)}</div>` : ''}`;
   const steps = m.steps || [], n = steps.length, fails = steps.filter((s) => s.err).length, cur = steps.find((s) => !s.done), running = !m.done;
   const head = `<div class="ag-who"><span class="ag-av">${ic('studio', 12)}</span><b>Agent</b>${m.model ? `<span class="ag-mdl">${esc(m.model)}</span>` : ''}${running ? '<span class="ag-live"><i></i>Working</span>' : ''}</div>`;
   // the work log: one live line while it runs, then a summary that opens on the full list
@@ -3161,14 +3177,29 @@ function agMsg(m, i, last) {
   const think = running && !n && !m.t ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : '';
   const text = m.t ? `<div class="ag-txt">${esc(m.t)}</div>` : '';
   const cap = m.caption ? `<div class="ag-cap"><div class="ag-cap-h"><span>Caption</span><span class="grow"></span><button class="ag-mini" data-act="agCopy" data-i="${i}">${ic('copy', 13)}Copy</button>${m.ai || /Here is/.test(m.t) ? `<button class="ag-mini" data-act="agSched" data-i="${i}">${ic('clock', 13)}Schedule</button>` : ''}</div><p>${esc(m.caption)}</p></div>` : '';
+  const plan = m.proposal ? agPlanCard(m.proposal, i) : '';
   const foot = m.after != null && !m.undone ? `<div class="ag-foot"><button class="ag-mini" data-act="agUndo" data-i="${i}">${ic('undo', 13)}Undo</button></div>` : m.undone ? `<div class="ag-foot"><span class="ag-undone">${ic('undo', 13)}Undone</span></div>` : '';
   const chips = last && m.done && m.chips && !m.undone ? `<div class="ag-sugs">${m.chips.map((k) => `<button class="ag-sug" data-act="agDo" data-k="${k}">${esc(AG_LABEL[k])}</button>`).join('')}</div>` : '';
-  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${foot}${chips}</div></div>`;
+  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${plan}${foot}${chips}</div></div>`;
 }
 // the work log stays open or closed across re-renders
 document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('ag-log') && ED.d && ED.d.chat) { const m = ED.d.chat[+d.dataset.i]; if (m) m.logOpen = d.open; } }, true);
+/** A post or automation the agent proposed (agent-plan.js): Review opens the studio's own dialog filled in; nothing is created before the user confirms there */
+function agPlanCard(p, i) {
+  const d = getD(p.d), post = p.kind === 'post', day = (k) => fmt(new Date(k + 'T00:00'), { weekday: 'short', day: 'numeric', month: 'short' });
+  const c = cardLines(p, { designName: d ? d.name : '', dateLabel: day, netName: (k) => (PLATFORMS[k] || {}).n });
+  const lines = c.lines.map((l, k) => `<div class="ag-plan-l${post ? (k === 2 ? ' ag-plan-c' : '') : k === 2 && p.caption && p.caption.mode !== 'ai' ? ' ag-plan-c' : ''}">${esc(l)}</div>`).join('');
+  let f;
+  if (!d) f = '<span class="ag-plan-st">Design deleted</span>';
+  else if (p.state === 'done') f = `<span class="ag-plan-st">${ic('check', 13)}${post ? 'Scheduled' : 'Created'}</span><button class="ag-mini" data-act="agPlanGo" data-i="${i}">${post ? 'Open planner' : 'Open automations'}</button>`;
+  else if (p.state === 'dismissed') f = '<span class="ag-plan-st">Dismissed</span>';
+  else f = persist.readOnly ? '' : `<button class="btn primary sm" data-act="agPlanOpen" data-i="${i}">${ic(post ? 'clock' : 'refresh', 14)}${post ? 'Review and schedule' : 'Review automation'}</button><button class="ag-mini" data-act="agPlanDismiss" data-i="${i}">Dismiss</button>`;
+  return `<div class="ag-cap ag-plan"><div class="ag-cap-h"><span>${c.title}</span><span class="grow ag-plan-sub">${esc(c.sub || '')}</span></div><div class="ag-plan-b">${lines}</div>${f ? `<div class="ag-plan-f">${f}</div>` : ''}</div>`;
+}
 function agThread() {
   const th = $('#agTh'); if (!th) return; const ch = ED.d.chat || [];
+  agHead();
+  if (ED.agHist) { th.innerHTML = historyHTML({ ic, esc, when: (at) => agoOf({ at }) }, ED.d); th.scrollTop = 0; ED._agn = null; agComposer(); return; }
   if (!ch.length && th.querySelector('.ag-empty')) ED._agTop = th.scrollTop; else if (ch.length) ED._agTop = 0;
   th.innerHTML = ch.length ? ch.map((m, i) => agMsg(m, i, i === ch.length - 1)).join('') : agEmpty();
   if (ch.length) { const n = ch.length + ':' + ch.reduce((a, m) => a + (m.steps ? m.steps.length : 0) + (m.done ? 1 : 0), 0); if (ED._agn !== n) { ED._agn = n; th.scrollTop = th.scrollHeight; } } else { th.scrollTop = ED._agTop || 0; ED._agn = null; }
@@ -3176,23 +3207,58 @@ function agThread() {
 }
 function agComposer() {
   const b = $('#agSend'), i = $('#agIn'); if (!b) return;
-  b.innerHTML = ic(ED.agBusy ? 'stop' : 'arrowUp', 16); b.title = ED.agBusy ? 'Stop' : 'Send'; b.setAttribute('aria-label', b.title); b.disabled = !ED.agBusy && !(i && i.value.trim());
+  b.innerHTML = ic(ED.agBusy ? 'stop' : 'arrowUp', 16); b.title = ED.agBusy ? 'Stop' : 'Send'; b.setAttribute('aria-label', b.title); b.disabled = !ED.agBusy && !(i && i.value.trim()) && !(ED.agRefs || []).length;
 }
 function agCtx() {
-  const e = $('#agCtx'); if (!e) return; const l = curL(), key = (l ? l.id + l.name : '') + '|' + ED.agScope + '|' + ED.pi + '|' + ED.d.pages.length;
+  const e = $('#agCtx'); if (!e) return; const l = curL(), key = (l ? l.id + l.name : '') + '|' + ED.agScope + '|' + ED.pi + '|' + ED.d.pages.length + '|' + agWords().chip;
   if (ED._agk === key) return; ED._agk = key;
   e.innerHTML = l ? `<button class="ag-chip on" data-act="agClearSel" title="Deselect to work on the whole slide">${ic('layers', 13)}${esc(l.name)}${ic('x', 12)}</button>`
-    : `<button class="ag-chip" data-act="agScope" title="Choose what the agent edits">${ic('layout', 13)}${ED.agScope === 'all' ? 'All ' + ED.d.pages.length + ' slides' : 'Slide ' + (ED.pi + 1)}${ic('chevD', 12)}</button>`;
+    : `<button class="ag-chip" data-act="agScope" title="${esc(agWords().scopeTitle)}">${ic('layout', 13)}${esc(agWords().chip)}${ic('chevD', 12)}</button>`;
 }
+/** The panel's words for the agent's mode: slides in Design, scenes in Animate (agent-motion.js) */
+const agWords = () => agentCopy(AGAPI && ED.d ? AGAPI.mode() : 'design', ED.pi, ED.d ? ED.d.pages.length : 1, ED.agScope);
 function agPanel(p) {
   const d = ED.d; if (ED.agOpen === undefined) ED.agOpen = ''; ED.agScope = ED.agScope || 'slide'; ED.agDraft = ED.agDraft || ''; d.chat = d.chat || [];
   d.chat.forEach((m) => { if (m.r === 'a' && !m.done && !ED.agBusy) { m.done = true; m.t = m.t || 'Stopped. Nothing was changed.'; } });
-  p.innerHTML = `<div class="ag"><div class="ag-h"><div class="grow"><b>Agent</b><small>Edits slide ${ED.pi + 1} of ${d.pages.length}</small></div>
-    <button class="btn ghost icon sm" data-act="agNew" title="New chat">${ic('plus', 18)}</button></div>
+  p.innerHTML = `<div class="ag"><div class="ag-h" id="agHead"></div>
     <div class="ag-th" id="agTh" role="log" aria-live="polite"></div>
-    <div class="ag-cmp"><div class="ag-box"><textarea id="agIn" rows="2" maxlength="600" placeholder="Ask for changes" aria-label="Ask the agent for changes">${esc(ED.agDraft)}</textarea>
-      <div class="ag-bar"><span id="agCtx" style="min-width:0;display:flex"></span><span class="grow"></span><button class="ag-send" id="agSend" data-act="agSend" disabled></button></div></div><p class="ag-foot2">Enter to send · Shift+Enter for a new line</p></div></div>`;
-  ED._agk = null; agCtx(); agThread(); const i = $('#agIn'); if (i) { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 140) + 'px'; }
+    <div class="ag-cmp"><div class="ag-box" id="agBox"><div id="agRefs"></div><textarea id="agIn" rows="2" maxlength="600" placeholder="${esc(agWords().placeholder)}" aria-label="Ask the agent for changes">${esc(ED.agDraft)}</textarea>
+      <div class="ag-bar"><button class="ag-att" data-act="agAttach" title="Add inspiration pictures (PNG, JPEG or WebP, up to ${REFS_MAX})" aria-label="Add inspiration pictures">${ic('image', 16)}</button><span id="agCtx" style="min-width:0;display:flex"></span><span class="grow"></span><button class="ag-send" id="agSend" data-act="agSend" disabled></button></div></div><p class="ag-foot2">Enter to send · Shift+Enter for a new line</p></div></div>`;
+  ED._agk = null; agCtx(); agRefsDraw(); agThread(); const i = $('#agIn'); if (i) { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 140) + 'px'; }
+}
+
+/** The header: title, History, New chat. In the history, the title says so and New chat still starts a fresh one */
+function agHead() {
+  const e = $('#agHead'); if (!e) return; const n = ((ED.d && ED.d.chats) || []).length, key = (ED.agHist ? 'h' : 'c') + n + agWords().sub;
+  if (e.dataset.k === key) return; e.dataset.k = key;
+  e.innerHTML = `<div class="grow"><b>${ED.agHist ? 'Chat history' : 'Agent'}</b><small>${ED.agHist ? (n ? `${n} past chat${n === 1 ? '' : 's'} on this design` : 'Past chats on this design') : esc(agWords().sub)}</small></div>
+    <button class="btn ghost icon sm${ED.agHist ? ' on' : ''}" data-act="agHist" title="${ED.agHist ? 'Back to the chat' : 'Chat history'}" aria-pressed="${!!ED.agHist}">${ic(ED.agHist ? 'x' : 'history', 18)}</button>
+    <button class="btn ghost icon sm" data-act="agNew" title="New chat">${ic('plus', 18)}</button>`;
+}
+function agRefsDraw() { const e = $('#agRefs'); if (e) e.innerHTML = refsStripHTML({ ic, esc }, ED.agRefs || [], 'agRefDrop'); agComposer(); }
+/** A picture the user adds: { full } for the model (JPEG, long side ≤ 1280 px), { thumb } for the chat (≤ 160 px) */
+async function readRef(file) {
+  if (!/^image\/(png|jpeg|webp|gif|avif|bmp)$/.test(file.type || '')) throw new Error('not a picture');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('unreadable')); i.src = url; });
+    const draw = (max, q) => { const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k)); const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', q); };
+    return { full: draw(1280, 0.85), thumb: draw(160, 0.7) };
+  } finally { URL.revokeObjectURL(url); }
+}
+/** Reads the files and adds them to `list`; says when some were not pictures or past the limit */
+async function takeRefs(list, files) {
+  const pics = [...(files || [])].filter((f) => /^image\//.test(f.type || ''));
+  if (!pics.length) { if ((files || []).length) toast('Add PNG, JPEG or WebP pictures'); return list || []; }
+  const read = (await Promise.all(pics.map((f) => readRef(f).catch(() => null)))).filter(Boolean);
+  const r = addRefs(list, read);
+  if (r.dropped) toast(`Up to ${REFS_MAX} pictures per message`); else if (read.length < pics.length) toast('Some pictures could not be read');
+  return r.list;
+}
+/** Opens the file picker for pictures */
+function pickPictures(done) {
+  const f = document.createElement('input'); f.type = 'file'; f.accept = 'image/png,image/jpeg,image/webp'; f.multiple = true;
+  f.onchange = () => done(f.files); f.click();
 }
 
 /* ---------- running ---------- */
@@ -3220,8 +3286,8 @@ function agStop() {
   if (m && !m.done) { m.done = true; m.t = 'Stopped. Nothing was changed.'; } agThread();
 }
 function agSubmit() {
-  const i = $('#agIn'); if (!i) return; const t = i.value.trim(); if (!t || ED.agBusy) return;
-  i.value = ''; ED.agDraft = ''; i.style.height = 'auto'; agRun(t);
+  const i = $('#agIn'); if (!i) return; const t = i.value.trim(); if ((!t && !(ED.agRefs || []).length) || ED.agBusy) return;
+  i.value = ''; ED.agDraft = ''; i.style.height = 'auto'; agRun(t || 'Use these pictures as inspiration for this design');
 }
 Object.assign(ACT, {
   agGrp: (a) => {
@@ -3234,8 +3300,17 @@ Object.assign(ACT, {
   },
   agDo: (a) => agRun(AG_LABEL[a.dataset.k], a.dataset.k),
   agSend: () => (ED.agBusy ? agStop() : agSubmit()),
-  agNew: () => { ED.agRun++; ED.agBusy = false; ED.d.chat = []; agThread(); const i = $('#agIn'); i && i.focus(); },
-  agScope: () => { if (ED.d.pages.length < 2) return toast('This design has one slide'); ED.agScope = ED.agScope === 'all' ? 'slide' : 'all'; ED._agk = null; agCtx(); toast(ED.agScope === 'all' ? 'The agent will edit all slides' : 'The agent will edit this slide'); },
+  agNew: () => { ED.agRun++; ED.agBusy = false; const kept = archiveChat(ED.d); ED.agHist = false; if (kept) { touch(); save(); } agThread(); const i = $('#agIn'); i && i.focus(); },
+  agHist: () => { ED.agHist = !ED.agHist; agThread(); },
+  agHistOpen: (a) => { if (ED.agBusy) return toast('The agent is still working. Press stop first.'); if (!restoreChat(ED.d, a.dataset.id)) return; ED.agHist = false; touch(); save(); agThread(); },
+  agHistDrop: (a) => { if (dropChat(ED.d, a.dataset.id)) { touch(); save(); agThread(); toast('Chat deleted'); } },
+  agAttach: () => pickPictures(async (files) => { ED.agRefs = await takeRefs(ED.agRefs, files); agRefsDraw(); const i = $('#agIn'); i && i.focus(); }),
+  agRefDrop: (a) => { (ED.agRefs || []).splice(+a.dataset.i, 1); agRefsDraw(); },
+  agScope: () => {
+    const sc = AGAPI && AGAPI.mode() === 'animate' ? 'scene' : 'slide';
+    if (ED.d.pages.length < 2) return toast(sc === 'scene' ? 'This video has one scene' : 'This design has one slide');
+    ED.agScope = ED.agScope === 'all' ? 'slide' : 'all'; ED._agk = null; agCtx(); toast(ED.agScope === 'all' ? `The agent will edit all ${sc}s` : `The agent will edit this ${sc}`);
+  },
   agClearSel: () => { ED.sel = null; drawSel(); edProps(); },
   agUndo: (a) => {
     const m = ED.d.chat[+a.dataset.i]; if (!m || m.undone) return;
@@ -3243,18 +3318,36 @@ Object.assign(ACT, {
     doUndo(); if (m.ratioBefore) { ED.d.ratio = m.ratioBefore; edAll(); fitZoom(); } m.undone = true; agThread(); toast('Change undone');
   },
   agCopy: (a) => { const m = ED.d.chat[+a.dataset.i]; navigator.clipboard.writeText(m.caption).then(() => toast('Copied'), () => toast('Could not copy')); },
+  agPlanOpen: (a) => {
+    const m = ED.d.chat[+a.dataset.i], p = m && m.proposal; if (!p) return;
+    const d = getD(p.d); if (!d) { toast('This design was deleted'); return agThread(); }
+    // the dialog may finish after the user left the editor: the card's design is still the one to save
+    const done = () => { p.state = 'done'; if (ED.d === d) { touch(); agThread(); } save(); };
+    if (p.kind === 'post') openSchedule(d, { prefill: { pf: p.networks, cap: p.caption, fc: p.firstComment, date: p.date, time: p.time }, onDone: (k) => { if (k === 'schedule' || k === 'now') done(); } });
+    else if (AUTOS) AUTOS.open(null, null, { name: p.name, d: p.d, cadence: p.cadence, pf: p.networks, caption: p.caption, startDate: p.startDate, endDate: p.endDate, onDone: done });
+  },
+  agPlanDismiss: (a) => { const m = ED.d.chat[+a.dataset.i]; if (!m || !m.proposal) return; m.proposal.state = 'dismissed'; touch(); save(); agThread(); },
+  agPlanGo: (a) => { const m = ED.d.chat[+a.dataset.i]; if (m && m.proposal) location.hash = m.proposal.kind === 'post' ? '#/planner' : '#/automations'; },
   agSched: (a) => { const m = ED.d.chat[+a.dataset.i]; openSchedule(ED.d); const c = $('#scCap'); if (c) c.value = m.caption; },
 });
 document.addEventListener('input', (e) => {
   const t = e.target; if (t.id !== 'agIn') return;
   ED.agDraft = t.value; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 140) + 'px'; agComposer();
 });
+/* pictures pasted into the box, or dropped on it, are added as inspiration */
+document.addEventListener('paste', async (e) => {
+  if (e.target.id !== 'agIn') return; const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => /^image\//.test(f.type));
+  if (!files.length) return; e.preventDefault(); ED.agRefs = await takeRefs(ED.agRefs, files); agRefsDraw();
+});
+document.addEventListener('dragover', (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (b && [...(e.dataTransfer.types || [])].includes('Files')) { e.preventDefault(); b.classList.add('drop'); } });
+document.addEventListener('dragleave', (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (b && !b.contains(e.relatedTarget)) b.classList.remove('drop'); });
+document.addEventListener('drop', async (e) => { const b = e.target.closest && e.target.closest('#agBox'); if (!b) return; e.preventDefault(); e.stopPropagation(); b.classList.remove('drop'); ED.agRefs = await takeRefs(ED.agRefs, e.dataTransfer.files); agRefsDraw(); }, true);
 document.addEventListener('keydown', (e) => {
   if (e.target.id === 'agIn' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); agSubmit(); }
 });
 /* leaving or switching designs cancels any running agent */
 const _openEditor2 = openEditor;
-openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; ED.agDraft = ''; ED._agk = null; _openEditor2(id); };
+openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; ED.agDraft = ''; ED._agk = null; ED.agHist = false; ED.agRefs = []; _openEditor2(id); };
 
 
 
@@ -4094,6 +4187,7 @@ Object.assign(IC, {
   }
   const level = (s) => (s > .72 ? 'High' : s > .5 ? 'Good' : 'Low');
   const taken = (nets, key, t, skip) => S.posts.some((p) => p !== skip && p.date === key && p.pf.some((k) => nets.includes(k)) && Math.abs(tmin(p.time) - tmin(t)) < 60);
+  PLAN = { conn, bestTimes: (nets, key, n) => bestTimes(nets, key, n) }; // the agent finds its own free slot in the workspace time zone (agent-plan.js)
   function nextSlot(nets, skip) {
     const now = new Date(), nowM = now.getHours() * 60 + now.getMinutes() + 30;
     for (let i = 0; i < 21; i++) { const k = iso(addD(now, i)); for (const b of bestTimes(nets, k, 3)) { if (i === 0 && tmin(b.t) < nowM) continue; if (!taken(nets, k, b.t, skip)) return { date: k, time: b.t }; } }
@@ -4397,6 +4491,14 @@ Object.assign(IC, {
     st.date = ed ? ed.date : o.date || tomorrow;
     const defTime = (k) => { const bt = bestTimes([...st.pf], k, 3), n = new Date(), nm = n.getHours() * 60 + n.getMinutes() + 15, f = k === iso(n) ? bt.find((b) => tmin(b.t) > nm) : bt[0]; return (f || bt[bt.length - 1]).t; };
     st.time = ed ? ed.time : o.time || defTime(st.date);
+    // a proposal from the Studio Agent (agent-plan.js): its values replace the defaults of a new post; the user still confirms here
+    const pre = !ed && o.prefill;
+    if (pre) {
+      if (pre.pf) st.pf = new Set(pre.pf.filter((k) => c0.includes(k)));
+      if (pre.cap != null) st.cap = String(pre.cap);
+      if (pre.fc) { st.fc = String(pre.fc); st.fcOpen = true; }
+      if (pre.date) st.date = pre.date; if (pre.time) st.time = pre.time;
+    }
     const html = `<div class="mh"><h2>${ed ? 'Edit post' : 'Schedule post'}</h2><span id="cSt"></span><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
     <div class="cp7"><div class="cp7-l">
       <div class="c7s" id="cDes"></div>
@@ -4525,7 +4627,7 @@ Object.assign(IC, {
       function commit(kind) {
         const d = st.d; if (!d) return; const tz = schedTz(), n = nowIn(tz), status = kind === 'draft' ? 'Draft' : 'Scheduled';
         const rec = { igStory: isVideoPost(d) && d.ratio === '9:16' && st.pf.has('ig') && st.igStory, d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
-        const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close();
+        const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close(); if (o.onDone) o.onDone(kind);
         // publishing goes through the API: "now" sends it right away, "schedule" uploads the rendered slides for the scheduler
         if (kind === 'now') PUB.publishNow(post);
         else { toast(kind === 'draft' ? 'Draft saved' : (ed ? 'Updated for ' : 'Scheduled for ') + dlabel(rec.date) + ' at ' + rec.time); if (kind === 'schedule') PUB.prepare(post); }
@@ -7951,11 +8053,27 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (l.feed) o.live = l.feed === '@image' ? 'live headline photo' : l.feed === '@pos' ? 'live range marker' : 'live text: ' + l.feed;
     return o;
   }
-  const slideOf = (pg, i) => ({ number: i + 1, background: pg.bg, live: pg.live ? (pg.live.kind || 'calendar') : undefined, layers: pg.layers.map(compact) });
+  /** The agent's mode (agent-motion.js): 'animate' on a video in the editor's Animate mode, else 'design'. Read again on every turn: make_video changes it */
+  const agMode = () => (ED.d && agentMode(ED.d.footage ? 'video' : ED.d.motion ? 'reel' : 'still', VS.mode())) || 'design';
+  /** In animate a slide is a scene: each moving layer also shows its animation */
+  const slideOf = (pg, i) => { const an = agMode() === 'animate'; return { number: i + 1, background: pg.bg, live: pg.live ? (pg.live.kind || 'calendar') : undefined, layers: pg.layers.map((l) => { const o = compact(l), a = an ? animOut(l) : undefined; if (a) o.anim = a; return o; }) }; };
+  /** The uploaded video as the agent reads it (agent-video.js) */
+  const FA = () => FOOTAGE.agent;
+  function videoState() { const r = FA().records(); return analysisState(r.rec, r.ref); }
   function context() {
-    const d = ED.d, b = brand(), [W, H] = dim(), all = ED.agScope === 'all';
+    const d = ED.d, b = brand(), [W, H] = dim(), all = ED.agScope === 'all', mode = agMode();
+    if (mode === 'video') {
+      const ft = d.footage, c = capsView(d);
+      return JSON.stringify({
+        design: { name: d.name, mode, kind: 'video', width: (ft.out || {}).w || W, height: (ft.out || {}).h || H },
+        brand: { name: b.name, website: b.website || '', handle: b.handle || '', industry: b.industry || '', language: b.lang || 'English', voice: String(b.voice || '').slice(0, 800), hashtags: b.hashtags || '', colors: b.colors.map((x) => ({ name: x.name, hex: x.hex })) },
+        video: footageCtx({ d: { footage: { ...ft, dur: ft.dur || FA().records().dur } }, caps: c, style: styleOfD(d), state: videoState(), looks: FA().looks(), matched: FA().matched(), maxLines: 120 }),
+      });
+    }
     return JSON.stringify({
-      design: { name: d.name, format: d.ratio, width: W, height: H, slides: d.pages.length, currentSlide: ED.pi + 1, selectedLayer: ED.sel || null, scope: all ? 'all slides' : 'current slide' },
+      design: { name: d.name, mode, kind: d.motion ? 'video' : 'still', format: d.ratio, width: W, height: H, slides: d.pages.length, currentSlide: ED.pi + 1, selectedLayer: ED.sel || null, scope: all ? 'all slides' : 'current slide' },
+      video: mode === 'animate' ? videoCtx(d.pages, d.motion.fps || 30) : undefined,
+      sound: mode === 'animate' ? soundNow() : undefined,
       brand: {
         name: b.name, website: b.website || '', handle: b.handle || '', industry: b.industry || '', language: b.lang || 'English',
         voice: String(b.voice || '').slice(0, 800), dos: String(b.dos || '').slice(0, 400), donts: String(b.donts || '').slice(0, 400), cta: b.cta || '', hashtags: b.hashtags || '',
@@ -7975,11 +8093,47 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     try { const blob = await renderSlide(ED.d, i, s, 'jpeg'); return await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { return null; }
   }
 
+  /** A picture of the video at a moment, as it plays (JPEG data URL, long side ≤ 1000 px), or null */
+  const frameImage = (ms) => { const [w, h] = dim(); return RT.motion.frameAt(ms, Math.min(1, 1000 / Math.max(w, h))); };
+  /** What the model is shown with the user's message: the slide, or in animate the open scene at 60 % of its length */
+  async function shot() {
+    if (agMode() === 'video') return FA().frameAt(0.4 * (FA().records().dur || 0), videoScale());
+    if (agMode() !== 'animate') return picture(ED.pi);
+    try { return await frameImage(frameTime(MO.timeline(ED.d.pages), {}, ED.pi).ms); } catch (e) { return null; }
+  }
+
+  /** Whether a run may still change its design: not stopped, and the same design still open (a slow step must not write after Stop or a switch) */
+  const still = (run) => !!run && RUN === run && ED.d === run.d;
+  const halt = (run) => { if (!still(run)) throw new Error('Stopped before this change was made'); };
+  /* ---------- sound on animated designs (agent-sound.js; RT.reelSound does the work) ---------- */
+  let soundOpts = null; // the server's voices, read at the start of each run on an animated design
+  const RS = () => RT.reelSound;
+  function voices() { const a = RS().A(); return soundOpts ? RS().voiceChoice(a, soundOpts) : { list: [], cur: null, missing: false }; }
+  function soundNow() {
+    const a = RS().A(), v = voices();
+    return soundCtx({ pages: ED.d.pages, audio: a, voices: v.list, ready: !!(soundOpts && soundOpts.ready), voiceId: v.cur ? v.cur.id : null, voiceName: v.cur ? v.cur.name : null, language: RS().langOf(a), caps: capsView(ED.d) });
+  }
+  const soundGate = () => { if (!ED.d.motion) throw new Error('Only for an animated design'); if (RS().busy()) throw new Error('The Audio panel is working on something; try again when it is done'); };
+  const setVoText = (pg, text) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), text } }; };
+  /** A video frame's scale: long side ≤ 1000 px */
+  const videoScale = () => { const o = (ED.d.footage && ED.d.footage.out) || { w: 1080, h: 1920 }; return Math.min(1, 1000 / Math.max(o.w, o.h)); };
+  /** Before a video tool: a video must be there, and for the caption and grade tools its analysis must be done */
+  function videoGate(name) {
+    if (!ED.d.footage && ED.d.motion) return; // an animated design: captions without a video or an analysis
+    if (!ED.d.footage || !ED.d.footage.src) throw new Error('Add your video first');
+    if (['edit_captions', 'style_captions', 'set_grade'].includes(name)) { const v = videoState(); if (v.state !== 'ready') throw new Error(v.state === 'failed' ? `The video's analysis failed (${v.label}). Use Retry in the panel, then try again.` : `The video is still being analysed (${v.label}). Try again when it is done.`); }
+  }
   /* ---------- tools: the editor's actions ---------- */
   const NUM = ['x', 'y', 'w', 'h', 'rot', 'op', 'size', 'weight', 'lh', 'ls', 'sw', 'r', 'shx', 'shy', 'shb', 'sha', 'bl', 'bbl'];
   const STR = ['name', 'text', 'color', 'fill', 'stroke', 'shc'];
   const BOOL = ['hidden', 'locked', 'it', 'ul', 'up', 'fx', 'fy'];
   const pageIx = (n) => { const i = n == null ? ED.pi : Math.round(+n) - 1; if (!(i >= 0 && i < ED.d.pages.length)) throw new Error(`There is no slide ${n}`); return i; };
+  /** The next free posting slot for these networks, in the workspace time zone (agent-plan.js freeSlot): a best time with no post on the same networks within the hour */
+  const slot = (nets) => {
+    const m = (t) => { const [h, x] = String(t || '0:0').split(':').map(Number); return h * 60 + (x || 0); };
+    return freeSlot({ now: nowIn(schedTz()), timesFor: (k) => PLAN.bestTimes(nets, k, 3).map((b) => b.t), taken: (k, t) => S.posts.some((p) => p.date === k && (p.pf || []).some((n) => nets.includes(n)) && Math.abs(m(p.time) - m(t)) < 60) });
+  };
+  const sceneIx = (n) => { const i = n == null ? ED.pi : Math.round(+n) - 1; if (!(i >= 0 && i < ED.d.pages.length)) throw new Error(`There is no scene ${n}`); return i; };
   const layerIn = (pg, id) => { const l = pg.layers.find((x) => x.id === id); if (!l) throw new Error(`No layer ${id} on this slide`); return l; };
   /** Copies only known, well-formed properties (styles end up in an HTML attribute: no quotes, url() or ;) */
   function setProps(l, p) {
@@ -8123,6 +8277,197 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (renderSlide) try { const blob = await renderSlide(t.pages ? t : { id: t.id, ratio, pages: [pg] }, 0, Math.min(1, 1000 / Math.max(w, h)), 'jpeg'); img = await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { img = null; }
       return img ? { text, image: img } : { text };
     },
+    /* ----- video (agent-motion.js holds the rules; the motion block, RT.motion, does the work) ----- */
+    async make_video(a, run) {
+      const step = videoStep(ED.d.footage ? 'video' : ED.d.motion ? 'reel' : 'still', VS.mode()), n = () => ED.d.pages.length;
+      if (step === 'none') throw new Error('This design is already a video, open in Animate mode');
+      if (step === 'convert') { RT.motion.make(); run.moved = true; }
+      VS.setMode('animate'); // the editor (and the next turn) in Animate, also when this design was last shown in Design mode
+      return step === 'convert' ? `The design is now a video with ${n()} scene${n() === 1 ? '' : 's'}. You are in Animate mode.` : `This design is already a video (${n()} scene${n() === 1 ? '' : 's'}). Switched the editor to Animate mode.`;
+    },
+    async animate_layers(a, run) {
+      const i = sceneIx(a.scene), pg = ED.d.pages[i], dur = MO.sceneOf(pg).dur, notes = []; let n = 0;
+      mutate(() => (a.updates || []).forEach((u) => { try { const l = layerIn(pg, u && u.id), r = animPatch(l, u.anim, dur); l.anim = r.anim; n++; r.notes.forEach((t) => notes.push(`${u.id}: ${t}`)); } catch (e) { notes.push(e.message); } }));
+      run.moved = true;
+      return `Animated ${n} layer(s) of scene ${i + 1}.${notes.length ? ' ' + notes.join('; ') : ''}`;
+    },
+    async auto_animate(a, run) {
+      const [w, h] = dim(), P = ED.d.pages, which = String(a.scenes == null ? 'current' : a.scenes).trim().toLowerCase();
+      const ix = which === 'all' ? P.map((_, k) => k) : [which === 'current' ? ED.pi : sceneIx(which)];
+      mutate(() => ix.forEach((k) => MO.autoAnimate(P[k].layers, MO.sceneOf(P[k]), w, h)));
+      run.moved = true;
+      return which === 'all' ? `Animated every scene (${P.length}).` : `Animated scene ${ix[0] + 1} (${P[ix[0]].layers.filter((l) => animOut(l)).length} layers).`;
+    },
+    async manage_scenes(a, run) {
+      const d = ED.d, i = a.index == null ? ED.pi : sceneIx(a.index), full = () => { if (d.pages.length >= MAX_SCENES) throw new Error(`${MAX_SCENES} scenes at most`); };
+      if (a.action === 'go') { ACT.mo37Scene({ dataset: { i } }); return `Showing scene ${i + 1}.`; }
+      run.moved = true;
+      if (a.action === 'add') {
+        full(); const st = starterFor(a.role || 'body', a.starter || 'blank');
+        RT.motion.addScene(st.role, st.key, i + 1);
+        return `Added ${{ intro: 'an intro', body: 'a scene', outro: 'an outro' }[st.role]} (${st.key}) as scene ${ED.pi + 1}; it is now the current scene. The video has ${d.pages.length} scenes.`;
+      }
+      if (a.action === 'duplicate') { full(); RT.motion.dupScene(i); return `Duplicated scene ${i + 1} as scene ${ED.pi + 1}; it is now the current scene.`; }
+      if (a.action === 'delete') { if (d.pages.length < 2) throw new Error('A video keeps at least one scene'); RT.motion.delScene(i); return `Deleted scene ${i + 1}. ${d.pages.length} left; scene ${ED.pi + 1} is the current scene.`; }
+      if (a.action === 'move') {
+        const to = sceneIx(a.to); if (MO.sceneOf(d.pages[i]).k !== MO.sceneOf(d.pages[to]).k) throw new Error('A scene can only move among the scenes of its role (intro, body, outro)');
+        const by = Math.sign(to - i); let at = i;
+        while (at !== to && RT.motion.canMove(at, by)) { RT.motion.moveScene(at, by); at += by; }
+        return `Moved scene ${i + 1} to position ${at + 1}.`;
+      }
+      throw new Error('Unknown action');
+    },
+    async set_scene(a, run) {
+      const d = ED.d, i = sceneIx(a.scene), pg = d.pages[i], was = MO.sceneOf(pg), r = scenePatch(was, a, i === 0); let fitted = 0;
+      RT.motion.exitPreview(true);
+      mutate(() => {
+        pg.scene = r.scene; fitted = fitAnims(pg.layers, r.scene.dur);
+        if (r.scene.k !== was.k) { RT.motion.order(d); d.pages.forEach((p, k) => { const sc = MO.sceneOf(p); if (!k && sc.tr !== 'cut') p.scene = { ...sc, tr: 'cut' }; }); } // the first scene opens on a cut
+      });
+      run.moved = true;
+      const at = d.pages.indexOf(pg), sc = MO.sceneOf(pg);
+      return `Scene ${at + 1}${at !== i ? ` (was scene ${i + 1})` : ''}: ${sec(sc.dur)} s, ${at ? `${sc.tr} transition` : 'opens the video'}. The video is ${sec(MO.timeline(d.pages).total)} s long.${fitted ? ` Adjusted ${fitted} layer timing(s) to fit.` : ''}${r.notes.length ? ' ' + r.notes.join('; ') : ''}`;
+    },
+    async view_frame(a) {
+      if (agMode() === 'video') {
+        videoGate('view_frame');
+        const dur = FA().records().dur || 0, at = a.at == null ? 0.4 * dur : Math.max(0, Math.min(+a.at * 1000 || 0, Math.max(0, dur - 50))), img = await FA().frameAt(at, videoScale());
+        return img ? { text: `Frame at ${sec(at)} s, with the captions; the colours are the original's, before the grade.`, image: img } : "This frame can't be read here.";
+      }
+      const f = frameTime(MO.timeline(ED.d.pages), a, ED.pi), img = await frameImage(f.ms);
+      return img ? { text: `Frame at ${sec(f.ms)} s: scene ${f.scene}, ${sec(f.offsetMs)} s in.`, image: img } : 'The frame could not be rendered.';
+    },
+    /* ----- publishing (agent-plan.js): read the planner, propose; the card opens the dialog where the user confirms ----- */
+    async read_planner(a) {
+      // (slot() and the best times below are in the workspace time zone, as the planner and the checks are)
+      let autos = AUTOS ? AUTOS.list() : null, autosErr = '';
+      if (!autos && AUTOS) { try { await AUTOS.load(); autos = AUTOS.list(); } catch (e) { autosErr = e.message; } if (!autos && !autosErr) autosErr = 'The automations could not be read'; }
+      const tz = schedTz(), now = nowIn(tz), nets = PLAN.conn(), d = ED.d, best = {};
+      for (let k = 0; k < (nets.length ? 7 : 0); k++) { const key = new Date(Date.UTC(...now.date.split('-').map((v, j) => (j === 1 ? v - 1 : +v))) + k * 864e5).toISOString().slice(0, 10); best[key] = upcomingTimes(now, key, PLAN.bestTimes(nets, key, 3).map((b) => b.t)); }
+      return JSON.stringify(plannerView({
+        posts: S.posts, designs: S.designs.map((x) => ({ id: x.id, name: x.name })), automations: autos, automationsError: autosErr, connected: nets, tz, today: now.date, now: now.time,
+        days: a.days, openDesign: { id: d.id, name: d.name, kind: d.footage ? 'video' : d.motion ? 'reel' : 'still' }, bestTimes: best, nextFreeSlot: nets.length ? slot(nets) : null, // nothing connected: no times to suggest
+      }));
+    },
+    async propose_schedule(a, run) {
+      const nets = PLAN.conn(), r = checkSchedule(a, { connected: nets, now: nowIn(schedTz()), nextFreeSlot: nets.length ? slot(nets) : null, blocked: videoBlocked(ED.d) });
+      if (r.error) throw new Error(r.error);
+      run.msg.proposal = { kind: 'post', d: ED.d.id, ...r.value, state: 'open' };
+      return `A post card is shown: ${r.value.date} at ${r.value.time} on ${r.value.networks.join(', ')}. The user opens it to review and schedule. Nothing is scheduled yet.`;
+    },
+    async propose_automation(a, run) {
+      const d = ED.d, r = checkAutomation(a, { connected: PLAN.conn(), kind: d.footage ? 'video' : d.motion ? 'reel' : 'still', aiReady: !!(AUTOS && AUTOS.aiReady()), designName: d.name });
+      if (r.error) throw new Error(r.error);
+      run.msg.proposal = { kind: 'automation', d: d.id, ...r.value, state: 'open' };
+      return `An automation card is shown: “${r.value.name}”, ${r.value.cadence.kind} at ${r.value.cadence.time} on ${r.value.networks.join(', ')}. The user opens it to review and create it. Nothing is created yet.${r.note ? ' ' + r.note : ''}`;
+    },
+    /* ----- uploaded videos (agent-video.js decides; FOOTAGE.agent and the caption panels apply, undoably) ----- */
+    async read_captions(a) { videoGate('read_captions'); return JSON.stringify(linesIn(captionLinesOf(ED.d), a.from, a.to, 200)); },
+    async edit_captions(a) {
+      videoGate('edit_captions');
+      const dur = ED.d.footage ? FA().records().dur || ED.d.footage.dur || 0 : MO.timeline(ED.d.pages).total, r = captionEdits(captionLinesOf(ED.d), a.edits, dur);
+      // nothing applied: no change at all (an edit marks the lines as hand-made, which stops regrouping later)
+      if (r.done.length) { let ok = false; VS.captions.edit(() => { ok = true; return r.lines; }); if (!ok) throw new Error('The captions could not be edited'); }
+      return `${r.done.length} edit(s) applied${r.done.length ? ': ' + r.done.join('; ') : ''}.${r.notes.length ? ' Skipped or adjusted: ' + r.notes.join('; ') + '.' : ''}${capsView(ED.d).on === false ? ' Captions are turned off.' : ''}`;
+    },
+    async style_captions(a, run) {
+      videoGate('style_captions');
+      const d = ED.d, notes = [], st = a.style && typeof a.style === 'object' ? a.style : {};
+      const PATH = { highlightMode: 'highlight.mode', highlightColor: 'highlight.color' };
+      if (a.preset != null && !PRESETS.some((p) => p.id === a.preset)) notes.push(`Unknown preset "${String(a.preset).slice(0, 40)}"`);
+      // the style the change ends with: the preset first, then each field through the inspector's own checks
+      const probe = JSON.parse(JSON.stringify(d)); if (a.preset != null && PRESETS.some((p) => p.id === a.preset)) applyPresetTo(probe, a.preset);
+      let next = styleOfD(probe); const fields = [];
+      Object.entries(st).forEach(([k, v]) => { const path = PATH[k] || k, n = setStyleField(next, path, v); if (JSON.stringify(n) === JSON.stringify(next)) notes.push(`${k}: not changed (out of range or unknown)`); else { next = n; fields.push(path); } });
+      const regroups = fields.some((f) => REGROUP_FIELDS.has(f)) && captionLinesOf(d).length;
+      let words = null;
+      if (regroups) {
+        const from = regroupFrom(d.footage ? 'video' : 'reel', capsView(d));
+        if (from === 'lines') throw new Error('Regrouping would undo hand edits to the lines; ask the user');
+        if (from === 'speech') { words = await FA().words(); halt(run); if (!words.length) throw new Error('There are no words to group yet'); } // built from the voice-over: the style alone regroups them
+      }
+      const wantOn = a.on == null ? null : !!a.on;
+      mutate(() => {
+        if (wantOn != null && (capsView(ED.d).on !== false) !== wantOn) toggleCaptions(ED.d);
+        if (a.preset != null && PRESETS.some((p) => p.id === a.preset)) applyPresetTo(ED.d, a.preset);
+        if (fields.length) editStyle(ED.d, next);
+        if (words) { const c = capsOfD(ED.d); c.lines = groupWords(words, c.style); }
+      });
+      save(); if (FOOTAGE.sync) FOOTAGE.sync();
+      return `Captions ${capsView(ED.d).on === false ? 'off' : 'on'}${a.preset != null && !notes.some((n) => n.startsWith('Unknown preset')) ? `, preset ${a.preset}` : ''}${fields.length ? `, set ${fields.join(', ')}` : ''}${words ? ', lines regrouped' : ''}.${notes.length ? ' ' + notes.join('; ') + '.' : ''}`;
+    },
+    async set_grade(a, run) {
+      videoGate('set_grade');
+      const r = gradeInput(ED.d.footage.look, a, { looks: FA().looks(), matched: FA().matched() }), out = [], ok = () => still(run);
+      if (r.look === 'matched') out.push(await FA().useMatched(ok));
+      else if (r.look) out.push(await FA().applyLook(r.look, ok));
+      if (Object.keys(r.values).length) { FA().setLook(r.values); out.push(`Set ${Object.keys(r.values).join(', ')}.`); }
+      return (out.join(' ') || 'Nothing changed.') + (r.notes.length ? ' ' + r.notes.join('; ') + '.' : '');
+    },
+    async set_audio(a, run) {
+      videoGate('set_audio');
+      const ft = ED.d.footage, cur = { vol: ft.audio && ft.audio.vol != null ? ft.audio.vol : 1, music: (ft.audio && ft.audio.music) || null };
+      const r = audioInput(cur, a, { hasMusic: !!cur.music }); let audio = r.audio, made = '';
+      if (r.compose) {
+        const st = { l: 'Composing music', done: false }; run.msg.steps.push(st); agThread();
+        try { const made0 = await RT.composeMusic(r.compose, (FA().records().dur || 30000) / 1000); halt(run); const rec = FA().musicRecord(made0); if (!rec) throw new Error('The composed music could not be used'); audio = { ...audio, music: { ...rec, ...r.musicPatch } }; made = ` Composed ${rec.name} music.`; }
+        finally { st.done = true; agThread(); }
+      }
+      FA().setAudio(audio);
+      const m = audio.music;
+      return `Original sound ${Math.round(audio.vol * 100)}%; ${m ? `music “${m.name}” at ${Math.round((m.vol == null ? 0.6 : m.vol) * 100)}%, ducking ${m.duck === false ? 'off' : 'on'}` : 'no music'}.${made}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    /* ----- sound on animated designs ----- */
+    async write_voiceover(a) {
+      soundGate(); const r = voiceoverLines(ED.d.pages, a.lines);
+      if (r.set.length) mutate(() => r.set.forEach(({ i, text }) => setVoText(ED.d.pages[i], text)), () => {});
+      const need = scenesToVoice(ED.d.pages).map((i) => i + 1);
+      return `Voice-over written for ${r.set.length} scene(s).${need.length ? ` Scenes that need a voice: ${need.join(', ')} (call make_voices).` : ''}${capsView(ED.d).source === 'manual' ? ' The captions were edited by hand, so they keep their own text.' : ''}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    async make_voices(a, run) {
+      soundGate();
+      if (!soundOpts) soundOpts = await RS().options();
+      if (!soundOpts.ready) throw new Error('The voice engines are not available on the server' + (soundOpts.error ? ` (${soundOpts.error})` : ''));
+      if (voices().missing || !voices().cur) throw new Error(`No ${RS().langOf(RS().A())} voice is installed on the server`);
+      const todo = scenesToVoice(ED.d.pages, a.scenes), done = [], failed = [];
+      if (!todo.length) return 'No scene needs a voice (every scene with text is voiced). Name scenes to voice them again.';
+      for (const [n, i] of todo.entries()) {
+        halt(run);
+        const st = { l: `Voicing ${n + 1}/${todo.length}`, done: false }; run.msg.steps.push(st); agThread();
+        try { const c = await RS().voiceClip(i); halt(run); if (c) { RS().putClip(i, c); done.push(i + 1); } } // a clip made after Stop or a switch is not written
+        catch (e) { if (!still(run)) throw e; failed.push(`scene ${i + 1} (${e.message})`); st.err = true; }
+        st.done = true; agThread();
+      }
+      halt(run);
+      const grown = a.fit === false ? 0 : RS().fitToVoices();
+      return `Voiced scene(s) ${done.join(', ') || 'none'}.${failed.length ? ' Failed: ' + failed.join('; ') + '.' : ''}${grown ? ` ${grown} scene(s) grew to fit their voice; the video is now ${sec(MO.timeline(ED.d.pages).total)} s.` : ''}`;
+    },
+    async set_voice(a) {
+      soundGate(); if (!soundOpts) soundOpts = await RS().options();
+      const r = voiceInput(RS().A(), a, { voices: voices().list, languages: RS().LANGUAGES });
+      if (Object.keys(r.patch).length) mutate(() => { ED.d.audio = { ...RS().A(), ...r.patch }; }, () => {});
+      return `${Object.keys(r.patch).length ? 'Set ' + Object.entries(r.patch).map(([k, v]) => `${k} ${v}`).join(', ') + '. Call make_voices with the scenes to re-voice for the change to be heard.' : 'Nothing changed.'}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
+    async remove_voice(a) {
+      soundGate(); const idx = (Array.isArray(a.scenes) ? a.scenes : []).map((n) => Math.round(+n) - 1).filter((i) => i >= 0 && i < ED.d.pages.length);
+      if (!idx.length) throw new Error('Name the scenes, 1-based');
+      mutate(() => idx.forEach((i) => { const pg = ED.d.pages[i], vo = (pg.scene && pg.scene.vo) || {}; if (vo.src) RS().drop(vo.src); pg.scene = { ...MO.sceneOf(pg), vo: { ...vo, src: '', dur: 0, by: '', srcText: '' } }; }), () => {});
+      return `Removed the voice of scene(s) ${idx.map((i) => i + 1).join(', ')}; their text is kept.`;
+    },
+    async set_music(a, run) {
+      soundGate(); const cur = RS().A().music || null, r = musicInput(cur, a);
+      let made = '', track = null;
+      if (r.compose) { track = await RT.composeMusic(r.compose, RS().seconds()); halt(run); made = ` Composed ${r.compose} music.`; } // nothing is written before the run is checked
+      mutate(() => {
+        const au = { ...RS().A() };
+        if (track) { if (cur && cur.src && cur.src !== track.src) RS().drop(cur.src); au.music = { ...track, vol: cur && cur.vol != null ? cur.vol : 0.35, ...(cur && cur.fadeIn === false ? { fadeIn: false } : {}), ...(cur && cur.fadeOut === false ? { fadeOut: false } : {}), ...r.music }; }
+        else { if (!r.music && cur && cur.src) RS().drop(cur.src); au.music = r.music; }
+        if (r.duck !== undefined) au.duck = r.duck;
+        ED.d.audio = au;
+      }, () => {});
+      const m = RS().A().music;
+      return `${m ? `Music “${m.name}” at ${Math.round((m.vol == null ? 0.35 : m.vol) * 100)}%, fade in ${m.fadeIn === false ? 'off' : 'on'}, fade out ${m.fadeOut === false ? 'off' : 'on'}` : 'No music'}, ducking ${RS().A().duck === false ? 'off' : 'on'}.${made}${r.notes.length ? ' ' + r.notes.join('; ') + '.' : ''}`;
+    },
     async check_design(a) {
       const i = a && a.page != null ? pageIx(a.page) : ED.pi, pg = ED.d.pages[i], [w, h] = dim(), b = brand(), sys = b.designSystem ? tidySystem(b.designSystem, dsSourceIds(b.designSystem)) : null;
       return `Slide ${i + 1}: ` + lintText(lintSlide(pg, { w, h }, b, sys), (id) => (pg.layers.find((l) => l.id === id) || {}).name || '');
@@ -8136,6 +8481,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     resize_canvas: (a) => `Resizing to ${a.ratio}`, rename_design: () => 'Renaming the design', apply_brand_template: () => 'Applying a brand template', build_live_slide: (a) => `Building a live ${a.kind || ''} slide`,
     write_caption: () => 'Writing the caption', select_layer: () => 'Selecting a layer', get_slide: (a) => `Reading slide ${a.index}`, view_slide: () => 'Looking at the slide',
     view_reference: () => 'Looking at a reference', check_design: () => 'Checking the design',
+    make_video: () => 'Turning the design into a video', animate_layers: (a) => `Animating ${n(a, 'updates')} layer${n(a, 'updates') === 1 ? '' : 's'}`,
+    auto_animate: (a) => (String(a.scenes).toLowerCase() === 'all' ? 'Animating every scene' : 'Animating the scene'),
+    manage_scenes: (a) => ({ add: 'Adding a scene', duplicate: 'Duplicating a scene', delete: 'Deleting a scene', move: 'Moving a scene', go: 'Opening a scene' }[a.action] || 'Scenes'),
+    set_scene: () => 'Updating the scene', view_frame: () => 'Looking at the video',
+    read_captions: () => 'Reading the captions', edit_captions: (a) => `Editing ${n(a, 'edits')} caption line${n(a, 'edits') === 1 ? '' : 's'}`, style_captions: () => 'Styling the captions',
+    set_grade: () => 'Changing the colours', set_audio: () => 'Changing the sound',
+    write_voiceover: () => 'Writing the voice-over', make_voices: () => 'Making the voices', set_voice: () => 'Choosing the voice', remove_voice: () => 'Removing voices', set_music: () => 'Changing the music',
+    read_planner: () => 'Reading the planner', propose_schedule: () => 'Proposing a post', propose_automation: () => 'Proposing an automation',
   };
 
   /* ---------- the loop ---------- */
@@ -8148,19 +8501,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     ED.undo.length = Math.min(run.startLen, ED.undo.length); ED.undo.push(run.pre); ED.redo = []; run.msg.after = ED.undo.length; touch(); edTop();
   }
   /** note: words for the model only, not shown in the chat (the Overview's prompt box says the design is new) */
-  async function agAI(text, note) {
+  async function agAI(text, note, refs) {
     const d = ED.d, model = current(); if (!d || !model) return;
-    d.chat = d.chat || [];
+    d.chat = d.chat || []; refs = refs || ED.agRefs || []; ED.agRefs = []; agRefsDraw(); ED.agHist = false;
     const msg = { r: 'a', steps: [], done: false, t: '', ai: true, model: modelName(model) };
-    d.chat.push({ r: 'u', t: text }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
-    const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length };
+    d.chat.push({ r: 'u', t: text, ...(refs.length ? { refs: refs.map((r) => r.thumb) } : {}) }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
+    const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length, d };
     const alive = () => id === ED.agRun && ED.d === d;
     const c = conv(); trim(c);
     try {
-      c.push({ role: 'user', text: (ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text) + (note ? `\n\n(${note})` : ''), image: await picture(ED.pi) || undefined });
+      if (ED.d.motion) { RT.motion.exitPreview(true); soundOpts = await RT.reelSound.options().catch(() => null); } // a run works on the editing view; the voices for the context
+      const why = [note, refsNote(refs.length)].filter(Boolean).join(' ');
+      c.push({ role: 'user', text: (ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text) + (why ? `\n\n(${why})` : ''), image: await shot() || undefined, ...(refs.length ? { refs: refs.map((r) => r.full) } : {}) });
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         if (!alive()) return;
-        const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, context: context(), messages: c } });
+        const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, mode: agMode(), context: context(), messages: c } });
         if (!alive()) return;
         c.push({ role: 'assistant', text: r.text || '', calls: r.calls || [] });
         if (r.text) { msg.t = r.text; agThread(); }
@@ -8169,8 +8524,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         for (const call of r.calls) {
           const st = { l: (STEP[call.name] || (() => call.name))(call.input || {}), done: false }; msg.steps.push(st); agThread();
           let out;
-          try { if (!T[call.name]) throw new Error('Unknown tool'); if (call.input && call.input._error) throw new Error(call.input._error); out = await T[call.name](call.input || {}, run); }
-          catch (e) { out = 'Error: ' + e.message; st.err = true; }
+          try {
+            if (!T[call.name]) throw new Error('Unknown tool'); if (call.input && call.input._error) throw new Error(call.input._error);
+            if (!allowed(call.name, agMode())) throw new Error('This tool is not available in this mode');
+            out = await T[call.name](call.input || {}, run);
+          } catch (e) { out = 'Error: ' + e.message; st.err = true; }
+          if (call.name !== 'view_frame') RT.motion.dropFrames(); // the design may have changed: the next frame is prepared again
           if (!alive()) return;
           st.done = true; agThread();
           results.push(typeof out === 'string' ? { id: call.id, text: out } : { id: call.id, text: out.text, image: out.image });
@@ -8184,7 +8543,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       // a turn without its tool results would break the next request
       while (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop();
     } finally {
-      if (RUN === run) { finishUndo(run); RUN = null; }
+      if (RUN === run || !RUN) { RT.motion.dropFrames(); if (FOOTAGE.agent) FOOTAGE.agent.dropFrame(); } // a newer run may be using the frames
+      if (RUN === run) {
+        if (ED.d === run.d) finishUndo(run); // another design opened meanwhile has its own history
+        RUN = null;
+        if (run.moved && alive() && agMode() === 'animate') RT.motion.previewScene(ED.pi); // the result plays once, as after Magic animate
+      }
       if (alive()) { msg.done = true; ED.agBusy = false; agThread(); }
     }
   }
@@ -8192,19 +8556,27 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _stop = agStop;
   agStop = function () {
     const run = RUN; _stop();
-    if (run) { RUN = null; finishUndo(run); if (run.msg.after) { run.msg.t = 'Stopped. The changes made so far are kept: use Undo to revert them.'; agThread(); } const c = conv(); while (c.length && c[c.length - 1].role !== 'tool' && c[c.length - 1].role !== 'assistant') c.pop(); if (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop(); }
+    if (run) { RUN = null; if (ED.d === run.d) finishUndo(run); if (run.msg.after) { run.msg.t = 'Stopped. The changes made so far are kept: use Undo to revert them.'; agThread(); } const c = conv(); while (c.length && c[c.length - 1].role !== 'tool' && c[c.length - 1].role !== 'assistant') c.pop(); if (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop(); }
   };
 
   /* ---------- wiring into the panel ---------- */
   const PROMPTS = { headline: 'Write a stronger, punchier headline for this slide in our brand voice', carousel: 'Turn this slide into a 3-slide carousel that tells a short story, with consistent design and page numbers', caption: 'Write a caption for this post in our brand voice, with a few relevant hashtags', story: 'Adapt this design to a Story (9:16) and fix the layout so everything sits well' };
   const _run = agRun;
+  const NO_KEY_VIDEO = 'Add an AI key in Settings to use the agent on videos.';
   agRun = function (text, key) {
     if (!AGM.list) { loadModels(); }
     if (aiOn()) return agAI(key && PROMPTS[key] ? PROMPTS[key] : text);
+    if (agMode() !== 'design') return toast(NO_KEY_VIDEO); // the rule-based actions are for static designs
+    if ((ED.agRefs || []).length) { ED.agRefs = []; agRefsDraw(); toast('Add an AI key in Settings to use inspiration pictures'); }
     return _run(text, key);
   };
   const _empty = agEmpty;
   agEmpty = function () {
+    if (agMode() !== 'design') { // a video: its own prompts with a model, the setup line without one
+      const w = agWords();
+      return `<div class="ag-empty"><div class="ag-hero"><div class="ag-orb">${ic('studio', 26)}</div><h3>What’s next?</h3><p>${esc(aiOn() ? w.empty : NO_KEY_VIDEO)}</p></div>${aiOn()
+        ? `<div class="ag-lbl">Quick actions</div><div class="ag-quick">${w.prompts.map(([k, l]) => `<button class="ag-qa" data-act="agAnim" data-k="${esc(k)}"><span class="ag-ti">${ic('wand', 16)}</span><b>${esc(l)}</b></button>`).join('')}</div>` : ''}</div>`;
+    }
     const h = _empty(); if (!aiOn()) return h;
     return h.replace('Pick an action, or describe the change you want.', 'Describe any change: layout, copy, colours, new slides, live data… I edit the design for you.');
   };
@@ -8214,13 +8586,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _nw = ACT.agNew;
   Object.assign(ACT, {
     agNew: (a) => { if (ED.d) mem.delete(ED.d.id); RUN = null; _nw(a); },
+    agHistOpen: ((open) => (a) => { const had = ED.d && ED.d.chat; open(a); if (ED.d && ED.d.chat !== had) mem.delete(ED.d.id); })(ACT.agHistOpen),
     agModel: () => { AGM.open = !AGM.open; agModelChip(); if (AGM.open) { const on = $('.ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
     agPickModel: (a) => { remember(a.dataset.p ? { provider: a.dataset.p, model: a.dataset.m } : null); AGM.open = false; agModelChip(); const v = current(); toast(`The agent now uses ${modelName(v)}`); },
     agModelSetup: () => { S.set.sec = 'ai'; save(); location.hash = '#/settings'; },
+    agAnim: (a) => { const p = agWords().prompts.find((x) => x[0] === a.dataset.k); if (p) agRun(p[2]); },
   });
   document.addEventListener('click', (e) => { if (AGM.open && e.target.isConnected && !e.target.closest('.ag-mw')) { AGM.open = false; agModelChip(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && AGM.open) { AGM.open = false; agModelChip(); } });
-  AGAPI = { list: () => AGM.list, load: loadModels, current, modelName, modelMenu, run: agAI, compact };
+  AGAPI = { list: () => AGM.list, load: loadModels, current, modelName, modelMenu, run: agAI, compact, mode: agMode };
 }
 
 /* ============ v26 · Automations: recurring posts with live data ============ */
@@ -8356,11 +8730,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   NAV.splice(NAV.findIndex((n) => n[0] === 'planner') + 1, 0, ['automations', 'Automations', 'refresh', 'New']);
 
   /* ---------- editor ---------- */
-  function openAuto(a, preset) {
+  /** a: an automation to edit; preset: a starting point from the presets; prefill: a proposal from the Studio Agent (new automation only), with onDone after it is created */
+  function openAuto(a, preset, prefill) {
     const tz = schedTz(), b = brand();
     const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false, approval: !!a.approval }
       : { id: null, name: preset ? preset.t : '', d: null, build: preset ? preset.build : null, cadence: preset ? { ...preset.cadence, days: [...preset.cadence.days] } : { kind: 'weekly', days: [1], time: '09:00' },
           pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true, approval: false };
+    if (prefill && !a) {
+      const p = prefill;
+      if (p.name) st.name = p.name;
+      if (p.d) { st.d = p.d; st.build = null; }
+      if (p.cadence) st.cadence = { ...p.cadence, days: [...(p.cadence.days || [])] };
+      if (p.pf) st.pf = new Set(p.pf.filter((k) => S.platforms[k]));
+      if (p.caption) st.caption = { ...p.caption };
+      if (p.startDate) st.startDate = p.startDate; if (p.endDate) st.endDate = p.endDate;
+    }
     const designs = () => [...S.designs].sort((x, y) => (liveOf(y).length ? 1 : 0) - (liveOf(x).length ? 1 : 0)).slice(0, 12);
     const FIELDS = [['{date}', 'Date'], ['{weekday}', 'Weekday'], ['{week}', 'Week'], ['{headline}', 'Headline'], ['{price}', 'Price'], ['{website}', 'Website'], ['{hashtags}', 'Hashtags']];
     let close = () => {}, root = null;
@@ -8440,10 +8824,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         close(); await load(true); pull();
         const n = r && r.next && r.next[0];
         toast(a ? 'Automation saved' : `Automation created.${n ? ` First post: ${whenLabel(n.date, n.time)}` : ''}`);
-        if (!onPage()) location.hash = '#/automations';
+        if (prefill && prefill.onDone && !a) prefill.onDone(); // opened from an agent card: the user stays where they are; the card links to Automations
+        else if (!onPage()) location.hash = '#/automations';
       } catch (e) { btn.isConnected && busy(btn, false); toast('Couldn’t save the automation: ' + e.message); }
     }
   }
+  AUTOS = { list: () => mine(), load, open: openAuto, aiReady };
   function confirmDelete(a) {
     modal(`<div class="mh"><h2>Delete “${esc(a.name)}”?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
       <div class="mb"><p class="sm-t">Its upcoming posts are removed from the planner. Posts already published stay where they are. The design is kept.</p></div>
@@ -10833,7 +11219,7 @@ function clipCss(l, frames) {
     insAt = at; ACT.edTab({ dataset: { k: 'scenes' } }); edPages();
     requestAnimationFrame(() => { const lib = $('#mo37Lib'); if (!lib) return; lib.scrollIntoView({ block: 'start', behavior: 'smooth' }); lib.classList.remove('flash'); void lib.offsetWidth; lib.classList.add('flash'); });
   }
-  function addScene(kind, key, at, fill = -1) {
+  function addScene(kind, key, at, fill = -1, quiet = false) {
     const [w, h] = dim(), pg = newPage(kind, key, w, h), d = ED.d, label = MO.STARTERS[kind][key][0];
     exitPreview(true);
     mutate(() => {
@@ -10842,7 +11228,7 @@ function clipCss(l, frames) {
       order(d); ED.sel = null; ED.ms = [];
       d.pages.forEach((p, i) => { p.scene = { ...MO.sceneOf(p), tr: !i ? 'cut' : MO.sceneOf(p).tr === 'cut' && p === pg ? 'fade' : MO.sceneOf(p).tr }; });
     });
-    toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
+    if (!quiet) toast(fill >= 0 ? `“${label}” applied` : `${MO.KINDS[kind]} added`);
   }
   function dupScene(i) { exitPreview(true); mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; }); }
   function delScene(i) { if (ED.d.pages.length < 2) return toast('A video needs at least one scene'); exitPreview(true); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); }
@@ -11029,7 +11415,7 @@ function clipCss(l, frames) {
       exitPreview(true); mutate(() => (all ? ED.d.pages : [curP()]).forEach((pg) => MO.autoAnimate(pg.layers, MO.sceneOf(pg), w, h)));
       toast(all ? 'Every scene is animated' : 'Scene animated'); previewScene(ED.pi);
     },
-    mo37Make: () => { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); toast('Your design is now a video. Press K to play it'); },
+    mo37Make: () => { makeVideo(); toast('Your design is now a video. Press K to play it'); },
     mo37Off: () => {
       modal(`<div class="mh"><h2>Make it a still design?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div><div class="mb"><p class="sm-t">The scenes become slides again and the animations are removed. You can undo this with <span class="kbd">Ctrl Z</span>.</p></div><div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mo37OffGo">Make it still</button></div>`, {
         onMount: (bg, close) => $('#mo37OffGo', bg).addEventListener('click', () => {
@@ -11200,6 +11586,23 @@ function clipCss(l, frames) {
     PAD.clear();
     return signal.stop ? null : new Blob([gif.done()], { type: 'image/gif' });
   }
+  /** A library card's hover preview: the design's frames, looping, on `cv` while alive(); shown() once the first frame is drawn */
+  const CARD_PREP = new Map();
+  RT.moCardPlay = async (d, cv, alive, shown) => {
+    const [W] = RATIOS[d.ratio], s = cv.width / W;
+    // the layers' bitmaps are kept for the last few cards: hovering one again starts at once (an edit changes d.at)
+    const key = d.id + '|' + (d.at || 0) + '|' + cv.width; let prep = CARD_PREP.get(key);
+    if (!prep) { prep = await prepare(d, s, () => {}); CARD_PREP.set(key, prep); while (CARD_PREP.size > 4) CARD_PREP.delete(CARD_PREP.keys().next().value); }
+    if (!alive()) return;
+    const tl = MO.timeline(d.pages), ctx = cv.getContext('2d'), t0 = performance.now(); let first = true;
+    const step = () => {
+      if (!alive()) return;
+      frame(ctx, d, prep, tl, Math.min(tl.total - 1, loopTime(performance.now() - t0, tl.total)), s);
+      if (first) { first = false; shown(); }
+      requestAnimationFrame(step);
+    };
+    step();
+  };
   const mb = (bytes) => (bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB');
   const _ox37 = openExport;
   openExport = function (d, pi) {
@@ -11262,7 +11665,23 @@ function clipCss(l, frames) {
       },
     });
   };
-  RT.motion = { play, pause, exitPreview, record, mimes }; // for the agent, tests and video posts (post-video.js)
+  /** A still becomes a video: one Undo step (the Animate button, and the agent's make_video) */
+  function makeVideo() { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); }
+  /* One frame of the video as a JPEG data URL, drawn as the recording draws it (prepare + frame), for the agent's view_frame.
+     The prepared layers are kept until dropFrames(): the agent drops them after each change it makes and when its run ends. */
+  let FR = null;
+  async function frameAt(ms, s) {
+    const d = ED.d; if (!d || !isMo(d)) return null;
+    try {
+      if (!FR || FR.d !== d || FR.s !== s) { const made = { d, s, prep: await prepare(d, s, () => {}) }; if (ED.d !== d) return null; FR = made; }
+      const [W, H] = RATIOS[d.ratio], c = document.createElement('canvas'); c.width = Math.round(W * s); c.height = Math.round(H * s);
+      frame(c.getContext('2d'), d, FR.prep, TL(), ms, s);
+      return c.toDataURL('image/jpeg', 0.85);
+    } catch (e) { console.error('[motion] frame failed', e); FR = null; return null; }
+  }
+  const dropFrames = () => { FR = null; };
+  // for the agent (make … dropFrames), tests and video posts (post-video.js)
+  RT.motion = { play, pause, exitPreview, record, mimes, make: makeVideo, addScene: (role, key, at) => addScene(role, key, at, -1, true), dupScene, delScene, moveScene, canMove, order, previewScene, frameAt, dropFrames };
   /* the Video Studio shell (reel-source.js) drives reels: the player under its transport, the scene blocks and the
      layer lanes in its timeline (in % of the video, the timeline zooms them), and onTime, set by the source */
   const pct = (ms) => { const t = TL().total; return (t ? Math.max(0, (ms / t) * 100) : 0).toFixed(3) + '%'; };
@@ -11311,7 +11730,8 @@ function clipCss(l, frames) {
     stop38: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   });
   const isMo = (d) => !!(d && d.motion), TL = () => MO.timeline(ED.d.pages), A = () => AUD.audioOf(ED.d);
-  const setA = (patch) => { ED.d.audio = { ...A(), ...patch }; if (ED.d.captions) delete ED.d.audio.captions; touch(); save(); }; // the captions switch lives in d.captions
+  // one Undo step per change (sound settings are part of snap() since the Studio Agent phase 4); callers redraw the panel themselves
+  const setA = (patch) => { mutate(() => { ED.d.audio = { ...A(), ...patch }; if (ED.d.captions) delete ED.d.audio.captions; }, () => edTop()); save(); }; // the captions switch lives in d.captions
   const label = (i) => { const k = MO.sceneOf(ED.d.pages[i]).k; return k !== 'body' ? MO.KINDS[k] : 'Scene ' + ED.d.pages.slice(0, i + 1).filter((p) => MO.sceneOf(p).k === 'body').length; };
   const setVo = (pg, patch) => { pg.scene = { ...MO.sceneOf(pg), vo: { vol: 1, ...(pg.scene && pg.scene.vo), ...patch } }; };
   const S = { opts: null, busy: '', rec: null, play: null, prompt: '' }; // panel state: AI options, running job, recording, clip preview
@@ -11476,16 +11896,22 @@ function clipCss(l, frames) {
 
   /* ---------- AI: script (Claude), voice (Kokoro / Piper on the server, free), music (in the browser) ---------- */
   const scenesBrief = () => { const tl = TL(); return ED.d.pages.map((pg, i) => ({ kind: MO.sceneOf(pg).k, seconds: Math.max(0.5, tl.scenes[i].dur / 1000), texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim()).sort((x, y) => (y.size || 0) - (x.size || 0)).map((l) => String(l.text).replace(/\s+/g, ' ').trim().slice(0, 400)).slice(0, 12) })); };
-  async function voiceFor(i) {
-    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {}, text = String(vo.text || '').trim(); if (!text) return;
+  /** A voice clip for scene i's text, made and measured on the server, without touching the design: { src, dur, srcText } or null (no text) */
+  async function voiceClip(i) {
+    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {}, text = String(vo.text || '').trim(); if (!text) return null;
     const o = await options(), a = A(), { cur } = voiceChoice(a, o);
     if (!cur) throw new Error(`No ${langOf(a)} voice is installed`);
     const voice = cur.own ? { voice: `f5:${cur.model}:custom`, refMedia: mediaId(cur.own.src), refText: cur.own.text } : { voice: cur.id };
     const r = await api('/ai/voiceover', { method: 'POST', body: { text, ...voice, speed: a.speed || 1, ...(cur.engine === 'kokoro' ? { lang: cur.lang } : {}) } });
-    const dur = await lengthOf(r.url);
-    if (vo.src && vo.src !== r.url) drop(vo.src);
-    const pre = snap(); setVo(pg, { src: r.url, dur, by: 'ai', srcText: vo.text }); commit(pre);
+    return { src: r.url, dur: await lengthOf(r.url), srcText: vo.text };
   }
+  /** Scene i takes a clip (one Undo step); the clip it had is let go */
+  function putClip(i, c) {
+    const pg = ED.d.pages[i], vo = AUD.voOf(pg) || {};
+    if (vo.src && vo.src !== c.src) drop(vo.src);
+    const pre = snap(); setVo(pg, { src: c.src, dur: c.dur, by: 'ai', srcText: c.srcText }); commit(pre);
+  }
+  async function voiceFor(i) { const d = ED.d, c = await voiceClip(i); if (c && ED.d === d) putClip(i, c); }
   async function job(kind, fn, done) {
     if (!canEdit() || S.busy) return; S.busy = kind; redraw();
     try { await fn(); done && toast(done); } catch (e) { toast(e.message || 'Something went wrong'); }
@@ -11632,18 +12058,22 @@ function clipCss(l, frames) {
    * made in the browser and stored) and Upload your own. cb({ src, name, dur, gen? }) once the file is stored on the server.
    * opts: { seconds (how long a composed bed is, at most 120 s: it loops under longer videos), onBusy(on) }.
    */
+  /** A music track composed in the browser for a video of `seconds` (8–120 s), uploaded: { src, name, dur, gen } (the picker and the agent) */
+  RT.composeMusic = async (mood, seconds) => {
+    const M = COMP.MOODS[mood] || COMP.MOODS.corporate, secs = Math.min(120, Math.max(8, +seconds || 30));
+    const buf = await COMP.compose({ seconds: secs, mood, pace: 3500, seed: Math.floor(Math.random() * 1e9) });
+    const r = await upload(wavOf(buf));
+    return { src: r.url, name: M.name, dur: Math.round(buf.duration * 1000), gen: { mood } };
+  };
+  /** The Studio Agent's hands on an animated design's sound (engine.js agent block, agent-sound.js) */
+  RT.reelSound = { options, voiceChoice, voiceClip, putClip, fitToVoices, drop, langOf, busy: () => S.busy, A, LANGUAGES: AUD.LANGUAGES, seconds: () => TL().total / 1000 };
   RT.pickMusic = (btn, opts, cb) => {
     const o = opts || {};
     const run = async (fn, done) => {
       o.onBusy && o.onBusy(true);
       try { const m = await fn(); cb(m); done && toast(done); } catch (e) { toast((e && e.message) || 'The music could not be added'); } finally { o.onBusy && o.onBusy(false); }
     };
-    const compose = (mood) => run(async () => {
-      const M = COMP.MOODS[mood] || COMP.MOODS.corporate, seconds = Math.min(120, Math.max(8, +o.seconds || 30));
-      const buf = await COMP.compose({ seconds, mood, pace: 3500, seed: Math.floor(Math.random() * 1e9) });
-      const r = await upload(wavOf(buf));
-      return { src: r.url, name: M.name, dur: Math.round(buf.duration * 1000), gen: { mood } };
-    }, 'Music composed for this video');
+    const compose = (mood) => run(() => RT.composeMusic(mood, o.seconds), 'Music composed for this video');
     menu(btn, [
       ...Object.entries(COMP.MOODS).map(([k, M]) => [`Compose: ${M.name}`, 'wand', () => compose(k)]),
       '-', ['Upload your own…', 'upload', () => pick(false, (files) => {
@@ -11751,7 +12181,9 @@ function clipCss(l, frames) {
   });
   /* inputs of the Audio tab */
   let pre = null;
-  document.addEventListener('focusin', (e) => { if (e.target.dataset && e.target.dataset.au === 'line') pre = snap(); });
+  // a text line or a volume slider: one Undo step from focus (or the first press) to the change
+  const preFor = (e) => { const k = e.target.dataset && e.target.dataset.au; if (ED.d && (k === 'line' || k === 'mvol' || k === 'tvol')) pre = snap(); };
+  document.addEventListener('focusin', preFor); document.addEventListener('pointerdown', preFor, true);
   document.addEventListener('input', (e) => {
     const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
     if (k === 'line') { const i = +t.dataset.i, pg = ED.d.pages[i]; setVo(pg, { text: t.value }); touch();
@@ -11763,7 +12195,7 @@ function clipCss(l, frames) {
   document.addEventListener('change', async (e) => {
     const t = e.target, k = t.dataset && t.dataset.au; if (!k || !ED.d) return;
     if (k === 'line') { if (pre) commit(pre); pre = null; edPages(); if (ED.tab === 'audio') redraw(); }
-    else if (k === 'mvol' || k === 'tvol') { save(); edPages(); }
+    else if (k === 'mvol' || k === 'tvol') { if (pre) commit(pre); pre = null; save(); edPages(); edTop(); }
     else if (k === 'tat') { const tk = A().track; if (tk) { setA({ track: { ...tk, at: Math.max(0, Math.round((+t.value || 0) * 1000)) } }); redraw(); } }
     else if (k === 'vfiles') { const f = t.files; t.value = ''; if (f && f.length && canEdit()) importVoice(f); }
     else if (k === 'lfile') { const f = t.files && t.files[0]; t.value = ''; if (canEdit()) importLine(+t.dataset.i, f); }
@@ -11811,6 +12243,8 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
   };
 }
 
+/* library cards: a video (an animated design or an uploaded one) plays while the pointer rests on its preview */
+installCardPreview({ getD, reel: (...a) => RT.moCardPlay(...a), videoUrl: (d) => FOOTAGE.playUrl(d) });
 
 /* ============ v39 · select several designs in the Studio and delete them at once ============ */
 /* Select (or a card's checkbox) turns the design library into a selection: a click toggles a card, Shift+click selects a
@@ -11898,15 +12332,17 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
    (Auto: the agent chooses), opens the editor on the Agent tab and runs the prompt there, so the work, Stop
    and Undo are the editor's. The model is the Agent's own choice (same picker, same memory). */
 {
-  const HP = { text: '', size: 'auto', open: '', pending: null };
+  const HP = { text: '', size: 'auto', open: '', pending: null, refs: [] };
   const h = { ic, esc };
   const onHome = () => !!$('#hpBar');
   /** null while the models load · { none } without a key · { name, menu } */
   const model = () => { if (!AGAPI.list()) return null; const v = AGAPI.current(); return v ? { name: AGAPI.modelName(v), menu: AGAPI.modelMenu(v) } : { none: true }; };
-  const state = () => ({ text: HP.text, size: HP.size, open: HP.open, model: model(), greeting: promptGreeting(user && user.name, new Date().getHours()) });
+  const state = () => ({ text: HP.text, size: HP.size, open: HP.open, model: model(), refs: HP.refs, greeting: promptGreeting(user && user.name, new Date().getHours()) });
   const drawBar = () => { const b = $('#hpBar'); if (b) b.innerHTML = promptBarHTML(h, state()); };
   const grow = (i) => { i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 220) + 'px'; };
-  const syncSend = () => { const b = $('#hpSend'); if (b) b.disabled = !HP.text.trim(); };
+  const syncSend = () => { const b = $('#hpSend'); if (b) b.disabled = !HP.text.trim() && !HP.refs.length; };
+  const drawRefs = () => { const e = $('#hpRefs'); if (e) e.innerHTML = refsStripHTML({ ic, esc }, HP.refs, 'hpRefDrop'); syncSend(); };
+  const addPics = async (files) => { HP.refs = await takeRefs(HP.refs, files); drawRefs(); const i = $('#hpIn'); i && i.focus(); };
   let asked = 0;
 
   /* the Overview is redrawn in the background (its data arrives, automations load): the box keeps its text, its focus and its caret */
@@ -11923,16 +12359,18 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
   };
 
   async function send() {
-    const text = HP.text.trim(); if (!text || HP.sending || !canEdit()) return;
+    const text = HP.text.trim() || (HP.refs.length ? 'A post inspired by these pictures' : ''); if (!text || HP.sending || !canEdit()) return;
     if (!AGAPI.list()) { HP.sending = true; try { await AGAPI.load(); } finally { HP.sending = false; } if (!onHome()) return; }
     if (!AGAPI.current()) { drawBar(); return toast('Add a Claude or Groq key in Settings → AI to create with AI'); }
     const s = promptSize(HP.size);
     const d = createDesign({ name: promptName(text), ratio: ensureRatio(s.ratio || brand().defaultRatio || '4:5'), slides: s.pages });
-    HP.pending = { id: d.id, text, note: promptNote(HP.size) }; HP.text = ''; HP.open = '';
+    HP.pending = { id: d.id, text, note: promptNote(HP.size), refs: HP.refs }; HP.text = ''; HP.open = ''; HP.refs = [];
     location.hash = '#/editor/' + d.id;
   }
   Object.assign(ACT, {
     hpSend: send,
+    hpAttach: () => pickPictures(addPics),
+    hpRefDrop: (a) => { HP.refs.splice(+a.dataset.i, 1); drawRefs(); },
     hpSize: () => { HP.open = HP.open === 'size' ? '' : 'size'; drawBar(); },
     hpModel: () => { HP.open = HP.open === 'model' ? '' : 'model'; drawBar(); if (HP.open) { const on = $('#hpBar .ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
     hpPickSize: (a) => { HP.size = promptSize(a.dataset.k).k; HP.open = ''; drawBar(); const b = $('#hpBar [data-act="hpSize"]'); b && b.focus(); },
@@ -11941,6 +12379,10 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
   // the Agent's model menu is reused here: picking a model also closes this box's menu
   const _pick = ACT.agPickModel;
   ACT.agPickModel = function (a) { const r = _pick.apply(this, arguments); if (onHome()) { HP.open = ''; drawBar(); } return r; };
+  document.addEventListener('paste', (e) => { if (e.target.id !== 'hpIn') return; const f = [...((e.clipboardData && e.clipboardData.files) || [])].filter((x) => /^image\//.test(x.type)); if (f.length) { e.preventDefault(); addPics(f); } });
+  document.addEventListener('dragover', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (b && [...(e.dataTransfer.types || [])].includes('Files')) { e.preventDefault(); b.classList.add('drop'); } });
+  document.addEventListener('dragleave', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (b && !b.contains(e.relatedTarget)) b.classList.remove('drop'); });
+  document.addEventListener('drop', (e) => { const b = e.target.closest && e.target.closest('#hpBox'); if (!b) return; e.preventDefault(); e.stopPropagation(); b.classList.remove('drop'); addPics(e.dataTransfer.files); }, true);
   document.addEventListener('input', (e) => { const t = e.target; if (t.id !== 'hpIn') return; HP.text = t.value; grow(t); syncSend(); });
   document.addEventListener('keydown', (e) => {
     if (e.target.id === 'hpIn' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
@@ -11952,7 +12394,7 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
   const _oeHP = openEditor;
   openEditor = function (id) {
     const r = _oeHP.apply(this, arguments), p = HP.pending; HP.pending = null;
-    if (p && ED.d && ED.d.id === p.id && $('.ed')) { ACT.edTab({ dataset: { k: 'agent' } }); AGAPI.run(p.text, p.note); } // edTab also slides the panel in on narrow screens
+    if (p && ED.d && ED.d.id === p.id && $('.ed')) { ACT.edTab({ dataset: { k: 'agent' } }); AGAPI.run(p.text, p.note, p.refs); } // edTab also slides the panel in on narrow screens
     return r;
   };
 }

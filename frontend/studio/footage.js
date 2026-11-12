@@ -146,6 +146,11 @@ export function installFootage(ctx) {
     };
     return (posterQ = posterQ.then(run, run));
   };
+  /** The URL a design's video plays from (its proxy), or null: for the library card's hover preview */
+  FT.playUrl = async (d) => {
+    if (!d || !d.footage || !d.footage.src) return null;
+    try { const rec = await api('/footage/' + d.footage.src); return rec && rec.proxyUrl ? apiUrl(rec.proxyUrl) : null; } catch (e) { return null; }
+  };
 
   /* ---------- 2. upload modal and design creation ---------- */
   function openNew() {

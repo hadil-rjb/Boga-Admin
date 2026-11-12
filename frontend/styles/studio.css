@@ -717,6 +717,13 @@ a.btn{text-decoration:none}
 .ag-cap{border:1px solid var(--border-soft);border-radius:12px;background:var(--surface);overflow:hidden}
 .ag-cap-h{display:flex;align-items:center;gap:4px;padding:6px 6px 6px 12px;border-bottom:1px solid var(--border-soft);background:var(--pill);font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3)}
 .ag-cap p{margin:0;padding:10px 12px 12px;font-size:13px;line-height:1.55;color:var(--text-1);white-space:pre-wrap;word-break:break-word}
+.ag-plan-sub{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text-2)}
+.ag-plan-b{display:flex;flex-direction:column;gap:3px;padding:10px 12px}
+.ag-plan-l{font-size:13px;line-height:1.45;color:var(--text-1);word-break:break-word}
+.ag-plan-l:first-child{font-weight:600}
+.ag-plan-c{color:var(--text-2);white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ag-plan-f{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px 10px;border-top:1px solid var(--border-soft)}
+.ag-plan-st{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;color:var(--text-2)}
 .ag-mini{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:8px;font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text-2);transition:background .15s,color .15s}
 .ag-mini:hover{background:var(--surface);color:var(--text-1)}
 .ag-foot{display:flex;gap:6px;margin-top:-2px}
@@ -3619,6 +3626,8 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .vs-top>.grow{display:none}
 .vs-top .ed-name{flex:0 1 240px;width:auto;min-width:72px;text-overflow:ellipsis}
 .vs-top #edMode{margin:0 auto}
+/* no mode switch (an uploaded video): the actions still sit at the right edge */
+.vs-top:not(:has(#edMode)) #edUndo{margin-left:auto}
 .vs-top .vs-mode button{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;height:28px;padding:0 12px;font-size:12.5px;white-space:nowrap}
 .vs-top .vs-mode button .ic{flex-shrink:0}
 .vs-top #edSafe,.vs-top #edGrid,.vs-top #edRulers,.vs-top #edAll34{display:none}
@@ -3653,3 +3662,62 @@ textarea.ds-sum{min-height:84px;max-width:none}
   .ed-stage>.vs-zoom{display:none}
   .vs-top [data-act=edPreview],.vs-top [data-act=edSchedule]{display:none}
 }
+/* ---------- uploaded video: the clip card (Scenes) and the Look inspector, icons before words ---------- */
+.ft-mv{padding:8px;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+.ft-mv .ft-mi{flex:1}
+.ft-mv-r{flex:none}
+.ft-scenes-ref{display:flex;flex-direction:column;gap:8px}
+.ft-ref-b{align-self:stretch;justify-content:center}
+.ft-scenes .ft-scenes-l{display:none}
+.ft-sec-h{display:flex;align-items:center;gap:8px;min-height:28px}
+.ft-sec-h .label{margin:0;flex:1}
+.ft-chip2{display:inline-flex;align-items:center;height:22px;max-width:150px;padding:0 9px;border:1px solid var(--border);border-radius:99px;font-size:11.5px;font-weight:500;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ft-chip2.on{border-color:transparent;background:var(--pill);color:var(--text-1)}
+.ft-chip2.warn{border-color:transparent;background:rgba(245,158,11,.16);color:#b45309}
+.ft-rg.ft-rgi{grid-template-columns:22px 1fr 34px;gap:10px}
+.ft-rg-ic{display:grid;place-items:center;color:var(--text-3)}
+.ft-rgi:hover .ft-rg-ic,.ft-rgi:focus-within .ft-rg-ic{color:var(--text-1)}
+.ft-lkr{padding:0 4px 0 0}
+.ft-lk-go{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:6px;border:0;background:none;color:inherit;text-align:left;border-radius:9px;cursor:pointer}
+.ft-lk-go:disabled{cursor:default}
+.ft-lk-go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ft-lk-go .ft-ln{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.ft-lk-go .ic{color:var(--accent);flex:none}
+/* ---------- library cards: the video plays over its thumbnail while the pointer rests on it ---------- */
+.dc-art>.thumb{position:relative}
+.dc-live{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;opacity:0;transition:opacity .15s ease-out;pointer-events:none}
+.dc-live.on{opacity:1}
+.dc-pv.dc-playing .badge.b-mo37 .ic{color:var(--accent)}
+@media (prefers-reduced-motion:reduce){.dc-live{transition:none}}
+
+/* ============ Agent: chat history and inspiration pictures (agent-history.js) ============ */
+.ag-h .btn.icon.on{background:var(--pill);color:var(--text-1)}
+.ag-hist{display:flex;flex-direction:column;gap:6px}
+.ag-hist .ag-lbl{margin:2px 2px 4px}
+.ag-hi{display:flex;align-items:center;gap:6px;border:1px solid var(--border-soft);border-radius:12px;background:var(--surface);transition:border-color .15s,background .15s}
+.ag-hi:hover{border-color:var(--border);background:var(--pill)}
+.ag-hi.on{background:var(--pill);padding-right:8px}
+.ag-hi-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;padding:10px 12px;text-align:left;background:none;border:0;color:inherit;cursor:pointer}
+.ag-hi.on .ag-hi-t{cursor:default}
+.ag-hi-t b{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag-hi-t small{font-size:12px;color:var(--text-3)}
+.ag-hi-x{display:grid;place-items:center;width:30px;height:30px;margin-right:6px;border-radius:8px;color:var(--text-3);opacity:0;transition:opacity .15s,background .15s,color .15s}
+.ag-hi:hover .ag-hi-x,.ag-hi-x:focus-visible{opacity:1}
+.ag-hi-x:hover{background:var(--surface);color:var(--accent)}
+@media (hover:none){.ag-hi-x{opacity:1}}
+.ag-hi-empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:32px 16px;text-align:center;color:var(--text-3);font-size:13px;line-height:1.45}
+.ag-refs{display:flex;flex-wrap:wrap;gap:8px}
+.ag-refs:empty{display:none}
+.ag-ref{position:relative;width:56px;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--border-soft);background:var(--pill);flex:none}
+.ag-ref img{width:100%;height:100%;object-fit:cover;display:block}
+.ag-ref button{position:absolute;top:3px;right:3px;display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:rgba(15,23,42,.72);color:#fff;opacity:.9}
+.ag-ref button:hover{opacity:1;background:rgba(15,23,42,.9)}
+.ag-att{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;color:var(--text-2);flex:none;transition:background .15s,color .15s}
+.ag-att:hover{background:var(--pill);color:var(--text-1)}
+.ag-box.drop,.hp-box.drop{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 5%,var(--surface))}
+.ag-u-refs{align-self:flex-end;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:88%}
+.ag-u-refs img{width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid var(--border-soft)}
+#hpRefs:empty{display:none}
+.hp-att span{white-space:nowrap}
+@media (max-width:640px){.hp-att span{display:none}.hp-att{padding:0 10px}}
+@media (prefers-reduced-motion:reduce){.ag-hi,.ag-hi-x,.ag-att{transition:none}}

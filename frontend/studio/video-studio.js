@@ -29,6 +29,7 @@ import { dockState, visibleTracks, durLabel } from './dock.js';
    Two editing modes, each with its own rail (Editor modes spec, 2026-11-11):
    - Design: the tools that add to a static design. Stills always; an animated design (reel) when the user switches to it.
    - Animate: animation, audio, scenes and captions. Reels by default; an uploaded video always (it has no layers: no Animation).
+   The Agent is pinned at the bottom of both rails of a still and a reel (Studio Agent spec, 2026-11-12); an uploaded video has it too.
    The mode comes from the kind and, for a reel, the user's choice for the session (never saved in the design).
    ED.tab holds the key of the open panel; panelFor sends any key, old ones too, to a panel that exists and the mode it lives in. */
 export const DESIGN_RAIL = [['templates', 'Templates', 'layout'], ['elements', 'Elements', 'shapes'], ['text', 'Text', 'type'],
@@ -47,7 +48,7 @@ export function modeOf(kind, pref) {
 }
 /** The rail of a kind in a mode: [[key, label, icon]] (fresh copies). A video has one rail whatever the mode */
 export function railFor(kind, mode) {
-  const r = kind === 'video' ? VIDEO_RAIL : mode === 'animate' && kind === 'reel' ? ANIMATE_RAIL : [...DESIGN_RAIL, ...DESIGN_FOOT];
+  const r = kind === 'video' ? [...VIDEO_RAIL, ...DESIGN_FOOT] : mode === 'animate' && kind === 'reel' ? [...ANIMATE_RAIL, ...DESIGN_FOOT] : [...DESIGN_RAIL, ...DESIGN_FOOT];
   return r.map((x) => [...x]);
 }
 const FOOT = new Set(DESIGN_FOOT.map((r) => r[0]));
@@ -66,8 +67,9 @@ const VIDEO_KEYS = new Set(['scenes', 'audio', 'captions', 'styles', 'script']);
  * mode switches mode; a still never leaves Design (nothing converts it but the user choosing Animate); a video keeps its rail.
  */
 export function panelFor(kind, mode, key) {
-  if (kind === 'video') return { mode: 'animate', tab: VIDEO_KEYS.has(key) ? key : 'scenes' };
+  if (kind === 'video') return { mode: 'animate', tab: VIDEO_KEYS.has(key) || isFoot(key) ? key : 'scenes' };
   if (kind !== 'reel') return { mode: 'design', tab: DESIGN_KEYS.has(key) ? key : key === 'media' ? 'uploads' : 'templates' };
+  if (isFoot(key)) return { mode: mode === 'animate' ? 'animate' : 'design', tab: key }; // the agent stays in the mode the reel is in
   if (DESIGN_KEYS.has(key)) return { mode: 'design', tab: key };
   if (ANIMATE_KEYS.has(key)) return { mode: 'animate', tab: key };
   if (key === 'motion' || key === 'look') return { mode: 'animate', tab: 'scenes' };

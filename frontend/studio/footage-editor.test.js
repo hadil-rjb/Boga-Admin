@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
-  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR, scenesPane } from './footage-editor.js';
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR, scenesPane, gradeStatus, rgIconHTML } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
 
@@ -345,20 +345,47 @@ describe('audio (original volume, music bed, ducking)', () => {
 });
 
 describe('the Scenes panel of an uploaded video', () => {
-  const clip = '<div class="body ft-media"><h3>Media</h3><b>clip.mp4</b><button data-act="ftReplace">Replace video</button></div>';
-  const look = '<div class="body ft-look-p"><h3>Look</h3><p>Matched to your brand look</p></div>';
-  it('holds the clip and its Look under one title', () => {
-    const h = scenesPane(clip, look);
+  const clip = '<div class="body ft-media"><h3>Media</h3><b>clip.mp4</b><button data-act="ftReplace" aria-label="Replace video"></button></div>';
+  const ref = '<button data-act="ftMatchRef">Match a reference</button>';
+  it('holds the clip, then the reference, under one title, and nothing about the Look', () => {
+    const h = scenesPane(clip, ref);
     expect(h.match(/<h3>/g)).toHaveLength(1);
     expect(h).toContain('<h3>Scenes</h3>');
-    expect(h).toContain('Replace video'); expect(h).toContain('Matched to your brand look');
-    expect(h).toContain('>Look<');
-    expect(h.indexOf('clip.mp4')).toBeLessThan(h.indexOf('Matched'));
+    expect(h).toContain('data-act="ftReplace"'); expect(h).toContain('Match a reference');
+    expect(h.indexOf('clip.mp4')).toBeLessThan(h.indexOf('Match a reference'));
+    expect(h).not.toMatch(/Colour grade|Brand looks/);
   });
-  it('an empty video: the clip part asks for the video and there is no Look yet', () => {
-    const h = scenesPane('<div class="body ft-media"><h3>Media</h3><button>Add your video</button></div>', null);
+  it('an empty video: the clip part asks for the video and there is no reference yet', () => {
+    const h = scenesPane('<div class="body ft-media"><h3>Media</h3><button>Add your video</button></div>', '');
     expect(h).toContain('Add your video'); expect(h).toContain('<h3>Scenes</h3>');
-    expect(h).not.toContain('>Look<');
+    expect(h).not.toContain('ft-scenes-ref');
   });
   it('nothing to show yet: nothing', () => { expect(scenesPane(null, null)).toBe(null); });
+});
+
+describe('the grade status chip', () => {
+  it('says where the colours come from in two or three words', () => {
+    expect(gradeStatus({ own: true, cube: true, ref: true })).toEqual({ label: 'Matched to reference', tone: 'on' });
+    expect(gradeStatus({ own: true, cube: true })).toEqual({ label: 'Matched to brand look', tone: 'on' });
+    expect(gradeStatus({ lut: 'x.cube', applied: { name: 'Warm film' } })).toEqual({ label: 'Warm film', tone: 'on' });
+    expect(gradeStatus({ lut: 'x.cube' })).toEqual({ label: 'Brand look', tone: 'on' });
+    expect(gradeStatus({ adjusted: true })).toEqual({ label: 'Adjusted by hand', tone: '' });
+    expect(gradeStatus({})).toEqual({ label: 'No grade', tone: '' });
+  });
+  it('a deleted brand look warns, whatever else is set', () => {
+    expect(gradeStatus({ gone: true, lut: 'x.cube' })).toEqual({ label: 'Look deleted', tone: 'warn' });
+  });
+});
+
+describe('icon slider rows', () => {
+  const h = rgIconHTML('data-ft-g', 'exposure', 'Exposure', '<svg></svg>', -100, 100, 1, 20, '');
+  it('show an icon, the slider and its value; the name is a tooltip and the accessible label', () => {
+    expect(h).toContain('<svg></svg>'); expect(h).toContain('title="Exposure"'); expect(h).toContain('aria-label="Exposure"');
+    expect(h).toContain('data-ft-g="exposure"'); expect(h).toContain('<output>+20</output>');
+    expect(h).not.toContain('<span>Exposure</span>');
+  });
+  it('a one-sided slider has no sign and no centre mark', () => {
+    const s = rgIconHTML('data-ft-g', 'strength', 'Strength', '<svg></svg>', 0, 100, 1, 100, 'disabled');
+    expect(s).toContain('<output>100</output>'); expect(s).not.toContain('class="ctr"'); expect(s).toContain('disabled');
+  });
 });

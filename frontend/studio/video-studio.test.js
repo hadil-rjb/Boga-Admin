@@ -169,16 +169,19 @@ describe('railFor', () => {
     expect(keys('reel', 'design')).toEqual(keys('still', 'design'));
     expect(isFoot('agent')).toBe(true); expect(isFoot('templates')).toBe(false);
   });
-  it('Animate on a reel: Animation, Audio, Scenes, Captions and nothing else', () => {
-    expect(labels('reel', 'animate')).toEqual(['Animation', 'Audio', 'Scenes', 'Captions']);
+  it('Animate on a reel: Animation, Audio, Scenes, Captions, then the Agent pinned at the bottom', () => {
+    expect(labels('reel', 'animate')).toEqual(['Animation', 'Audio', 'Scenes', 'Captions', 'Agent']);
+    expect(keys('reel', 'animate')).toEqual(['animation', 'audio', 'scenes', 'captions', 'agent']);
+    expect(isFoot('agent')).toBe(true);
   });
+  it('gives a video the Agent, pinned at the bottom', () => { expect(keys('video', 'animate')).toEqual(['scenes', 'audio', 'captions', 'agent']); expect(panelFor('video', 'animate', 'agent')).toEqual({ mode: 'animate', tab: 'agent' }); });
   it('an uploaded video: Scenes, Audio, Captions, whatever mode is asked', () => {
-    expect(labels('video', 'animate')).toEqual(['Scenes', 'Audio', 'Captions']);
-    expect(labels('video', 'design')).toEqual(['Scenes', 'Audio', 'Captions']);
+    expect(labels('video', 'animate')).toEqual(['Scenes', 'Audio', 'Captions', 'Agent']);
+    expect(labels('video', 'design')).toEqual(['Scenes', 'Audio', 'Captions', 'Agent']);
   });
   it('no design tool in Animate and no video tool in Design', () => {
     const d = new Set(keys('reel', 'design')), a = keys('reel', 'animate');
-    expect(a.some((k) => d.has(k))).toBe(false);
+    expect(a.filter((k) => d.has(k))).toEqual(['agent']); // the agent works in both modes
   });
   it('returns fresh copies', () => { railFor('still', 'design')[0][1] = 'x'; expect(railFor('still', 'design')[0][1]).toBe('Templates'); });
 });
@@ -198,13 +201,18 @@ describe('panelFor', () => {
     expect(panelFor('still', 'design', 'figma')).toEqual({ mode: 'design', tab: 'figma' });
   });
   it('a video keeps its three items; media, look and design keys open Scenes', () => {
-    ['media', 'look', 'motion', 'templates', 'brand', 'agent', 'animation', undefined].forEach((k) => expect(panelFor('video', 'animate', k)).toEqual({ mode: 'animate', tab: 'scenes' }));
+    ['media', 'look', 'motion', 'templates', 'brand', 'animation', undefined].forEach((k) => expect(panelFor('video', 'animate', k)).toEqual({ mode: 'animate', tab: 'scenes' }));
     ['audio', 'captions', 'styles', 'script'].forEach((k) => expect(panelFor('video', 'animate', k)).toEqual({ mode: 'animate', tab: k }));
   });
   it('a reel: a key of the other mode switches mode', () => {
     expect(panelFor('reel', 'animate', 'text')).toEqual({ mode: 'design', tab: 'text' });
     expect(panelFor('reel', 'design', 'audio')).toEqual({ mode: 'animate', tab: 'audio' });
     expect(panelFor('reel', 'design', 'styles')).toEqual({ mode: 'animate', tab: 'styles' });
+  });
+  it('keeps the agent in the mode the reel is in', () => {
+    expect(panelFor('reel', 'animate', 'agent')).toEqual({ mode: 'animate', tab: 'agent' });
+    expect(panelFor('reel', 'design', 'agent')).toEqual({ mode: 'design', tab: 'agent' });
+    expect(panelFor('still', 'design', 'agent')).toEqual({ mode: 'design', tab: 'agent' });
   });
   it('a reel: old keys', () => {
     expect(panelFor('reel', 'design', 'motion')).toEqual({ mode: 'animate', tab: 'scenes' });

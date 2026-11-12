@@ -10,7 +10,7 @@ import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
 import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto } from "./dto/ai.dto";
-import { AGENT_TOOLS, AgentCall, agentSystemPrompt, cleanMessages, toAnthropic, toOpenAi } from "./agent";
+import { AgentCall, agentSystemPrompt, cleanMessages, toAnthropic, toOpenAi, toolsFor } from "./agent";
 import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
@@ -88,13 +88,13 @@ export class AiService {
     const s = await this.load(), p: Provider = d.provider ?? s.provider, key = this.key(s, p);
     if (!key) throw new BadRequestException(`Add a ${LABEL[p]} API key in Settings → AI first`);
     const model = d.model || (p === "anthropic" ? s.anthropicModel : s.groqModel);
-    const msgs = cleanMessages(d.messages);
-    const system = `${agentSystemPrompt(d.context)}\n\nWorkspace brief (audience, tone, goals): ${clip(s.brief, 1500) || "none"}\nDefault language for copy: ${s.language || "English"}\n\nThe editor right now (JSON):\n${d.context}`;
+    const msgs = cleanMessages(d.messages), mode = d.mode ?? "design", tools = toolsFor(mode);
+    const system = `${agentSystemPrompt(d.context, mode)}\n\nWorkspace brief (audience, tone, goals): ${clip(s.brief, 1500) || "none"}\nDefault language for copy: ${s.language || "English"}\n\nThe editor right now (JSON):\n${d.context}`;
 
     if (p === "anthropic") {
       const res = await this.http("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({ model, max_tokens: 4096, system, tools: AGENT_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })), messages: toAnthropic(msgs) }),
+        body: JSON.stringify({ model, max_tokens: 4096, system, tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })), messages: toAnthropic(msgs) }),
       });
       if (!res.ok) await this.fail(res, p);
       const j: any = await res.json();
@@ -106,7 +106,7 @@ export class AiService {
     const vision = /llama-4|vision|scout|maverick/i.test(model);
     const res = await this.http("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ model, max_tokens: 4096, temperature: 0.4, messages: toOpenAi(system, msgs, vision), tools: AGENT_TOOLS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: "auto" }),
+      body: JSON.stringify({ model, max_tokens: 4096, temperature: 0.4, messages: toOpenAi(system, msgs, vision), tools: tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: "auto" }),
     });
     if (!res.ok) await this.fail(res, p);
     const j: any = await res.json(), m = j.choices?.[0]?.message ?? {};
