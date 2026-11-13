@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { trackClaude } from "../../ai/usage";
@@ -267,31 +268,61 @@ export async function analyzeWithClaude(apiKey: string, input: AnalyzeInput): Pr
     content.push({ type: "text", text: `Brand guide "${clean(input.guide.name)}": the brand's own written rules.\n${JSON.stringify({ layout: input.guide.layout, imagery: input.guide.imagery, logoUse: input.guide.logoUse, typography: input.guide.typography, rules: input.guide.rules })}` });
   }
   content.push({ type: "text", text: `Brand kit:\n${JSON.stringify(input.kit)}\n\nWrite this brand's design system.` });
+  // the JSON schema alone: with zodOutputFormat's parse, the SDK validates every text block itself and throws on the
+  // first mismatch (a word outside an enum, a text block that isn't the answer), before tidy() can mend it
+  const { parse: _strict, ...format } = zodOutputFormat(SystemSchema);
   const res = await client.beta.messages.stream({
     model: GUIDE_MODEL,
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
     thinking: { type: "adaptive" },
-    output_config: { effort: "medium", format: zodOutputFormat(SystemSchema) },
+    output_config: { effort: "medium", format },
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content }],
   }).finalMessage();
   trackClaude("Design system", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to analyze these designs");
-  const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
-  return { system: systemFromAnswer(text, res.stop_reason, sent, sentPictures), model: res.model };
+  return { system: systemFromAnswer(answerTexts(res.content), res.stop_reason, sent, sentPictures), model: res.model };
 }
 
-/** The model's final text and stop reason → a tidy system, or an error with a short readable reason. */
-export function systemFromAnswer(text: string, stopReason: string | null, sourceIds: string[], inspirationIds: string[] = []): System {
-  if (stopReason === "max_tokens") throw new Error("the answer was cut off, try again with fewer designs");
-  let parsed: z.infer<typeof SystemSchema>;
-  try {
-    parsed = SystemSchema.parse(JSON.parse(text));
-  } catch {
-    throw new Error("the answer was not in the expected format");
+/**
+ * The text blocks that can hold the answer: only those after the last fallback switch (a model that declined may have
+ * started writing before the fallback model took over).
+ */
+export function answerTexts(content: { type: string; text?: string }[]): string[] {
+  const last = content.map((b) => b.type).lastIndexOf("fallback");
+  return content.slice(last + 1).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text as string);
+}
+
+/** A JSON object in a text: the whole text, or the outermost {…} when words or a code fence surround it */
+function jsonObject(text: string): Record<string, unknown> | null {
+  const tries = [text.trim()];
+  const i = text.indexOf("{"), j = text.lastIndexOf("}");
+  if (i >= 0 && j > i) tries.push(text.slice(i, j + 1));
+  for (const t of tries) {
+    try { const v = JSON.parse(t); if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>; } catch { /* next */ }
   }
+  return null;
+}
+
+const log = new Logger("DesignSystem");
+
+/**
+ * The model's answer (its text blocks, or one text) and stop reason → a tidy system, or an error with a short readable
+ * reason. The answer is read leniently: tidy() keeps what fits the system and drops the rest, so one value outside the
+ * schema doesn't lose the whole analysis (the mismatch is logged).
+ */
+export function systemFromAnswer(answer: string | string[], stopReason: string | null, sourceIds: string[], inspirationIds: string[] = []): System {
+  if (stopReason === "max_tokens") throw new Error("the answer was cut off, try again with fewer designs");
+  const texts = typeof answer === "string" ? [answer] : answer;
+  // the last block holding an object is the answer; all blocks together as a last resort
+  let parsed: Record<string, unknown> | null = null;
+  for (let k = texts.length - 1; k >= 0 && !parsed; k--) parsed = jsonObject(texts[k]);
+  if (!parsed && texts.length > 1) parsed = jsonObject(texts.join(""));
+  if (!parsed) throw new Error("the answer was not in the expected format");
+  const check = SystemSchema.safeParse(parsed);
+  if (!check.success) log.warn(`Design system answer outside the schema, tidied: ${check.error.issues.slice(0, 5).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`);
   try {
     return tidy(parsed, sourceIds, inspirationIds);
   } catch {

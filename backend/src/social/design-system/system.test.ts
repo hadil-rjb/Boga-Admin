@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { tidy, systemFromAnswer, SYSTEM_PROMPT } from './system';
+import { tidy, systemFromAnswer, answerTexts, SYSTEM_PROMPT } from './system';
 import { AnalyzeSystemDto, hasAnySource } from './system.controller';
 import fixture from './tidy.fixture.json';
 
@@ -120,12 +120,25 @@ describe('systemFromAnswer', () => {
   it('explains a cut-off answer', () => {
     expect(() => systemFromAnswer('{"summary":', 'max_tokens', [])).toThrow(/cut off/);
   });
-  it('explains text that is not JSON or does not fit the schema, in one line', () => {
+  it('explains text that is not a JSON object, in one line', () => {
     expect(() => systemFromAnswer('not json', 'end_turn', [])).toThrow(/expected format/);
     let msg = '';
-    try { systemFromAnswer('{"summary":1}', 'end_turn', []); } catch (e: any) { msg = e.message; }
+    try { systemFromAnswer('[1, 2]', 'end_turn', []); } catch (e: any) { msg = e.message; }
     expect(msg).toMatch(/expected format/);
     expect(msg).not.toMatch(/\n/);
+  });
+  it('keeps what fits when a value is outside the schema, instead of failing', () => {
+    const odd = { ...good(), shapes: { ...good().shapes, shadow: 'glow' }, type: [...good().type, { role: 'banner', font: 'Inter' }] };
+    const sys = systemFromAnswer(JSON.stringify(odd), 'end_turn', ['t1']);
+    expect(sys.shapes.shadow).toBe('none');
+    expect(sys.type).toHaveLength(good().type.length);
+  });
+  it('reads the answer from the right text block', () => {
+    // a note before the answer, the answer in a code fence, and a declined model's start before a fallback
+    expect(systemFromAnswer(['Here is the system:', '```json\n' + JSON.stringify(good()) + '\n```'], 'end_turn', ['t1']).type[0].font).toBe('Inter');
+    const content = [{ type: 'text', text: '{"summ' }, { type: 'fallback' }, { type: 'text', text: JSON.stringify(good()) }];
+    expect(answerTexts(content)).toHaveLength(1);
+    expect(systemFromAnswer(answerTexts(content), 'end_turn', ['t1']).type[0].font).toBe('Inter');
   });
   it('explains an answer with nothing usable', () => {
     const empty = { ...good(), type: [], colors: { roles: [], pairs: [], gradients: [] }, layout: { ...good().layout, patterns: [] } };
