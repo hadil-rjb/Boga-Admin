@@ -7588,7 +7588,13 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** The brand's news topics in a language: its own list (empty: every headline), else the suggestion */
   const topicsOf = (lang) => { const b = brand(), t = b && b.newsTopics && b.newsTopics[lang === 'ar' ? 'ar' : 'en']; return Array.isArray(t) ? t : suggestTopics(b, lang); };
   /** News slides whose headlines were chosen for other topics than the brand's now are due at once */
-  const topicsKey = (cfg) => topicsOf(cfg.lang).join(',');
+  /**
+   * An Arabic news slide on a news source (not Google News) shows that source's stories, with their photos and summaries,
+   * translated into Arabic by Claude: the same news as the English slide. Its topics are the brand's English ones.
+   */
+  const translating = (cfg) => cfg.kind === 'news' && cfg.lang === 'ar' && cfg.src !== 'google';
+  const topicLang = (cfg) => (translating(cfg) ? 'en' : cfg.lang);
+  const topicsKey = (cfg) => topicsOf(topicLang(cfg)).join(',') + (translating(cfg) ? '|tr' : '');
   const topicsMoved = (pg) => pg.live.kind === 'news' && pg.live.tk !== topicsKey(pg.live);
   const setTopics = (lang, list) => { const b = brand(); b.newsTopics = { ...(b.newsTopics || {}), [lang === 'ar' ? 'ar' : 'en']: list }; };
   async function dataFor(cfg, n) {
@@ -7599,8 +7605,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const st = r.quotes.find((q) => q.stale);
       return { items: syms.map((s) => by.get(s) || null), source: (r.quotes[0] || {}).source, missing: r.missing || [], stale: st ? st.at : null };
     }
-    const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.q || '', lang: cfg.lang, limit: '20', topics: topicsOf(cfg.lang).join(',') }), 120_000);
-    return { items: r.items, source: r.source, requested: r.requested, missing: [], stale: r.stale ? r.fetchedAt : null };
+    const tr = translating(cfg);
+    const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.src === 'google' ? cfg.q || '' : '', lang: tr ? 'en' : cfg.lang, limit: '20', topics: topicsOf(topicLang(cfg)).join(','), ...(tr ? { translate: 'ar' } : {}) }), 120_000);
+    return { items: r.items, source: r.source, requested: r.requested, missing: [], stale: r.stale ? r.fetchedAt : null, translated: r.translated || null };
   }
   /**
    * A picture layer that can show a headline's photo: a picture inside the slide, shown as it is. Not a background that
@@ -7733,7 +7740,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       // an auto height text in an auto layout keeps its type size: its box (and the card around it) follows the text
       const par = l.pid && pg.layers.find((p) => p.id === l.pid), grows = l.ah && par && par.al;
       if (grows) { set(l, 'text', raw); set(l, 'size', l.fs0); l.fu = textHeight(l); return; }
-      const f = fitText(l, raw); set(l, 'text', f.t); set(l, 'size', f.size); set(l, 'h', l.fh0); l.fu = Math.round(f.used || l.fh0);
+      const f = fitText(l, raw); set(l, 'text', f.t); set(l, 'size', f.size); set(l, 'h', l.fh0);
+      // the height the text really takes, measured in the page with its font (an Arabic headline set in Cairo can take a
+      // line more than the estimate): the text that flows under it starts below it
+      l.fu = Math.round(Math.max(f.used || 0, Math.min(textHeight(l), l.fh0 * 1.6)) || l.fh0);
       // a text that follows another one (the summary under the headline) moves up when the headline takes fewer lines
       if (l.flow) {
         if (l.fy0 === undefined) l.fy0 = l.y;
@@ -7757,7 +7767,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       try {
         const r = await dataFor(cfg, slots(pg)), items = await itemsFor(pg, cfg, r);
         cfg.events = r.items.filter(Boolean).map((x) => { const { photo, ...y } = x; return y; }); // the panel's list
-        cfg.feed = { source: r.source, requested: r.requested, missing: r.missing, stale: r.stale };
+        cfg.feed = { source: r.source, requested: r.requested, missing: r.missing, stale: r.stale, translated: r.translated };
         if (cfg.kind === 'news') cfg.tk = topicsKey(cfg); // the topics these headlines were chosen for
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
@@ -7851,12 +7861,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** The brand's news topics: chips to remove, a field to add, the brand's suggestions not used yet */
   function topicsField(cfg) {
-    const b = brand(), list = topicsOf(cfg.lang), sug = suggestTopics(b, cfg.lang).filter((t) => !list.includes(t));
+    const tl = topicLang(cfg), b = brand(), list = topicsOf(tl), sug = suggestTopics(b, tl).filter((t) => !list.includes(t));
     const chips = list.map((t) => `<span class="chip">${esc(t)}<button type="button" class="fig9-x" data-act="fdTopicRm" data-t="${esc(t)}" aria-label="Remove ${esc(t)}">${ic('x', 12)}</button></span>`).join('');
     return field('Topics', `<div class="fig9-teams">${chips || '<span class="xs-t muted">Every headline</span>'}</div>
-      <input class="field sm" id="fdTopic" placeholder="${cfg.lang === 'ar' ? 'أضف موضوعًا، ثم Enter' : 'Add a topic, then Enter'}" autocomplete="off">
+      <input class="field sm" id="fdTopic" placeholder="${tl === 'ar' ? 'أضف موضوعًا، ثم Enter' : 'Add a topic, then Enter'}" autocomplete="off">
       ${sug.length ? `<div class="fig9-teams">${sug.map((t) => `<button type="button" class="chip" data-act="fdTopicAdd" data-t="${esc(t)}">${ic('plus', 12)}${esc(t)}</button>`).join('')}</div>` : ''}
-      <p class="lv-hint">Only headlines about these topics, on every news slide of ${esc(b.name)}.${list.length ? '' : ' Add one to filter.'}</p>`);
+      <p class="lv-hint">Only headlines about these topics, on every ${translating(cfg) ? 'English and translated ' : ''}news slide of ${esc(b.name)}.${list.length ? '' : ' Add one to filter.'}</p>`);
   }
   function newsSec(pg, cfg) {
     const n = slots(pg), items = cfg.events || [], on = new Set(chooseNews(items, cfg, n).map((x) => x.id));
@@ -7864,10 +7874,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <span class="cbx ${on.has(x.id) ? 'on' : ''}">${on.has(x.id) ? ic('check', 12) : ''}</span>
         <span class="lv-evb"><span class="fd-hl">${esc(x.title)}</span><span class="r2"><b class="t">${esc(ago(x.at, 'en'))}</b><span class="cc">${esc(x.source || '')}</span>${x.image ? `<span class="fd-img" title="Has a photo">${ic('image', 12)}</span>` : ''}</span></span></button>`).join('')
       : cfg.err ? '' : '<div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div>';
-    const topic = cfg.src === 'google' || cfg.lang === 'ar';
+    const topic = cfg.src === 'google';
+    const srcName = (NEWS_SRC.find(([k]) => k === cfg.src) || ['', ''])[1].split(' · ')[0];
+    const trNote = translating(cfg) ? `<div class="lv-trn${cfg.feed && cfg.feed.translated === 'none' ? ' warn' : ''}">${ic(cfg.feed && cfg.feed.translated === 'none' ? 'alert' : 'globe', 15)}<span>${cfg.feed && cfg.feed.translated === 'none' ? 'Add a Claude key in Settings → AI to translate the headlines: they show in English for now.' : `${esc(srcName)}’s stories, with their photos and summaries, translated into Arabic by Claude. For Arabic newspapers, choose Google News.`}</span></div>` : '';
     return sec('News feed', field('Source', `<select class="field sm" id="fdSrc">${srcOpts(cfg.src)}</select>`)
-        + (topic ? field('Topic', `<input class="field sm" id="fdQ" value="${esc(cfg.q || '')}" placeholder="${cfg.lang === 'ar' ? 'الذهب، الدولار، النفط…' : 'gold, EUR/USD, oil…'}" autocomplete="off"><p class="lv-hint">Empty: the main market stories.${cfg.lang === 'ar' && cfg.src !== 'google' ? ' Arabic headlines come from Google News.' : ''}</p>`) : '')
-        + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']]))
+        + (topic ? field('Topic', `<input class="field sm" id="fdQ" value="${esc(cfg.q || '')}" placeholder="${cfg.lang === 'ar' ? 'الذهب، الدولار، النفط…' : 'gold, EUR/USD, oil…'}" autocomplete="off"><p class="lv-hint">Empty: the main market stories.</p>`) : '')
+        + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']]) + trNote)
         + topicsField(cfg)
         + (pg.layers.some((l) => l.feed === '@image') ? `<div class="lv-swr"><div class="grow"><b>Headline photo</b><p>Use the story's photo when it has one.</p></div>${sw(cfg.photo, 'fdPhoto', '', 'Headline photo')}</div>` : ''))
       + sec('Headlines', `<div class="lv-evs">${list}</div>`, `<span class="lv-count">${on.size} on the slide</span>${cfg.pick && cfg.pick.length ? '<button class="btn link sm lv-auto" data-act="fdAuto">Latest</button>' : '<span class="lv-tag">Latest</span>'}`);
@@ -7947,8 +7959,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     fdLang: (a) => { const c = cfgNow(); if (c.lang === a.dataset.v) return; c.lang = a.dataset.v; c.pick = null; if (c.kind === 'news') fresh(c); save(); reapply(); },
     fdBLang: (a) => { ED.fdLang = a.dataset.v; edPanel(); },
     fdPhoto: () => { const c = cfgNow(); c.photo = !c.photo; save(); reapply(); },
-    fdTopicAdd: (a) => { const c = cfgNow(), t = String(a.dataset.t || '').trim().toLowerCase(); if (!t) return; setTopics(c.lang, [...topicsOf(c.lang).filter((x) => x !== t), t].slice(0, 12)); c.pick = null; fresh(c); save(); reapply(); },
-    fdTopicRm: (a) => { const c = cfgNow(); setTopics(c.lang, topicsOf(c.lang).filter((x) => x !== a.dataset.t)); c.pick = null; fresh(c); save(); reapply(); },
+    fdTopicAdd: (a) => { const c = cfgNow(), t = String(a.dataset.t || '').trim().toLowerCase(); if (!t) return; setTopics(topicLang(c), [...topicsOf(topicLang(c)).filter((x) => x !== t), t].slice(0, 12)); c.pick = null; fresh(c); save(); reapply(); },
+    fdTopicRm: (a) => { const c = cfgNow(); setTopics(topicLang(c), topicsOf(topicLang(c)).filter((x) => x !== a.dataset.t)); c.pick = null; fresh(c); save(); reapply(); },
     fdPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
     fdAuto: () => { cfgNow().pick = null; save(); reapply(); },
     fdPick: (a) => {
@@ -8002,7 +8014,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (t.id === 'fdSrc') { c.src = t.value; c.pick = null; fresh(c); save(); return reapply(); }
     if (t.id === 'fdTopic') { // "gold, silver" adds both
       const add = t.value.split(',').map((x) => x.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 40)).filter(Boolean); if (!add.length) return;
-      setTopics(c.lang, [...topicsOf(c.lang).filter((x) => !add.includes(x)), ...add].slice(0, 12)); t.value = ''; c.pick = null; fresh(c); save(); return reapply();
+      setTopics(topicLang(c), [...topicsOf(topicLang(c)).filter((x) => !add.includes(x)), ...add].slice(0, 12)); t.value = ''; c.pick = null; fresh(c); save(); return reapply();
     }
     if (t.id === 'fdQ') { c.q = t.value.trim().slice(0, 120); c.pick = null; fresh(c); save(); return reapply(); }
     if (t.id === 'fdEvery') { c.every = +t.value; save(); }

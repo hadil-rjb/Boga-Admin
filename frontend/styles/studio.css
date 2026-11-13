@@ -3843,3 +3843,8 @@ textarea.ds-sum{min-height:84px;max-width:none}
   .vs-top [data-act=vrOpen].btn .hide-sm{display:none}
   .vs-top .vb-n{margin-left:4px}
 }
+
+/* Live data · news: where an Arabic slide's headlines come from (translated stories, or the reason they aren't) */
+.lv-trn{display:flex;gap:8px;align-items:flex-start;margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--pill);font-size:12px;line-height:1.4;color:var(--text-2)}
+.lv-trn .ic{flex:none;margin-top:1px;color:var(--text-3)}
+.lv-trn.warn{background:rgba(245,158,11,.1);color:var(--text-1)}.lv-trn.warn .ic{color:#d97706}

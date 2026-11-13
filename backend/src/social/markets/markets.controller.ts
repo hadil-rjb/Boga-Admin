@@ -14,8 +14,8 @@ export class MarketsController {
 
   /** ?source=fxstreet|google|cnbc|marketwatch&q=gold&lang=en|ar&limit=12&topics=gold,silver (headlines about one of the topics) */
   @Get("news")
-  news(@Query("source") source?: string, @Query("q") q?: string, @Query("lang") lang?: string, @Query("limit") limit?: string, @Query("topics") topics?: string) {
-    return this.svc.news({ source, q, lang, limit, topics });
+  news(@Query("source") source?: string, @Query("q") q?: string, @Query("lang") lang?: string, @Query("limit") limit?: string, @Query("topics") topics?: string, @Query("translate") translate?: string) {
+    return this.svc.news({ source, q, lang, limit, topics, translate });
   }
 
   /** ?url=https://… → { dataUrl }: a headline photo the slide can embed and export */
