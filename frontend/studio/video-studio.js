@@ -326,14 +326,27 @@ K  pause
     const b = document.querySelector('.ed-top [data-act=edExport]'), l = exportLabel(kind);
     if (b && b.dataset.label !== l) { b.dataset.label = l; b.innerHTML = `${ic('download', 16)}${esc(l)}`; }
   }
-  /** The Design / Animate switch after the kind tag: none for an uploaded video; Animate turns a still into a video */
+  /**
+   * The Design / Animate switch: at the top of the inspector (the right sidebar), above its tabs, with what the mode does
+   * and, on a video, "Make it a still design". On a phone, where the sidebar is a drawer, the top bar keeps a compact
+   * copy. None for an uploaded video; Animate turns a still into a video.
+   */
   function modeSwitch() {
-    const old = $('#edMode'), st = ED.d ? switchState(kindNow(), mode(), editable()) : null;
-    if (!st) { if (old) old.remove(); return; }
+    const kind = ED.d ? kindNow() : null, st = ED.d ? switchState(kind, mode(), editable()) : null;
+    const top = $('#edMode'), side = $('#edModeBox');
+    if (!st) { if (top) top.remove(); if (side) side.remove(); return; }
     const btn = (v, l, icon, off) => `<button class="${st.mode === v ? 'on' : ''}" data-act="vsMode" data-v="${v}" aria-pressed="${st.mode === v}" aria-label="${l}" title="${off ? 'You can view this design but not change it' : l === 'Design' ? 'Design: add and arrange layers' : 'Animate: animation, audio, scenes and captions'}"${off ? ' disabled=""' : ''}>${ic(icon, 15)}<span class="lbl">${l}</span></button>`;
-    const h = `<div class="seg vs-mode" id="edMode" role="group" aria-label="Editing mode">${btn('design', 'Design', 'vsDesign')}${btn('animate', 'Animate', 'play37', !st.canAnimate)}</div>`;
-    if (old) { if (old.outerHTML !== h) old.outerHTML = h; return; }
-    const at = $('#edKind') || $('#edRatio'); if (at) at.insertAdjacentHTML('afterend', h);
+    const seg = (id) => `<div class="seg vs-mode" id="${id}" role="group" aria-label="Editing mode">${btn('design', 'Design', 'vsDesign')}${btn('animate', 'Animate', 'play37', !st.canAnimate)}</div>`;
+    // the top bar's copy (shown on small screens only, see .ed-top #edMode)
+    const h = seg('edMode');
+    if (top) { if (top.outerHTML !== h) top.outerHTML = h; } else { const at = $('#edKind') || $('#edRatio'); if (at) at.insertAdjacentHTML('afterend', h); }
+    // the sidebar's
+    const p = $('#edProps'); if (!p) return;
+    const hint = kind === 'still' ? (st.canAnimate ? 'Animate turns this design into a video. Undo brings it back.' : '') : st.mode === 'animate' ? 'Animation, scenes, sound and captions.' : 'Layers of the open scene. Play it in Animate.';
+    const still = kind === 'reel' && editable() ? `<button type="button" class="btn ghost sm vs-still" data-act="mo37Still" title="Remove the animation: the scenes become pages">${ic('image', 15)}Make it a still design</button>` : '';
+    const box = `<div class="vs-modebox" id="edModeBox"><div class="vs-mb-h"><span class="vs-mb-l">Mode</span><span class="vs-mb-k">${ic(kind === 'still' ? 'image' : 'vsFilm', 12)}${kind === 'still' ? 'Still design' : 'Video'}</span></div>${seg('edModeSide')}${hint ? `<p class="vs-mb-p">${hint}</p>` : ''}${still}</div>`;
+    if (side) { if (side.outerHTML !== box) side.outerHTML = box; return; }
+    const tabs = p.querySelector(':scope > .tabs'); if (tabs) tabs.insertAdjacentHTML('beforebegin', box); else p.insertAdjacentHTML('afterbegin', box);
   }
   /** History next to the comments in the top bar; both light while their list is open */
   /* ---- the top bar: three zones (the design; the mode; actions). Zoom sits on the canvas, the view toggles share one menu ---- */

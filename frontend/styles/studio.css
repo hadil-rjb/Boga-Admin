@@ -3723,3 +3723,123 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .hp-att span{white-space:nowrap}
 @media (max-width:640px){.hp-att span{display:none}.hp-att{padding:0 10px}}
 @media (prefers-reduced-motion:reduce){.ag-hi,.ag-hi-x,.ag-att{transition:none}}
+
+/* ---------- Versions dialog (v36): language, size and theme of a design ---------- */
+.vr-hic{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:rgba(253,14,53,.1);color:var(--accent)}
+.vr-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+.vr-opts{display:flex;flex-direction:column;gap:18px}
+.vr-g{display:flex;flex-direction:column;gap:10px}
+.vr-gh{display:flex;align-items:center;gap:8px;color:var(--text-3);font-size:13px}.vr-gh b{color:var(--text-1);font-weight:600}
+.vr-row{display:flex;flex-wrap:wrap;gap:8px}
+.vr-opt{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-width:92px;padding:12px 10px 10px;border:1.5px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text-1);cursor:pointer;transition:border-color .15s,background .15s,transform .1s}
+.vr-opt:hover{border-color:var(--text-3)}.vr-opt:active{transform:scale(.98)}
+.vr-opt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.vr-opt.on{border-color:var(--accent);background:rgba(253,14,53,.06)}
+.vr-ico{height:28px;display:grid;place-items:center;color:var(--text-2)}.vr-opt.on .vr-ico{color:var(--accent)}
+.vr-l{font-size:13px;font-weight:600}
+.vr-opt small{font-size:11px;color:var(--text-3)}
+.vr-ratio{display:block;border:2px solid currentColor;border-radius:4px}
+.vr-glyph{display:inline-grid;place-items:center;min-width:28px;height:24px;padding:0 5px;border:2px solid currentColor;border-radius:6px;font:700 12px var(--jak)}.vr-glyph.ar{font:700 16px/1 'Cairo',sans-serif;padding-bottom:4px}
+.vr-pv{position:sticky;top:0;display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px;border-radius:14px;background:var(--pill)}
+.vr-pvs{display:flex;align-items:center;justify-content:center;gap:10px;min-height:240px}
+.vr-pvb{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:11px;color:var(--text-3)}.vr-pvb.on{color:var(--text-1);font-weight:600}
+.vr-pvb .thumb{border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.vr-arrow{color:var(--text-3)}
+.vr-note{font-size:12px;line-height:1.4;color:var(--text-2);text-align:center;min-height:17px}.vr-note .spin{display:inline-block;vertical-align:-2px;margin-right:4px}
+@media (max-width:760px){.vr-grid{grid-template-columns:1fr}.vr-pv{position:static;order:-1}.vr-opt{min-width:76px;flex:1 1 76px}}
+
+/* ---------- Versions bar (v36): the original and its versions above the canvas ---------- */
+.ed-stage.has-vb{grid-template-rows:auto 1fr auto}
+.ed-stage.has-vb>.vb{grid-row:1;grid-column:1}.ed-stage.has-vb>#edScroll,.ed-stage.has-vb>.vs-zoom{grid-row:2}.ed-stage.has-vb>#edPages{grid-row:3}
+.vb{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 14px;border-bottom:1px solid var(--border);background:var(--surface)}
+.vb-l{display:flex;align-items:center;gap:6px;flex:none;font-size:12px;font-weight:600;color:var(--text-3)}
+.vb-ts{display:flex;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:thin}
+.vb-t{display:flex;align-items:center;gap:8px;flex:none;padding:4px 10px 4px 4px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-1);cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
+.vb-t:hover{border-color:var(--text-3)}
+.vb-t:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.vb-t.on{border-color:var(--accent);background:rgba(253,14,53,.06)}
+.vb-th{display:grid;place-items:center;width:38px;height:38px;border-radius:7px;background:var(--pill);overflow:hidden}
+.vb-th .thumb{border-radius:3px}
+.vb-tx{display:flex;flex-direction:column;gap:1px;line-height:1.2}.vb-tx b{font-size:12px;font-weight:600}.vb-tx small{font-size:11px;color:var(--text-3);white-space:nowrap}
+.vb-t.on .vb-tx b{color:var(--accent)}
+.vb-add{display:grid;place-items:center;flex:none;width:34px;height:34px;border:1.5px dashed var(--border);border-radius:10px;background:transparent;color:var(--text-2);cursor:pointer}
+.vb-add:hover{border-color:var(--accent);color:var(--accent)}
+.vb-n{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:6px;padding:0 5px;border-radius:9px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
+.vr-n{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--pill);color:var(--text-2);font-size:11px;font-weight:700}
+.vr-pvb em{font-style:normal;font-size:10.5px;color:var(--text-3)}
+.vr-note .ic{vertical-align:-2px;color:#16a34a}
+@media (max-width:760px){.vb{padding:6px 10px}.vb-l span{display:none}.vb-tx small{display:none}}
+
+/* ---------- Editing mode in the inspector (the right sidebar): Design / Animate, Make it a still design ---------- */
+.vs-modebox{display:flex;flex-direction:column;gap:8px;margin:12px 12px 4px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--pill)}
+.vs-mb-h{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.vs-mb-l{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+.vs-mb-k{font-size:11px;font-weight:600;padding:2px 8px;border-radius:9px;background:var(--surface);color:var(--text-2);border:1px solid var(--border)}
+.vs-modebox .vs-mode{display:grid;grid-template-columns:1fr 1fr;width:100%}
+.vs-modebox .vs-mode button{justify-content:center}
+.vs-mb-p{margin:0;font-size:12px;line-height:1.4;color:var(--text-3)}
+.vs-still{align-self:flex-start;gap:6px;padding-left:6px;padding-right:8px;color:var(--text-2)}
+.vs-still:hover{color:var(--accent)}
+/* wide screens: the switch lives in the sidebar; where the sidebar is a drawer, the top bar keeps a copy */
+@media (min-width:1100px){.ed-top #edMode{display:none}}
+
+/* ---------- top bar on wide screens (the mode switch lives in the sidebar): three clear zones, even gaps ---------- */
+@media (min-width:1100px){
+  .ed-top.vs-top{gap:6px;padding:0 16px}
+  .vs-top [data-act=cmdk]{margin-left:auto}                 /* search, saved state, view, history, comments: pushed right */
+  .vs-top .sep{margin:0 6px;height:24px}
+  .vs-top [data-act=vrOpen].btn,.vs-top [data-act=edPreview],.vs-top [data-act=edSchedule],.vs-top [data-act=edExport]{margin-left:2px;gap:7px;padding:0 12px}
+  .vs-top [data-act=edExport]{margin-left:6px}
+}
+/* the Versions button: its count in a quiet pill */
+.vb-n{background:var(--pill);color:var(--text-1);border:1px solid var(--border)}
+
+/* ---------- Versions bar, refined: language first, an Original badge, size and theme with their icons ---------- */
+.vb{gap:12px;padding:8px 16px}
+.vb-l{gap:7px;padding-right:12px;border-right:1px solid var(--border)}
+.vb-t{gap:10px;padding:5px 12px 5px 5px;border-radius:12px}
+.vb-th{width:40px;height:40px;border-radius:8px}
+.vb-tx b{display:flex;align-items:center;gap:6px;font-size:12.5px}
+.vb-og{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:6px;background:var(--pill);color:var(--text-2)}
+.vb-t.on .vb-og{background:rgba(253,14,53,.12);color:var(--accent)}
+.vb-t.on .vb-tx b{color:var(--text-1)}
+.vb-tx small{display:flex;align-items:center;gap:10px}
+.vb-sz,.vb-th2{display:inline-flex;align-items:center;gap:4px}
+.vb-sz .vr-ratio{border-width:1.5px;border-radius:2px;transform:scale(.55);transform-origin:center;margin:-6px -5px}
+.vb-add{width:40px;height:40px;border-radius:12px}
+
+/* ---------- Mode box, refined: one row segmented control with icons, an icon badge ---------- */
+.vs-modebox{gap:10px;padding:12px;background:var(--surface);box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.vs-mb-k{display:inline-flex;align-items:center;gap:5px;padding:3px 8px}
+.vs-modebox .vs-mode{gap:4px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--pill)}
+.vs-modebox .vs-mode button{display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 10px;border-radius:8px;font-size:13px;font-weight:600;color:var(--text-2)}
+.vs-modebox .vs-mode button .lbl{display:inline}
+.vs-modebox .vs-mode button.on{background:var(--surface);color:var(--accent);box-shadow:0 1px 3px rgba(15,23,42,.12)}
+.vs-modebox .vs-mode button:not(.on):not(:disabled):hover{color:var(--text-1)}
+.vs-mb-p{font-size:12px}
+.vs-still{align-self:stretch;justify-content:center;height:34px;border:1px dashed var(--border);border-radius:10px}
+.vs-still:hover{border-color:var(--accent)}
+
+/* ---------- the editor's top bar: one style for every control, at every width ---------- */
+.ed-top .sep{align-self:center;height:22px;margin:0 6px}
+/* icon buttons (undo, redo, layers, view, history, comments, search, more): 34 px, no frame, a soft fill on hover */
+.ed-top .btn.icon,.vs-top [data-act=cmdk]{width:34px;height:34px;padding:0;justify-content:center;border:1px solid transparent;border-radius:9px;background:none;color:var(--text-2)}
+.ed-top .btn.icon:hover:not(:disabled),.vs-top [data-act=cmdk]:hover{background:var(--pill);color:var(--text-1)}
+.ed-top .btn.icon:disabled{opacity:.4}
+.ed-top .btn.icon.on,.ed-top .btn.icon[aria-pressed=true]{background:rgba(253,14,53,.08);color:var(--accent)}
+/* buttons with words: the same height and corners */
+.ed-top .btn.sm:not(.icon){height:34px;border-radius:9px}
+/* the saved state: a calm check (green), its word on wide screens */
+.ed-top .savetxt{display:inline-flex;align-items:center;gap:5px;height:34px;padding:0 4px;font-size:12px;color:var(--text-3)}
+.ed-top .savetxt .ic{color:var(--pos)}
+.ed-top .savetxt i{display:none}
+.vs-top .savetxt{font-size:12px;margin:0 2px}
+.vs-top .savetxt .lbl{display:none}
+@media (min-width:1280px){.vs-top .savetxt .lbl{display:inline}}
+/* where Preview, Schedule and Versions shrink to their icon, they look like the other icon buttons */
+@media (max-width:1279px){
+  .vs-top [data-act=edPreview],.vs-top [data-act=edSchedule],.vs-top [data-act=vrOpen].btn{width:auto;min-width:34px;height:34px;padding:0 8px;justify-content:center;border-color:transparent;background:none;color:var(--text-2)}
+  .vs-top [data-act=edPreview]:hover,.vs-top [data-act=edSchedule]:hover,.vs-top [data-act=vrOpen].btn:hover{background:var(--pill);color:var(--text-1)}
+  .vs-top [data-act=vrOpen].btn .hide-sm{display:none}
+  .vs-top .vb-n{margin-left:4px}
+}

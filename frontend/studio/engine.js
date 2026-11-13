@@ -42,6 +42,7 @@ import { chatTitle, archiveChat, restoreChat, dropChat, addRefs, refsNote, refsS
 import { agentCopy, agentMode, allowed, videoStep, animPatch, fitAnims, scenePatch, animOut, videoCtx, frameTime, starterFor, sec, MAX_SCENES } from './agent-motion.js';
 import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
 import { installCaptionInspector } from './caption-inspector.js';
+import { SIZES as V_SIZES, resizePage as vResize, swapTheme as vTheme, themeOf as vThemeOf, langOf as vLangOf, textsToTranslate as vTexts, swapLanguage as vLanguage, versionName as vName, lumOf as vLum } from './variants.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
@@ -807,6 +808,7 @@ Object.assign(ACT, {
     c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now', c.at = Date.now();
     // the copy is a design of its own: it is not linked to the Figma frame of the original
     if (c.source === 'Figma') { c.source = 'Template'; delete c.figma; }
+    delete c.vOf; delete c.vAt; // nor a version of the original's family
     (c.pages || []).forEach((pg) => { pg.id = uid(); reIdPage(pg); });
     S.designs.splice(Math.max(0, S.designs.indexOf(d)), 0, c); save(); synced('Design duplicated');
   },
@@ -2743,7 +2745,9 @@ function aabb(l) {
 }
 
 /* ---------- history ---------- */
-function touch() { ED.d.upd = 'Just now', ED.d.at = Date.now(); const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; autoName(ED.d); }
+/** The top bar's saved state: a check and "Saved" (the label shows on wide screens; the tooltip always says it) */
+const SAVED = () => `${ic('check', 14)}<span class="lbl">Saved</span>`;
+function touch() { ED.d.upd = 'Just now', ED.d.at = Date.now(); const s = $('#savetxt'); if (s) s.innerHTML = SAVED(); autoName(ED.d); }
 /** Automatic name: while a design still has the default name (or the last automatic one), it takes its
     biggest headline on the first slide, e.g. "Economic Calendar". It happens once: after that the name
     stays as it is until someone changes it by hand. */
@@ -2778,7 +2782,7 @@ function openEditor(id) {
       <button class="btn ghost icon sm" id="edUndo" data-act="edUndo" title="Undo (Ctrl+Z)">${ic('undo', 18)}</button>
       <button class="btn ghost icon sm" id="edRedo" data-act="edRedo" title="Redo (Ctrl+Shift+Z)">${ic('redo', 18)}</button>
       <span class="grow"></span>
-      <span class="savetxt" id="savetxt"><i></i>Saved</span><span class="sep"></span>
+      <span class="savetxt" id="savetxt" title="All changes saved" role="status">${SAVED()}</span><span class="sep"></span>
       <button class="btn ghost icon sm" data-act="edZoom" data-n="-0.1" title="Zoom out">${ic('minus', 16)}</button><button class="btn ghost sm zoomtxt" id="zoomTxt" data-act="edFit" title="Fit to screen"></button><button class="btn ghost icon sm" data-act="edZoom" data-n="0.1" title="Zoom in">${ic('plus', 16)}</button>
       <button class="btn ghost icon sm" id="edSafe" data-act="edSafe" title="Safe zones">${ic('frame', 18)}</button><span class="sep"></span>
       <button class="btn ghost icon sm only-narrow" data-act="edProps" title="Properties">${ic('layers', 18)}</button>
@@ -3504,6 +3508,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     [['heading', 'h', 'T'], ['subheading', 's'], ['body text', 'b']].forEach(([t, x, s]) => a('Create', 'Add ' + t, () => ACT.edText({ dataset: { k: x } }), s));
     Object.entries(SHAPES).forEach(([x, n]) => a('Create', 'Add shape: ' + n.toLowerCase(), () => ACT.edShape({ dataset: { k: x } })));
     Object.keys(RATIOS).forEach((r) => a('Canvas', 'Resize to ' + r, () => magicResize(r)));
+    a('Design', 'New version: language, size or theme', () => ACT.vrOpen && ACT.vrOpen());
     a('Pages', 'Add page', () => ACT.edAddPage()); a('Pages', 'Duplicate page', () => ACT.edDupPage());
     (ED.d && VS.source() ? VS.rail() : RAIL).forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
     k.colors.forEach((c) => a('Brand color', 'Apply ' + c + ' to selection', () => ACT.edColor({ dataset: { c } }), '', c));
@@ -10130,7 +10135,7 @@ function textHeight(l) {
   textHCache.set(key, h); return h;
 }
 // a web font that arrives later changes the measures: measure again
-try { document.fonts && document.fonts.addEventListener('loadingdone', () => { textHCache.clear(); if (typeof ED !== 'undefined' && ED.d && curP()) { syncTree(curP()); edStage(); } }); } catch (e) {}
+try { document.fonts && document.fonts.addEventListener('loadingdone', () => { textHCache.clear(); if (typeof ED !== 'undefined' && ED.d && curP() && document.body.classList.contains('in-editor') && document.getElementById('poster')) { syncTree(curP()); edStage(); } }); } catch (e) {}
 function syncTree(pg) {
   if (!pg || !pg.layers) return [];
   // auto height texts first: an auto layout frame then fits them
@@ -11659,6 +11664,16 @@ function clipCss(l, frames) {
       toast(all ? 'Every scene is animated' : 'Scene animated'); previewScene(ED.pi);
     },
     mo37Make: () => { makeVideo(); toast('Your design is now a video. Press K to play it'); },
+    mo37Still: () => {
+      const d = ED.d; if (!d || !isMo(d)) return;
+      const n = d.pages.length, au = d.audio && (d.audio.music || d.audio.track || d.pages.some((pg) => pg.scene && pg.scene.vo)), cc = d.captions && d.captions.lines && d.captions.lines.length;
+      const lost = ['animations', n > 1 ? 'scene transitions' : '', au ? 'music and voice-over' : '', cc ? 'captions' : ''].filter(Boolean);
+      modal(`<div class="mh"><span class="vr-hic">${ic('image', 20)}</span><div class="grow"><h2>Make it a still design?</h2><p class="xs-t muted">${n > 1 ? `Its ${n} scenes become the ${n} pages of a carousel.` : 'It becomes a post.'} The layers stay exactly where they are.</p></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+        <div class="mb"><div class="note">${ic('alert', 16)}<span>The ${lost.join(', ').replace(/, ([^,]*)$/, ' and $1')} are removed. Undo (Ctrl Z) brings the video back.</span></div></div>
+        <div class="mf"><button class="btn secondary" data-close>Keep the video</button><button class="btn primary" id="moStillGo">${ic('image', 16)}Make it a still design</button></div>`, {
+        onMount: (bg, close) => { bg.querySelector('#moStillGo').addEventListener('click', () => { close(); makeStill(); toast(n > 1 ? `Now a carousel of ${n} pages` : 'Now a still post'); }); },
+      });
+    },
     mo37Off: () => {
       modal(`<div class="mh"><h2>Make it a still design?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div><div class="mb"><p class="sm-t">The scenes become slides again and the animations are removed. You can undo this with <span class="kbd">Ctrl Z</span>.</p></div><div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="mo37OffGo">Make it still</button></div>`, {
         onMount: (bg, close) => $('#mo37OffGo', bg).addEventListener('click', () => {
@@ -11910,6 +11925,19 @@ function clipCss(l, frames) {
   };
   /** A still becomes a video: one Undo step (the Animate button, and the agent's make_video) */
   function makeVideo() { exitPreview(true); mutate(() => toMotion(ED.d)); fitZoom(); }
+  /**
+   * A video becomes a still design again (the inspector's "Make it a still design"), one Undo step: every scene stays as
+   * a page (a carousel when there are several) with its layers where they are; animations, transitions, sound and
+   * captions go.
+   */
+  function toStill(d) {
+    delete d.motion; delete d.audio; delete d.captions;
+    d.pages.forEach((pg) => { delete pg.scene; pg.layers.forEach((l) => { delete l.anim; }); });
+  }
+  function makeStill() {
+    exitPreview(true); ED.tab = 'templates'; ED.rtab = 'design';
+    mutate(() => toStill(ED.d), () => { edAll(); fitZoom(); });
+  }
   /* One frame of the video as a JPEG data URL, drawn as the recording draws it (prepare + frame), for the agent's view_frame.
      The prepared layers are kept until dropFrames(): the agent drops them after each change it makes and when its run ends. */
   let FR = null;
@@ -12660,6 +12688,164 @@ document.addEventListener('pointerdown', (e) => {
 
 /* designs still called "Untitled design" pick up their headline when opened */
 { const _oeName = openEditor; openEditor = function (id) { const r = _oeName.apply(this, arguments); if (ED.d && autoName(ED.d)) save(); return r; }; }
+
+/* ============ v36 · Versions: the same design in another language, size or theme (variants.js) ============ */
+(function () {
+  /** Translations already fetched: "<to>|<text>" → text (they serve the preview and the creation) */
+  const TRC = new Map();
+  /** The brand's darkest and lightest colours, the veils of a theme swap */
+  function palette() {
+    const cs = (brand().colors || []).map((c) => c.hex).filter((c) => vLum(c) != null).sort((a, b) => vLum(a) - vLum(b));
+    return { dark: cs[0] && vLum(cs[0]) < 0.2 ? cs[0] : '#0B1220', light: cs[cs.length - 1] && vLum(cs[cs.length - 1]) > 0.85 ? cs[cs.length - 1] : '#F8FAFC' };
+  }
+  /** Translates the design's fixed texts into `to` (what isn't cached yet); returns "claude", "none" or "error" */
+  async function translate(d, to) {
+    const todo = vTexts(d.pages, to).filter((x) => !TRC.has(to + '|' + x.text)); if (!todo.length) return 'claude';
+    let engine = 'claude';
+    for (let i = 0; i < todo.length; i += 100) {
+      const part = todo.slice(i, i + 100);
+      const r = await api('/social/calendar/translate', { method: 'POST', body: { items: part, to, brand: brand().name } });
+      if (r.engine !== 'claude') { engine = 'none'; break; }
+      const got = new Map((r.items || []).filter((x) => x.translated).map((x) => [x.id, x.text]));
+      part.forEach((x) => { if (got.has(x.id)) TRC.set(to + '|' + x.text, got.get(x.id)); });
+    }
+    return engine;
+  }
+  /** The version's pages: copies of the design's, in the chosen language, theme and size (new layer ids) */
+  function build(d, o) {
+    const [W, H] = RATIOS[d.ratio], ratio = o.size ? ensureRatio(o.size) : d.ratio, [nw, nh] = RATIOS[ratio];
+    const pages = d.pages.map((pg, i) => {
+      const x = JSON.parse(JSON.stringify(pg)); delete x.figma; delete x.poster;
+      if (o.lang) { const tr = new Map(); vTexts([pg], o.lang).forEach((t) => { const v = TRC.get(o.lang + '|' + t.text); if (v != null) tr.set(t.id.replace(/^0:/, i + ':'), v); }); vLanguage(x, i, o.lang, tr, brand().fonts || {}); }
+      if (o.theme) vTheme(x, o.theme, W, H, palette());
+      if (o.size) vResize(x, [W, H], [nw, nh]);
+      reIdPage(x); x.id = uid();
+      syncTree(x); // auto height texts and auto layout frames fit again
+      return x;
+    });
+    return { ratio, pages };
+  }
+  const ratioIcon = (w, h) => { const k = 24 / Math.max(w, h); return `<i class="vr-ratio" style="width:${Math.round(w * k)}px;height:${Math.round(h * k)}px"></i>`; };
+  const LANG = { en: 'EN', ar: 'AR' }, THEME = { light: 'Light', dark: 'Dark' };
+  const sizeName = (r) => (V_SIZES.find((z) => z.key === r) || { name: String(r).replace('x', '×') }).name;
+
+  /* ---------- the family: an original and its versions (a version names its original in vOf) ---------- */
+  const rootId = (d) => d.vOf || d.id;
+  /** The original first, then its versions in the order they were made */
+  function family(d) {
+    const r = rootId(d);
+    return S.designs.filter((x) => x.id === r || x.vOf === r).sort((a, b) => (a.id === r ? -1 : b.id === r ? 1 : (a.vAt || 0) - (b.vAt || 0)));
+  }
+  /** What a design is: its language, theme and size (read from its pages, so edits by hand count) */
+  const specOf = (x) => { const dd = getD(x.id) || x; return { lang: vLangOf(dd.pages || []), theme: vThemeOf(dd.pages || []), size: dd.ratio }; };
+  const specLabel = (sp) => `${LANG[sp.lang] || sp.lang} · ${sizeName(sp.size)} · ${THEME[sp.theme] || sp.theme}`;
+  const sameSpec = (a, b) => a.lang === b.lang && a.theme === b.theme && a.size === b.size;
+
+  /* ---------- the versions bar, above the canvas: every version of the design, one click away ---------- */
+  function drawBar() {
+    const st = $('.ed-stage'); if (!st || !ED.d) return;
+    let bar = $('#vrBar', st); const fam = family(ED.d);
+    if (fam.length < 2 || ED.d.pages.some((pg) => pg.poster)) { if (bar) { bar.remove(); st.classList.remove('has-vb'); ED.fit && fitZoom(); } return; }
+    const r = rootId(ED.d);
+    const tab = (x) => {
+      const dd = getD(x.id), sp = specOf(x), on = x.id === ED.d.id, [w, h] = RATIOS[ensureRatio(dd.ratio)] || [1080, 1080], k = Math.min(34 / w, 34 / h);
+      return `<button type="button" class="vb-t${on ? ' on' : ''}" role="tab" aria-selected="${on}" data-act="vrGo" data-id="${x.id}" title="${esc(dd.name)}">
+        <span class="vb-th">${dd.pages && dd.pages[0] ? thumb(dd.pages[0], dd.ratio, w * k, h * k) : ''}</span>
+        <span class="vb-tx"><b>${sp.lang === 'ar' ? 'العربية' : 'English'}${x.id === r ? '<em class="vb-og">Original</em>' : ''}</b>
+          <small><span class="vb-sz">${ratioIcon(...(RATIOS[ensureRatio(sp.size)] || [1080, 1080]))}${esc(sizeName(sp.size))}</span><span class="vb-th2">${ic(sp.theme === 'dark' ? 'moon' : 'sun', 12)}${THEME[sp.theme] || sp.theme}</span></small></span></button>`;
+    };
+    const html = `<span class="vb-l">${ic('copy', 15)}<span>Versions</span></span><div class="vb-ts" role="tablist" aria-label="Versions of this design">${fam.map(tab).join('')}</div>
+      <button type="button" class="vb-add" data-act="vrOpen" title="New version: another language, size or theme" aria-label="New version">${ic('plus', 16)}</button>`;
+    const had = !!bar;
+    if (!bar) { bar = document.createElement('div'); bar.id = 'vrBar'; bar.className = 'vb'; st.prepend(bar); st.classList.add('has-vb'); }
+    bar.innerHTML = html;
+    if (!had && ED.fit) fitZoom(); // the canvas is a little shorter now
+    const b = $('[data-act=vrOpen].btn'); if (b) b.innerHTML = `${ic('copy', 16)}<span class="hide-sm">Versions</span><span class="vb-n">${fam.length}</span>`;
+  }
+
+  function openVersions(d) {
+    if (!d || !d.pages || !d.pages.length) return;
+    if (d.pages.some((pg) => pg.poster)) return toast('Versions work on designs, not on videos');
+    const cur = specOf(d);
+    const st = { lang: cur.lang, theme: cur.theme, size: cur.size, tr: 'idle', job: null };
+    const changes = () => ({ ...(st.lang !== cur.lang ? { lang: st.lang } : {}), ...(st.theme !== cur.theme ? { theme: st.theme } : {}), ...(st.size !== cur.size ? { size: st.size } : {}) });
+    /** The family member that already is the chosen language, size and theme (no duplicates: it opens instead) */
+    const existing = () => { const want = { lang: st.lang, theme: st.theme, size: st.size }; return family(d).find((x) => x.id !== d.id && sameSpec(specOf(x), want)); };
+    const opt = (key, v, label, glyph, sub) => {
+      const on = st[key] === v, now = cur[key] === v;
+      return `<button type="button" class="vr-opt${on ? ' on' : ''}" data-vr="${key}" data-v="${esc(v)}" aria-pressed="${on}"><span class="vr-ico">${glyph}</span><span class="vr-l">${label}</span>${now ? '<small>This design</small>' : sub ? `<small>${sub}</small>` : ''}</button>`;
+    };
+    const group = (n, title, icon, body) => `<section class="vr-g"><div class="vr-gh"><span class="vr-n">${n}</span>${ic(icon, 16)}<b>${title}</b></div><div class="vr-row">${body}</div></section>`;
+    const options = () => group(1, 'Language', 'globe', opt('lang', 'en', 'English', '<span class="vr-glyph">EN</span>') + opt('lang', 'ar', 'العربية', '<span class="vr-glyph ar">ع</span>'))
+      + group(2, 'Size', 'frame', V_SIZES.map((z) => opt('size', z.key, z.name, ratioIcon(z.w, z.h), z.key.replace('x', '×'))).join(''))
+      + group(3, 'Theme', 'palette', opt('theme', 'light', 'Light', ic('sun', 20)) + opt('theme', 'dark', 'Dark', ic('moon', 20)));
+    const note = () => {
+      const o = changes(), n = d.pages.length, ex = existing();
+      if (!Object.keys(o).length) return 'Change at least one: language, size or theme.';
+      if (ex) return `${ic('check', 14)} This version already exists. Open it to edit it.`;
+      if (o.lang && st.tr === 'busy') return `<i class="spin"></i> Translating the texts…`;
+      if (o.lang && st.tr === 'none') return 'Add a Claude key in Settings → AI to translate the texts. The layout already reads ' + (o.lang === 'ar' ? 'right to left.' : 'left to right.');
+      if (o.lang && st.tr === 'error') return 'The translation didn’t answer: the texts stay as they are. Try again.';
+      return `${n > 1 ? `All ${n} pages` : 'The page'} · a new version next to this one, which stays as it is${d.pages.some((pg) => pg.live && pg.live.kind) ? ' · live data follows' : ''}`;
+    };
+    const preview = () => {
+      const o = changes(), ex = existing(), v = ex ? { ratio: getD(ex.id).ratio, pages: getD(ex.id).pages } : build(d, o), [w, h] = RATIOS[v.ratio], [ow, oh] = RATIOS[d.ratio], box = (W, H) => Math.min(118 / W, 190 / H);
+      return `<div class="vr-pvs"><div class="vr-pvb">${thumb(d.pages[0], d.ratio, ow * box(ow, oh), oh * box(ow, oh))}<span>This design</span><em>${esc(specLabel(cur))}</em></div>
+        <span class="vr-arrow">${ic('chevR', 18)}</span>
+        <div class="vr-pvb on">${thumb(v.pages[0], v.ratio, w * box(w, h), h * box(w, h))}<span>${ex ? 'Existing version' : 'New version'}</span><em>${esc(specLabel({ lang: st.lang, theme: st.theme, size: st.size }))}</em></div></div>`;
+    };
+    let root = null;
+    const paint = () => {
+      if (!root) return; const o = changes(), ex = existing(), go = Object.keys(o).length && (ex || !(o.lang && st.tr === 'busy'));
+      root.querySelector('#vrOpts').innerHTML = options();
+      root.querySelector('#vrPv').innerHTML = preview();
+      root.querySelector('#vrNote').innerHTML = note();
+      const b = root.querySelector('#vrGo'); b.disabled = !go;
+      b.innerHTML = ex ? `${ic('ext', 16)}Open this version` : `${ic('plus', 16)}${Object.keys(o).length ? 'Create ' + esc(vName('x', o).split(' · ').slice(1).join(' · ')) + ' version' : 'Create version'}`;
+    };
+    const fetchLang = (to) => {
+      if (st.lang === cur.lang) return;
+      st.tr = 'busy'; const job = st.job = translate(d, to).then((e) => { if (st.job === job) st.tr = e; }).catch(() => { if (st.job === job) st.tr = 'error'; }).finally(() => { if (st.job === job) paint(); });
+    };
+    modal(`<div class="mh"><span class="vr-hic">${ic('copy', 20)}</span><div class="grow"><h2>New version of “${esc(String(d.name || 'this design').slice(0, 60))}”</h2><p class="xs-t muted">Pick what changes. The versions stay together above the canvas.</p></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><div class="vr-grid"><div class="vr-opts" id="vrOpts"></div><div class="vr-pv"><div id="vrPv"></div><p class="vr-note" id="vrNote" aria-live="polite"></p></div></div></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="vrGo" disabled>${ic('plus', 16)}Create version</button></div>`, {
+      wide: true,
+      onMount: (bg, close) => {
+        root = bg; paint();
+        bg.addEventListener('click', async (e) => {
+          const b = e.target.closest('[data-vr]');
+          if (b) {
+            const k = b.dataset.vr, v = b.dataset.v;
+            st[k] = st[k] === v && v !== cur[k] ? cur[k] : v; // a second click on a choice goes back to this design's
+            if (k === 'lang') { if (st.lang !== cur.lang && !existing()) fetchLang(st.lang); else if (st.lang === cur.lang) { st.tr = 'idle'; st.job = null; } }
+            return paint();
+          }
+          if (e.target.closest('#vrGo')) {
+            const ex = existing(); if (ex) { close(); location.hash = '#/editor/' + ex.id; return; }
+            const o = changes(); if (!Object.keys(o).length) return;
+            if (o.lang && st.job) await st.job.catch(() => {});
+            const v = build(d, o), r = rootId(d);
+            const nd = createDesign({ name: vName(d.name, o), tpl: d.tpl || 'blank', ratio: v.ratio, source: d.source === 'Figma' ? 'Template' : d.source || 'Template', mutate: (x) => { x.pages = v.pages; x.vOf = r; x.vAt = Date.now(); } });
+            save(); close(); toast('Version created. Switch between versions above the canvas.'); location.hash = '#/editor/' + nd.id;
+          }
+        });
+      },
+    });
+  }
+  ACT.vrOpen = () => ED.d && openVersions(ED.d);
+  ACT.vrGo = (a) => { if (ED.d && a.dataset.id !== ED.d.id) location.hash = '#/editor/' + a.dataset.id; };
+  // the top bar's "Versions" button, next to Preview
+  const addBtn = () => {
+    const pv = $('[data-act=edPreview]'), sch = $('[data-act=edSchedule]'), at = pv || sch;
+    if (at && !$('[data-act=vrOpen].btn')) at.insertAdjacentHTML('beforebegin', `<button class="btn secondary sm" data-act="vrOpen" title="The same design in another language, size or theme">${ic('copy', 16)}<span class="hide-sm">Versions</span></button>`);
+  };
+  const _oeV = openEditor;
+  openEditor = function () { const r = _oeV.apply(this, arguments); addBtn(); drawBar(); return r; };
+  // the bar's thumbnails follow the edits (the current design's own tab)
+  let barT = 0; const _svV = save; save = function () { const r = _svV.apply(this, arguments); clearTimeout(barT); barT = setTimeout(() => { if (ED.d && $('#vrBar')) drawBar(); }, 600); return r; };
+  addBtn(); drawBar(); // an editor opened while the studio was starting (a link straight to a design)
+})();
 
 /* ============ unmount ============ */
 const destroy = () => {
