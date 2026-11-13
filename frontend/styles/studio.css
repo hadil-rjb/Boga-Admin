@@ -3848,3 +3848,26 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .lv-trn{display:flex;gap:8px;align-items:flex-start;margin-top:8px;padding:8px 10px;border-radius:10px;background:var(--pill);font-size:12px;line-height:1.4;color:var(--text-2)}
 .lv-trn .ic{flex:none;margin-top:1px;color:var(--text-3)}
 .lv-trn.warn{background:rgba(245,158,11,.1);color:var(--text-1)}.lv-trn.warn .ic{color:#d97706}
+
+/* ---------- Versions bar: options menu, sync state ---------- */
+.vb-w{position:relative;display:flex;flex:none}
+.vb-w:has(.vb-m) .vb-t{padding-right:38px}
+.vb-m{position:absolute;top:50%;right:6px;transform:translateY(-50%);display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--text-3);cursor:pointer;opacity:0;transition:opacity .15s,background .15s,color .15s}
+.vb-w:hover .vb-m,.vb-w.on .vb-m,.vb-m:focus-visible,.vb-m[aria-expanded=true]{opacity:1}
+.vb-m:hover,.vb-m[aria-expanded=true]{background:var(--pill);color:var(--text-1)}
+.vb-m:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (hover:none){.vb-m{opacity:1}}
+.vb-st{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:6px;background:rgba(16,185,129,.12);color:#059669}
+.vb-own{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:6px;background:rgba(245,158,11,.14);color:#B45309}
+.vb-menu{position:fixed;z-index:1000;display:flex;flex-direction:column;min-width:250px;padding:6px;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:0 12px 32px rgba(15,23,42,.16),0 2px 6px rgba(15,23,42,.06);animation:vbIn .12s ease-out}
+@keyframes vbIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.vb-mi{display:flex;align-items:flex-start;gap:10px;width:100%;padding:9px 10px;border:0;border-radius:8px;background:transparent;color:var(--text-1);cursor:pointer;text-align:left;font:inherit}
+.vb-mi svg{flex:none;margin-top:1px;color:var(--text-2)}
+.vb-mi span{display:flex;flex-direction:column;gap:2px}
+.vb-mi b{font-size:13px;font-weight:600}
+.vb-mi small{font-size:11.5px;color:var(--text-3)}
+.vb-mi:hover,.vb-mi:focus-visible{background:var(--pill);outline:none}
+.vb-mi.danger,.vb-mi.danger svg{color:#DC2626}
+.vb-mi.danger:hover,.vb-mi.danger:focus-visible{background:rgba(220,38,38,.08)}
+.vb-msep{height:1px;margin:4px 6px;background:var(--border)}
+.vr-hic.danger{background:rgba(220,38,38,.1);color:#DC2626}

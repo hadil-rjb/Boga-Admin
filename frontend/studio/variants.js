@@ -217,7 +217,8 @@ export function swapLanguage(pg, i, to, tr, fonts = {}) {
     if ((l.dir === 'rtl') !== rtl) { l.dir = rtl ? 'rtl' : 'ltr'; l.align = mirror(l.align); if (l.fa0) l.fa0 = mirror(l.fa0); }
     if (l.fd0) l.fd0 = rtl ? 'rtl' : 'ltr';
   });
-  if (pg.live && pg.live.kind) { pg.live.lang = to; pg.live.pick = null; pg.live.events = null; pg.live.at = 0; }
+  // live data in the new language; the headline picked stays (translated stories keep their ids: the same story shows)
+  if (pg.live && pg.live.kind) { pg.live.lang = to; pg.live.events = null; pg.live.at = 0; }
   return pg;
 }
 

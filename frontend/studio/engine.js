@@ -4792,6 +4792,9 @@ persist.onConflict((list) => {
   let open = null;
   list = list.filter(({ brandId, item }) => {
     const D = S.data[brandId], mine = D && D.designs.find((x) => x.id === item.id);
+    // a version that follows its original is made from it: this tab's copy (just made again) wins, no copy is kept
+    const follows = (x) => x && x.vOf && x.vSync !== false;
+    if (follows(mine) && follows(item) && mine.vOf === item.vOf) { AUTO_LIVE.delete(mine.id); return false; }
     if (!mine || AUTO_LIVE.get(mine.id) !== JSON.stringify(mine)) return true;
     const saved = JSON.parse(JSON.stringify(item)); ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved); AUTO_LIVE.delete(mine.id);
@@ -4803,6 +4806,7 @@ persist.onConflict((list) => {
     const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
     copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design').replace(/( \(conflicted copy\))+$/, '') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
     if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
+    ['vOf', 'vAt', 'vSync', 'vChange', 'vTr'].forEach((k) => delete copy[k]); // a copy stands on its own, outside the versions
     ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     // same object, the saved content: posts and the planner keep pointing at it
     Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved);
@@ -12749,7 +12753,11 @@ document.addEventListener('pointerdown', (e) => {
     return S.designs.filter((x) => x.id === r || x.vOf === r).sort((a, b) => (a.id === r ? -1 : b.id === r ? 1 : (a.vAt || 0) - (b.vAt || 0)));
   }
   /** What a design is: its language, theme and size (read from its pages, so edits by hand count) */
-  const specOf = (x) => { const dd = getD(x.id) || x; return { lang: vLangOf(dd.pages || []), theme: vThemeOf(dd.pages || []), size: dd.ratio }; };
+  const specOf = (x) => {
+    const dd = getD(x.id) || x, sp = { lang: vLangOf(dd.pages || []), theme: vThemeOf(dd.pages || []), size: dd.ratio };
+    if (dd.vOf && dd.vSync !== false && dd.vChange && dd.vChange.lang) sp.lang = dd.vChange.lang; // a linked version is the language it was made in (its live texts may still be loading)
+    return sp;
+  };
   const specLabel = (sp) => `${LANG[sp.lang] || sp.lang} · ${sizeName(sp.size)} · ${THEME[sp.theme] || sp.theme}`;
   const sameSpec = (a, b) => a.lang === b.lang && a.theme === b.theme && a.size === b.size;
 
@@ -12760,11 +12768,14 @@ document.addEventListener('pointerdown', (e) => {
     if (fam.length < 2 || ED.d.pages.some((pg) => pg.poster)) { if (bar) { bar.remove(); st.classList.remove('has-vb'); ED.fit && fitZoom(); } return; }
     const r = rootId(ED.d);
     const tab = (x) => {
-      const dd = getD(x.id), sp = specOf(x), on = x.id === ED.d.id, [w, h] = RATIOS[ensureRatio(dd.ratio)] || [1080, 1080], k = Math.min(34 / w, 34 / h);
-      return `<button type="button" class="vb-t${on ? ' on' : ''}" role="tab" aria-selected="${on}" data-act="vrGo" data-id="${x.id}" title="${esc(dd.name)}">
+      const dd = getD(x.id), sp = specOf(x), on = x.id === ED.d.id, [w, h] = RATIOS[ensureRatio(dd.ratio)] || [1080, 1080], k = Math.min(34 / w, 34 / h), og = x.id === r;
+      // a version's link to the original: it follows it, or it has edits of its own
+      const state = og ? '<em class="vb-og">Original</em>' : isSynced(x) ? `<span class="vb-st" title="Follows the original: its changes show here too">${ic('link', 12)}</span>` : '<em class="vb-own" title="Edited on its own: changes to the original don’t show here">Own edits</em>';
+      return `<div class="vb-w${on ? ' on' : ''}"><button type="button" class="vb-t${on ? ' on' : ''}" role="tab" aria-selected="${on}" data-act="vrGo" data-id="${x.id}" title="${esc(dd.name)}">
         <span class="vb-th">${dd.pages && dd.pages[0] ? thumb(dd.pages[0], dd.ratio, w * k, h * k) : ''}</span>
-        <span class="vb-tx"><b>${sp.lang === 'ar' ? 'العربية' : 'English'}${x.id === r ? '<em class="vb-og">Original</em>' : ''}</b>
-          <small><span class="vb-sz">${ratioIcon(...(RATIOS[ensureRatio(sp.size)] || [1080, 1080]))}${esc(sizeName(sp.size))}</span><span class="vb-th2">${ic(sp.theme === 'dark' ? 'moon' : 'sun', 12)}${THEME[sp.theme] || sp.theme}</span></small></span></button>`;
+        <span class="vb-tx"><b>${sp.lang === 'ar' ? 'العربية' : 'English'}${state}</b>
+          <small><span class="vb-sz">${ratioIcon(...(RATIOS[ensureRatio(sp.size)] || [1080, 1080]))}${esc(sizeName(sp.size))}</span><span class="vb-th2">${ic(sp.theme === 'dark' ? 'moon' : 'sun', 12)}${THEME[sp.theme] || sp.theme}</span></small></span></button>
+        ${og ? '' : `<button type="button" class="vb-m" data-act="vrMenu" data-id="${x.id}" aria-label="Version options" aria-haspopup="menu" title="Options">${ic('more', 16)}</button>`}</div>`;
     };
     const html = `<span class="vb-l">${ic('copy', 15)}<span>Versions</span></span><div class="vb-ts" role="tablist" aria-label="Versions of this design">${fam.map(tab).join('')}</div>
       <button type="button" class="vb-add" data-act="vrOpen" title="New version: another language, size or theme" aria-label="New version">${ic('plus', 16)}</button>`;
@@ -12838,7 +12849,11 @@ document.addEventListener('pointerdown', (e) => {
             const o = changes(); if (!Object.keys(o).length) return;
             if (o.lang && st.job) await st.job.catch(() => {});
             const v = build(d, o), r = rootId(d);
-            const nd = createDesign({ name: vName(d.name, o), tpl: d.tpl || 'blank', ratio: v.ratio, source: d.source === 'Figma' ? 'Template' : d.source || 'Template', mutate: (x) => { x.pages = v.pages; x.vOf = r; x.vAt = Date.now(); } });
+            const rootD = getD(r) || d, want = { lang: st.lang, theme: st.theme, size: st.size }, rs = specOf(rootD);
+            // what it changes from the original (versions follow the original, whichever design it was made from)
+            const vChange = { ...(want.lang !== rs.lang ? { lang: want.lang } : {}), ...(want.theme !== rs.theme ? { theme: want.theme } : {}), ...(want.size !== rs.size ? { size: want.size } : {}) };
+            const follows = d.id === r || isSynced(d);
+            const nd = createDesign({ name: vName(d.name, o), tpl: d.tpl || 'blank', ratio: v.ratio, source: d.source === 'Figma' ? 'Template' : d.source || 'Template', mutate: (x) => { x.pages = v.pages; x.vOf = r; x.vAt = Date.now(); x.vChange = vChange; x.vSync = follows; if (vChange.lang) x.vTr = trFor(d, vChange.lang); } });
             save(); close(); toast('Version created. Switch between versions above the canvas.'); location.hash = '#/editor/' + nd.id;
           }
         });
@@ -12846,7 +12861,110 @@ document.addEventListener('pointerdown', (e) => {
     });
   }
   ACT.vrOpen = () => ED.d && openVersions(ED.d);
-  ACT.vrGo = (a) => { if (ED.d && a.dataset.id !== ED.d.id) location.hash = '#/editor/' + a.dataset.id; };
+  ACT.vrGo = (a) => { closeMenu(); if (ED.d && a.dataset.id !== ED.d.id) location.hash = '#/editor/' + a.dataset.id; };
+
+  /* ---------- versions follow their original: when it changes, the linked versions are made again from it ---------- */
+  const isSynced = (v) => !!(v && v.vOf && v.vSync !== false);
+  /** What a version changes from its original (stored when it was made; else read from both designs) */
+  function changeOf(v, root) {
+    if (v.vChange) return v.vChange;
+    const a = specOf(root), b = specOf(v);
+    return { ...(a.lang !== b.lang ? { lang: b.lang } : {}), ...(a.theme !== b.theme ? { theme: b.theme } : {}), ...(a.size !== b.size ? { size: b.size } : {}) };
+  }
+  /** The translations a version uses, kept with it (so following the original needs no new translation after a reload) */
+  const trFor = (d, lang) => Object.fromEntries(vTexts(d.pages, lang).filter((t) => TRC.has(lang + '|' + t.text)).map((t) => [t.text, TRC.get(lang + '|' + t.text)]));
+  const seedTr = (v, lang) => Object.entries(v.vTr || {}).forEach(([k, val]) => { if (!TRC.has(lang + '|' + k)) TRC.set(lang + '|' + k, val); });
+  /** The original as its versions follow it: its layers and settings, not what live data writes in it (headlines, their size) */
+  const LIVE_OUT = ['text', 'size', 'h', 'hidden', 'fu', 'dir', 'align', 'font', 'runs', 'rt', 'feedHid'];
+  const sigOf = (d) => d.ratio + JSON.stringify(d.pages.map((pg) => ({
+    bg: pg.bg, live: pg.live ? { ...pg.live, events: 0, feed: 0, at: 0, err: 0, tk: 0 } : 0,
+    layers: pg.layers.map((l) => { if (!l.feed) return l; const x = { ...l }; LIVE_OUT.forEach((k) => delete x[k]); if (l.flow) delete x.y; if (l.feed === '@image') delete x.fill; return x; }),
+  })));
+  /** A version made again keeps the stories it already shows (same feed, language and picks): no flash of the original's language while they reload */
+  function keepLive(old, pages) {
+    const feedMap = (ls) => { const m = new Map(), n = {}; ls.forEach((l) => { if (l.feed) m.set(l.feed + '#' + (n[l.feed] = (n[l.feed] || 0) + 1), l); }); return m; };
+    pages.forEach((pg, i) => {
+      const op = old[i], a = pg.live, b = op && op.live;
+      if (!a || !b || a.kind !== b.kind || a.lang !== b.lang || JSON.stringify(a.pick || null) !== JSON.stringify(b.pick || null)) return;
+      ['events', 'feed', 'at', 'tk'].forEach((k) => { if (b[k] != null) a[k] = b[k]; });
+      const om = feedMap(op.layers || []);
+      feedMap(pg.layers).forEach((l, k) => {
+        const o = om.get(k); if (!o) return;
+        LIVE_OUT.forEach((f) => { if (f in o) l[f] = o[f]; else delete l[f]; });
+        if (l.flow) l.y = o.y; if (l.feed === '@image') l.fill = o.fill;
+      });
+    });
+  }
+  const SIG = new Map(); // original id → what its versions were last made from
+  let syncing = 0;
+  /** Makes the original's linked versions again (each in its language, size and theme); force: even when nothing changed */
+  async function propagate(root, force) {
+    const vs = S.designs.filter((x) => x.vOf === root.id && isSynced(x)); if (!vs.length) return 0;
+    const sig = sigOf(root); if (!force && SIG.get(root.id) === sig) return 0; SIG.set(root.id, sig);
+    syncing++;
+    try {
+      for (const v of vs) {
+        const o = changeOf(v, root);
+        if (o.lang) { seedTr(v, o.lang); await translate(root, o.lang).catch(() => {}); }
+        const b = build(root, o); keepLive(v.pages || [], b.pages);
+        v.pages = b.pages; v.ratio = b.ratio; v.vChange = o; if (o.lang) v.vTr = trFor(root, o.lang); v.upd = 'Just now'; v.at = Date.now();
+        if (ED.d === v) { ED.pi = Math.min(ED.pi, v.pages.length - 1); ED.sel = null; ED.ms = []; edAll(); }
+      }
+      _svV(); drawBar();
+    } finally { syncing--; }
+    return vs.length;
+  }
+  let propT = 0;
+  const schedule = (d) => { clearTimeout(propT); propT = setTimeout(() => { if (!syncing) propagate(d).then((n) => { if (n) toast(`${n} version${n > 1 ? 's' : ''} updated from the original`); }); }, 1500); };
+  // an edit by hand on a linked version: it gets its own edits (and stops following the original), said once
+  const _touchV = touch;
+  touch = function () {
+    const r = _touchV.apply(this, arguments), d = ED.d;
+    if (d && isSynced(d) && !syncing) { d.vSync = false; toast('This version now has its own edits: changes to the original no longer show here. Re-link it from its ⋯ menu.'); drawBar(); }
+    return r;
+  };
+
+  /* ---------- a version's ⋯ menu: follow the original or not, delete ---------- */
+  let menu = null;
+  function closeMenu() { if (menu) { document.querySelectorAll('.vb-m[aria-expanded=true]').forEach((x) => x.setAttribute('aria-expanded', 'false')); menu.remove(); menu = null; removeEventListener('pointerdown', outside, true); removeEventListener('keydown', escKey, true); } }
+  const outside = (e) => { if (menu && !menu.contains(e.target) && !e.target.closest('[data-act=vrMenu]')) closeMenu(); };
+  const escKey = (e) => { if (e.key === 'Escape' && menu) { e.stopPropagation(); closeMenu(); } };
+  ACT.vrMenu = (a) => {
+    const open = menu && menu.dataset.id === a.dataset.id; closeMenu(); if (open) return;
+    const v = getD(a.dataset.id); if (!v) return;
+    const item = (act, icon, label, sub, cls = '') => `<button type="button" role="menuitem" class="vb-mi ${cls}" data-act="${act}" data-id="${v.id}">${ic(icon, 16)}<span><b>${label}</b>${sub ? `<small>${sub}</small>` : ''}</span></button>`;
+    menu = document.createElement('div'); menu.className = 'vb-menu'; menu.setAttribute('role', 'menu'); menu.dataset.id = v.id;
+    menu.innerHTML = (isSynced(v)
+      ? item('vrUnlink', 'unlock', 'Stop following the original', 'Edit this version on its own')
+      : item('vrRelink', 'link', 'Follow the original again', 'Its own edits are replaced by the original’s'))
+      + '<span class="vb-msep"></span>' + item('vrDel', 'trash', 'Delete version', '', 'danger');
+    document.body.append(menu); a.setAttribute('aria-expanded', 'true');
+    const r = a.getBoundingClientRect(), w = menu.offsetWidth;
+    menu.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px'; menu.style.top = r.bottom + 6 + 'px';
+    addEventListener('pointerdown', outside, true); addEventListener('keydown', escKey, true);
+    const f = menu.querySelector('button'); f && f.focus();
+  };
+  ACT.vrUnlink = (a) => { closeMenu(); const v = getD(a.dataset.id); if (!v) return; v.vSync = false; save(); drawBar(); toast('This version no longer follows the original'); };
+  ACT.vrRelink = async (a) => {
+    closeMenu(); const v = getD(a.dataset.id), root = v && getD(v.vOf); if (!v) return;
+    if (!root) return toast('The original was deleted: this version can’t follow it');
+    v.vSync = true; drawBar(); toast('Following the original again…');
+    await propagate(root, true); toast('This version follows the original again');
+  };
+  ACT.vrDel = (a) => {
+    closeMenu(); const v = getD(a.dataset.id); if (!v || !canEdit()) return;
+    const n = S.posts.filter((p) => p.d === v.id).length, sp = specOf(v);
+    modal(`<div class="mh"><span class="vr-hic danger">${ic('trash', 20)}</span><div class="grow"><h2>Delete this version?</h2><p class="xs-t muted">The ${esc(({ en: 'English', ar: 'Arabic' })[sp.lang] || sp.lang)} · ${esc(sizeName(sp.size))} · ${esc(THEME[sp.theme] || sp.theme)} version. The original and the other versions stay.</p></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><div class="row" style="gap:14px;align-items:center">${thumb(v.pages[0], v.ratio, 70, 100)}<p class="sm-t grow">“${esc(v.name)}” is removed for everyone. This can’t be undone.</p></div>${n ? `<div class="note warn" style="margin-top:12px">${ic('alert', 16)}<span>${n} planned post${n > 1 ? 's use' : ' uses'} this version and will be removed too.</span></div>` : ''}</div>
+      <div class="mf"><button class="btn secondary" data-close>Keep it</button><button class="btn danger" id="vrDelGo">${ic('trash', 16)}Delete version</button></div>`, {
+      onMount: (bg, close) => bg.querySelector('#vrDelGo').addEventListener('click', () => {
+        const open = ED.d && ED.d.id === v.id, back = getD(v.vOf) ? v.vOf : (family(v).find((x) => x.id !== v.id) || {}).id;
+        S.designs = S.designs.filter((x) => x.id !== v.id); S.posts = S.posts.filter((p) => p.d !== v.id);
+        save(); close(); toast('Version deleted');
+        if (open) location.hash = back ? '#/editor/' + back : '#/studio'; else drawBar();
+      }),
+    });
+  };
   // the top bar's "Versions" button, next to Preview
   const addBtn = () => {
     const pv = $('[data-act=edPreview]'), sch = $('[data-act=edSchedule]'), at = pv || sch;
@@ -12855,8 +12973,15 @@ document.addEventListener('pointerdown', (e) => {
   const _oeV = openEditor;
   openEditor = function () { const r = _oeV.apply(this, arguments); addBtn(); drawBar(); return r; };
   // the bar's thumbnails follow the edits (the current design's own tab)
-  let barT = 0; const _svV = save; save = function () { const r = _svV.apply(this, arguments); clearTimeout(barT); barT = setTimeout(() => { if (ED.d && $('#vrBar')) drawBar(); }, 600); return r; };
+  let barT = 0; const _svV = save;
+  save = function () {
+    const r = _svV.apply(this, arguments); clearTimeout(barT); barT = setTimeout(() => { if (ED.d && $('#vrBar')) drawBar(); }, 600);
+    const d = ED.d; if (d && !d.vOf && !syncing && S.designs.some((x) => x.vOf === d.id && isSynced(x))) schedule(d); // the original changed: its versions follow
+    return r;
+  };
+  { const _oeS = openEditor; openEditor = function () { const r = _oeS.apply(this, arguments); closeMenu(); const d = ED.d; if (d && !d.vOf && !SIG.has(d.id)) SIG.set(d.id, sigOf(d)); return r; }; }
   addBtn(); drawBar(); // an editor opened while the studio was starting (a link straight to a design)
+  if (ED.d && !ED.d.vOf && !SIG.has(ED.d.id)) SIG.set(ED.d.id, sigOf(ED.d));
 })();
 
 /* ============ unmount ============ */

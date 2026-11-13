@@ -88,7 +88,7 @@ describe('language', () => {
     swapLanguage(pg, 0, 'ar', new Map([['0:title', 'الذهب يسجل رقما قياسيا']]), { arabic: 'Tajawal' });
     expect(byId(pg, 'title')).toMatchObject({ text: 'الذهب يسجل رقما قياسيا', dir: 'rtl', align: 'right', font: 'Tajawal' });
     expect(byId(pg, 'foot').align).toBe('right');
-    expect(pg.live).toMatchObject({ lang: 'ar', pick: null });
+    expect(pg.live).toMatchObject({ lang: 'ar', pick: ['n1'] }); // the same story, translated
   });
 });
 
