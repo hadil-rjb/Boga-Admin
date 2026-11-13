@@ -32,6 +32,7 @@ describe("Figma import: layer tree", () => {
     expect(card.ct).toBeUndefined(); // the page is not a frame: nothing to follow
     expect(byName(out, "Title")).toMatchObject({ pid: card.id, stc: true });
     expect(byName(out, "Body")).toMatchObject({ pid: card.id, gr: true });
+    expect(byName(out, "Brand").ah).toBeUndefined(); // a fixed text box stays fixed
     expect(out.rasters).toEqual([]);
   });
 
@@ -152,14 +153,14 @@ describe("Figma import: styles", () => {
             { type: "BACKGROUND_BLUR", visible: true, radius: 40 },
           ],
         },
-        text("1:2", "Quote", at(100, 500, 400, 40), { style: { fontFamily: "Inter", fontSize: 20, italic: true, textDecoration: "UNDERLINE" } }),
+        text("1:2", "Quote", at(100, 500, 400, 40), { textAutoResize: "HEIGHT", style: { fontFamily: "Inter", fontSize: 20, italic: true, textDecoration: "UNDERLINE" } }),
       ],
     });
     expect(byName(out, "Card")).toMatchObject({
       type: "rect", r: 32, rs: [32, 32, 0, 0], stroke: "#FF0000", sw: 2, sa: "outside", sd: "dash", sts: [{ c: "#000000", w: 2, a: "outside", d: "dash" }],
       shx: 0, shy: 8, shb: 24, shs: 2, sha: 0.2, fxs: [{ k: "inner", x: 0, y: 1, b: 0, c: "#FFFFFF", o: 0.5 }], bbl: 20,
     });
-    expect(byName(out, "Quote")).toMatchObject({ it: true, ul: true });
+    expect(byName(out, "Quote")).toMatchObject({ it: true, ul: true, ah: true });
     expect(out.rasters).toEqual([]);
   });
 

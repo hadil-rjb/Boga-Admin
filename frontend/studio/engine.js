@@ -7567,6 +7567,25 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     });
     return Math.min(n, 10);
   }
+  /* ---------- news topics: per brand and language (brand.newsTopics), suggested from what the brand does ---------- */
+  const TOPIC_SETS = [
+    [/crypto|bitcoin|blockchain|web3|token/i, { en: ['bitcoin', 'ethereum', 'crypto', 'stablecoin', 'crypto etf'], ar: ['بيتكوين', 'إيثريوم', 'العملات المشفرة'] }],
+    [/trad|forex|\bfx\b|broker|cfd|invest|financ|bank|wealth|market|bourse|capital|asset|fund|stock/i, { en: ['gold', 'silver', 'oil', 'forex', 'dollar', 'fed', 'inflation', 'stocks', 'bitcoin'], ar: ['الذهب', 'الفضة', 'النفط', 'الدولار', 'الفيدرالي', 'التضخم', 'الأسهم', 'بيتكوين'] }],
+    [/real estate|property|propert|immobil|housing/i, { en: ['real estate', 'housing', 'mortgage', 'interest rates'], ar: ['العقارات', 'الرهن العقاري', 'أسعار الفائدة'] }],
+    [/tech|software|saas|\bai\b|digital|design|agency|startup/i, { en: ['ai', 'software', 'startups', 'apple', 'google'], ar: ['الذكاء الاصطناعي', 'التكنولوجيا', 'الشركات الناشئة'] }],
+  ];
+  /** Topics that fit the brand (its industry, description and tagline): the first set that matches */
+  const suggestTopics = (b, lang) => {
+    const txt = [b && b.name, b && b.industry, b && b.about, b && b.tagline].filter(Boolean).join(' ');
+    const hit = TOPIC_SETS.find(([re]) => re.test(txt));
+    return hit ? hit[1][lang === 'ar' ? 'ar' : 'en'] : [];
+  };
+  /** The brand's news topics in a language: its own list (empty: every headline), else the suggestion */
+  const topicsOf = (lang) => { const b = brand(), t = b && b.newsTopics && b.newsTopics[lang === 'ar' ? 'ar' : 'en']; return Array.isArray(t) ? t : suggestTopics(b, lang); };
+  /** News slides whose headlines were chosen for other topics than the brand's now are due at once */
+  const topicsKey = (cfg) => topicsOf(cfg.lang).join(',');
+  const topicsMoved = (pg) => pg.live.kind === 'news' && pg.live.tk !== topicsKey(pg.live);
+  const setTopics = (lang, list) => { const b = brand(); b.newsTopics = { ...(b.newsTopics || {}), [lang === 'ar' ? 'ar' : 'en']: list }; };
   async function dataFor(cfg, n) {
     if (cfg.kind === 'price') {
       while (cfg.symbols.length < n) cfg.symbols.push([...PRESET.keys()].find((s) => !cfg.symbols.includes(s)));
@@ -7575,8 +7594,19 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const st = r.quotes.find((q) => q.stale);
       return { items: syms.map((s) => by.get(s) || null), source: (r.quotes[0] || {}).source, missing: r.missing || [], stale: st ? st.at : null };
     }
-    const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.q || '', lang: cfg.lang, limit: '20' }), 120_000);
+    const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.q || '', lang: cfg.lang, limit: '20', topics: topicsOf(cfg.lang).join(',') }), 120_000);
     return { items: r.items, source: r.source, requested: r.requested, missing: [], stale: r.stale ? r.fetchedAt : null };
+  }
+  /**
+   * A picture layer that can show a headline's photo: a picture inside the slide, shown as it is. Not a background that
+   * reaches past the slide, a texture that is masked, blended or faded (Figma imports have those), a mask, or a locked layer.
+   */
+  function photoSpot(pg, l) {
+    const W = (pg.layers[0] && pg.layers[0].w) || 1080, H = (pg.layers[0] && pg.layers[0].h) || 1350;
+    if (!l || l.type === 'text' || l.type === 'group' || l.mask || l.icon || l.hidden || l.locked || !/url\(/.test(String(l.fill || l.feedFill0 || ''))) return false;
+    if ((l.blend && l.blend !== 'normal') || (l.op ?? 1) < 0.9) return false;
+    if (l.x < -2 || l.y < -2 || l.x + l.w > W + 2 || l.y + l.h > H + 2 || l.w * l.h > W * H * 0.85) return false;
+    return !masksOf(treeOf(pg), l).length && l.w * l.h > W * W * 0.12;
   }
   /** The headlines on the slide: the hand-picked ones, then the latest */
   function chooseNews(items, cfg, n) {
@@ -7662,6 +7692,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function apply(pg, items, cfg) {
     let changed = false; const set = (l, k, v) => { if (l[k] !== v) { l[k] = v; changed = true; } };
     const n = slots(pg), V = valuesFor(items, cfg, n), track = pg.layers.find((l) => l.name === 'Range track'), W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    // a photo linked to a layer that can't show it (a background or a masked texture, found before photoSpot): the link
+    // moves to the slide's picture, and the old layer gets its own picture back
+    pg.layers.filter((l) => l.feed === '@image' && !photoSpot(pg, l)).forEach((old) => {
+      const to = pg.layers.filter((l) => !l.feed && photoSpot(pg, l)).sort((a, b) => b.w * b.h - a.w * a.h)[0]; if (!to) return;
+      if (old.feedFill0 !== undefined) old.fill = old.feedFill0;
+      const nth = old.feedN; LAYER_KEYS.forEach((k) => delete old[k]);
+      to.feed = '@image'; if (nth) to.feedN = nth; changed = true;
+    });
     pg.layers.forEach((l) => {
       if (l.tone && cfg.kind === 'price') {
         const q = items[l.toneN || 0]; if (q) set(l, l.tone === 'fill' ? 'fill' : 'color', (q.change || q.changePct || 0) < 0 ? cfg.down : cfg.up);
@@ -7669,7 +7707,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!l.feed) return;
       if (l.feed === '@image') {
         if (l.feedFill0 === undefined) l.feedFill0 = l.fill;
-        const x = items[l.feedN || 0]; set(l, 'fill', x && x.photo ? `url('${x.photo}') center/cover no-repeat` : l.feedFill0); return;
+        // the photo takes the picture's place: the layer keeps its fit and the fills above the picture
+        const x = items[l.feedN || 0], nu = { fill: l.feedFill0 }; if (x && x.photo) swapPicture(nu, x.photo);
+        set(l, 'fill', nu.fill); return;
       }
       if (l.feed === '@pos') {
         const q = items[l.feedN || 0]; if (!q || !track || !(q.high > q.low)) return;
@@ -7685,6 +7725,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       // wide texts (titles, prices) also flip to the other side of their box so the slide reads one way
       const rtl = AR_RE.test(raw), flip = l.w >= W * 0.5 && cfg.lang !== (cfg.srcLang || 'en');
       set(l, 'dir', rtl ? 'rtl' : l.fd0 === 'rtl' ? 'ltr' : l.fd0); set(l, 'align', flip ? mirror(l.fa0) : l.fa0); set(l, 'font', rtl ? arFont(l.ff0) : l.ff0);
+      // an auto height text in an auto layout keeps its type size: its box (and the card around it) follows the text
+      const par = l.pid && pg.layers.find((p) => p.id === l.pid), grows = l.ah && par && par.al;
+      if (grows) { set(l, 'text', raw); set(l, 'size', l.fs0); l.fu = textHeight(l); return; }
       const f = fitText(l, raw); set(l, 'text', f.t); set(l, 'size', f.size); set(l, 'h', l.fh0); l.fu = Math.round(f.used || l.fh0);
       // a text that follows another one (the summary under the headline) moves up when the headline takes fewer lines
       if (l.flow) {
@@ -7693,6 +7736,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         if (above) set(l, 'y', Math.round(above.y + (above.hidden ? 0 : above.fu || above.fh0) + (l.fy0 - (above.y + above.fh0))));
       }
     });
+    // auto layout frames fit the new texts (a published post is drawn without the editor, which would do it)
+    if (pg.layers.some((l) => l.al)) syncTree(pg).forEach(() => { changed = true; });
     return changed;
   }
   /** What a slide shows, in words (the API logs it with each published post) */
@@ -7708,6 +7753,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         const r = await dataFor(cfg, slots(pg)), items = await itemsFor(pg, cfg, r);
         cfg.events = r.items.filter(Boolean).map((x) => { const { photo, ...y } = x; return y; }); // the panel's list
         cfg.feed = { source: r.source, requested: r.requested, missing: r.missing, stale: r.stale };
+        if (cfg.kind === 'news') cfg.tk = topicsKey(cfg); // the topics these headlines were chosen for
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
@@ -7798,6 +7844,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       + field('Colours', `<div class="fd-cols"><label><input type="color" id="fdUp" value="${esc(cfg.up)}"><span>Price up</span></label><label><input type="color" id="fdDown" value="${esc(cfg.down)}"><span>Price down</span></label></div><p class="lv-hint">Shapes and texts marked “follows the direction” take these colours.</p>`)
       + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])));
   }
+  /** The brand's news topics: chips to remove, a field to add, the brand's suggestions not used yet */
+  function topicsField(cfg) {
+    const b = brand(), list = topicsOf(cfg.lang), sug = suggestTopics(b, cfg.lang).filter((t) => !list.includes(t));
+    const chips = list.map((t) => `<span class="chip">${esc(t)}<button type="button" class="fig9-x" data-act="fdTopicRm" data-t="${esc(t)}" aria-label="Remove ${esc(t)}">${ic('x', 12)}</button></span>`).join('');
+    return field('Topics', `<div class="fig9-teams">${chips || '<span class="xs-t muted">Every headline</span>'}</div>
+      <input class="field sm" id="fdTopic" placeholder="${cfg.lang === 'ar' ? 'أضف موضوعًا، ثم Enter' : 'Add a topic, then Enter'}" autocomplete="off">
+      ${sug.length ? `<div class="fig9-teams">${sug.map((t) => `<button type="button" class="chip" data-act="fdTopicAdd" data-t="${esc(t)}">${ic('plus', 12)}${esc(t)}</button>`).join('')}</div>` : ''}
+      <p class="lv-hint">Only headlines about these topics, on every news slide of ${esc(b.name)}.${list.length ? '' : ' Add one to filter.'}</p>`);
+  }
   function newsSec(pg, cfg) {
     const n = slots(pg), items = cfg.events || [], on = new Set(chooseNews(items, cfg, n).map((x) => x.id));
     const list = items.length ? items.map((x) => `<button class="lv-ev ${on.has(x.id) ? 'on' : ''}" data-act="fdPick" data-id="${esc(x.id)}" aria-pressed="${on.has(x.id)}" title="${esc(x.title)}">
@@ -7808,6 +7863,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return sec('News feed', field('Source', `<select class="field sm" id="fdSrc">${srcOpts(cfg.src)}</select>`)
         + (topic ? field('Topic', `<input class="field sm" id="fdQ" value="${esc(cfg.q || '')}" placeholder="${cfg.lang === 'ar' ? 'الذهب، الدولار، النفط…' : 'gold, EUR/USD, oil…'}" autocomplete="off"><p class="lv-hint">Empty: the main market stories.${cfg.lang === 'ar' && cfg.src !== 'google' ? ' Arabic headlines come from Google News.' : ''}</p>`) : '')
         + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']]))
+        + topicsField(cfg)
         + (pg.layers.some((l) => l.feed === '@image') ? `<div class="lv-swr"><div class="grow"><b>Headline photo</b><p>Use the story's photo when it has one.</p></div>${sw(cfg.photo, 'fdPhoto', '', 'Headline photo')}</div>` : ''))
       + sec('Headlines', `<div class="lv-evs">${list}</div>`, `<span class="lv-count">${on.size} on the slide</span>${cfg.pick && cfg.pick.length ? '<button class="btn link sm lv-auto" data-act="fdAuto">Latest</button>' : '<span class="lv-tag">Latest</span>'}`);
   }
@@ -7886,6 +7942,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     fdLang: (a) => { const c = cfgNow(); if (c.lang === a.dataset.v) return; c.lang = a.dataset.v; c.pick = null; if (c.kind === 'news') fresh(c); save(); reapply(); },
     fdBLang: (a) => { ED.fdLang = a.dataset.v; edPanel(); },
     fdPhoto: () => { const c = cfgNow(); c.photo = !c.photo; save(); reapply(); },
+    fdTopicAdd: (a) => { const c = cfgNow(), t = String(a.dataset.t || '').trim().toLowerCase(); if (!t) return; setTopics(c.lang, [...topicsOf(c.lang).filter((x) => x !== t), t].slice(0, 12)); c.pick = null; fresh(c); save(); reapply(); },
+    fdTopicRm: (a) => { const c = cfgNow(); setTopics(c.lang, topicsOf(c.lang).filter((x) => x !== a.dataset.t)); c.pick = null; fresh(c); save(); reapply(); },
     fdPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
     fdAuto: () => { cfgNow().pick = null; save(); reapply(); },
     fdPick: (a) => {
@@ -7937,6 +7995,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     }
     if (t.id === 'fdUp' || t.id === 'fdDown') { c[t.id === 'fdUp' ? 'up' : 'down'] = t.value.toUpperCase(); save(); return reapply(); }
     if (t.id === 'fdSrc') { c.src = t.value; c.pick = null; fresh(c); save(); return reapply(); }
+    if (t.id === 'fdTopic') { // "gold, silver" adds both
+      const add = t.value.split(',').map((x) => x.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 40)).filter(Boolean); if (!add.length) return;
+      setTopics(c.lang, [...topicsOf(c.lang).filter((x) => !add.includes(x)), ...add].slice(0, 12)); t.value = ''; c.pick = null; fresh(c); save(); return reapply();
+    }
     if (t.id === 'fdQ') { c.q = t.value.trim().slice(0, 120); c.pick = null; fresh(c); save(); return reapply(); }
     if (t.id === 'fdEvery') { c.every = +t.value; save(); }
   });
@@ -7947,7 +8009,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const now = Date.now();
     for (const d of S.designs) {
       const pages = feedPages(d); if (!pages.length) continue;
-      if (pages.some((pg) => !pg.live.paused && now - (pg.live.at || 0) >= (pg.live.every || 5) * 60_000)) await refresh(d);
+      if (pages.some((pg) => !pg.live.paused && (topicsMoved(pg) || now - (pg.live.at || 0) >= (pg.live.every || 5) * 60_000))) await refresh(d);
       // scheduled news posts: re-send their slides when the headlines on them change (prices change all the time:
       // the API renders those right before publishing)
       const news = pages.filter((pg) => pg.live.kind === 'news' && !pg.live.paused); if (!news.length || !PUB) continue;
@@ -7962,7 +8024,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   setInterval(() => { tick(); }, 60_000);
   setTimeout(() => { tick(); }, 5000);
   const _oe24 = openEditor;
-  openEditor = function (id) { _oe24(id); const d = ED.d; if (d && feedPages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
+  openEditor = function (id) { _oe24(id); const d = ED.d; if (d && feedPages(d).some((pg) => topicsMoved(pg) || Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 
   /* ---------- reading an existing slide: is it a price alert or a news post? ---------- */
   /** What our own templates' layers show, by layer name (a slide built from them keeps the names) */
@@ -8018,7 +8080,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const props = new Map([[head.id, { feed: '{title}', fit: 1 }]]), found = ['headline'];
       const sum = texts.filter((l) => l !== head && l.y > head.y && wordsIn(tx(l)) >= 8 && (l.size || 0) < (head.size || 0)).sort((a, b) => a.y - b.y)[0];
       if (sum) { props.set(sum.id, { feed: '{summary}', fit: 1, flow: 1 }); found.push('summary'); }
-      const photos = pg.layers.filter((l) => l.type !== 'text' && live(l) && !l.icon && /url\(/.test(String(l.fill || '')) && l.w * l.h > W * W * 0.12).sort((a, b) => b.w * b.h - a.w * a.h);
+      const photos = pg.layers.filter((l) => live(l) && photoSpot(pg, l)).sort((a, b) => b.w * b.h - a.w * a.h);
       if (photos[0]) { props.set(photos[0].id, { feed: '@image' }); found.push('photo'); }
       const src = texts.find((l) => !props.has(l.id) && l.y > head.y && wordsIn(tx(l)) <= 8 && /·|•|\|| ago\b|\bmin\b|\bh\b|hours?|il y a|منذ|reuters|bloomberg|cnbc|fxstreet|marketwatch|investing/i.test(tx(l)));
       if (src) { props.set(src.id, { feed: '{source} · {ago}' }); found.push('source'); }
@@ -10051,8 +10113,28 @@ function layoutFrame(f, kids, keep) { // keep: layers being dragged, they hold t
  * 2) groups take their content's bounds, empty groups go; 3) auto layout frames place their children (innermost first).
  * Containers remember their box in _x/_y/_w/_h. Layers being dragged float (they drop into the flow on release).
  */
+/* ---------- auto height texts (v35): `ah` makes a text's height follow its content (Figma's "Auto height"), so the
+   auto layout frame around it grows and shrinks with it. Measured in the page with the text's own style, cached. ---------- */
+const textHCache = new Map();
+let textHBox = null;
+function textHeight(l) {
+  const lh = l.lh || 1.2, size = l.size || 16, w = Math.max(1, l.w);
+  const key = [l.text, l.rt, JSON.stringify(l.runs || ''), l.font, size, l.weight, lh, l.ls, w, l.it, l.up, l.dir].join('|');
+  if (textHCache.has(key)) return textHCache.get(key);
+  if (typeof document === 'undefined' || !document.body) return l.h;
+  if (!textHBox || !textHBox.isConnected) { textHBox = document.createElement('div'); textHBox.setAttribute('aria-hidden', 'true'); document.body.appendChild(textHBox); }
+  textHBox.style.cssText = `position:absolute;left:-10000px;top:0;visibility:hidden;width:${w}px;font:${l.it ? 'italic ' : ''}${l.weight || 400} ${size}px/${lh} '${l.font}',sans-serif;letter-spacing:${l.ls || 0}px;direction:${l.dir || 'ltr'};white-space:pre-wrap;word-break:break-word;${l.up ? 'text-transform:uppercase;' : ''}`;
+  textHBox.innerHTML = textHTML(l) || '&#8203;';
+  const h = Math.max(size * lh, Math.round(textHBox.getBoundingClientRect().height * 10) / 10);
+  if (textHCache.size > 500) textHCache.clear();
+  textHCache.set(key, h); return h;
+}
+// a web font that arrives later changes the measures: measure again
+try { document.fonts && document.fonts.addEventListener('loadingdone', () => { textHCache.clear(); if (typeof ED !== 'undefined' && ED.d && curP()) { syncTree(curP()); edStage(); } }); } catch (e) {}
 function syncTree(pg) {
   if (!pg || !pg.layers) return [];
+  // auto height texts first: an auto layout frame then fits them
+  pg.layers.forEach((l) => { if (l.type === 'text' && l.ah && !l.hidden) { const h = textHeight(l); if (Math.abs(h - l.h) > 0.5) l.h = h; } });
   if (pg.layers.some((l) => l.gid)) migrateGroups(pg);
   normalizeOrder(pg);
   const changed = new Set(), r2 = (v) => Math.round(v * 100) / 100;
@@ -10467,7 +10549,7 @@ function clipCss(l, frames) {
     al32Align: (b) => setAL((a) => { if (a.m !== 'between') a.m = b.dataset.m; a.c = b.dataset.c; }),
     al32Between: () => setAL((a) => { a.m = a.m === 'between' ? 'start' : 'between'; }),
     al32Hug: (b) => setAL((a) => { a[b.dataset.k] = b.dataset.v === 'hug'; }),
-    al32Child: (b) => setChild((l) => { const k = b.dataset.k; if (l[k]) delete l[k]; else l[k] = true; if (k === 'ab' && l.ab) { delete l.gr; delete l.stc; } }),
+    al32Child: (b) => setChild((l) => { const k = b.dataset.k; if (l[k]) delete l[k]; else l[k] = true; if (k === 'ab' && l.ab) { delete l.gr; delete l.stc; } if (k === 'ah' && l.ah) { l.h = textHeight(l); if (l.fh0 !== undefined) l.fh0 = l.h; } }),
   });
   document.addEventListener('input', (e) => { // gap and padding: live, committed on change (property inputs)
     const t = e.target; if (!t.dataset || !t.dataset.a32 || !t.closest('#edProps')) return;
@@ -10501,6 +10583,7 @@ function clipCss(l, frames) {
     if (!l || ED.rtab !== 'design' || !b || !b.querySelector('.ps9')) return r;
     const par = parentOf(l), after = b.querySelector('.ps9[data-sec=tree]') || b.querySelector('.ps9[data-sec=pos]'), html = [];
     if (l.type === 'frame') html.push(sec('al', 'Auto layout', alHTML(l)));
+    if (l.type === 'text') html.push(sec('ah', 'Text box', sw('al32Child', 'ah', l.ah, 'Auto height', 'The box grows with the text (and the auto layout around it)')));
     if (par && par.type === 'frame' && par.al) {
       const H = par.al.d !== 'v';
       html.push(sec('alc', 'In auto layout', (l.ab ? '' : sw('al32Child', 'gr', l.gr, H ? 'Fill width' : 'Fill height', 'Takes the room left in the ' + (H ? 'row' : 'column')) + sw('al32Child', 'stc', l.stc, H ? 'Fill height' : 'Fill width', 'Stretches across'))
@@ -10521,8 +10604,47 @@ function clipCss(l, frames) {
     const l = curL(), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; if (!ids.length) return;
     e.preventDefault(); e.stopImmediatePropagation();
     if (l && l.type === 'frame' && !l.al) return addAL(l);
+    if (cardWrap()) return;
     RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') addAL(f);
   }, true);
+  /**
+   * A card: the selection has a shape behind all the rest (a rectangle or a picture that holds every other layer). That
+   * shape becomes the auto layout frame itself (it keeps its fill, corners, strokes and effects), its padding is where
+   * the content sits in it, and it keeps its width while its height follows the content: a longer text grows the card.
+   */
+  function cardWrap() {
+    const pg = P(), T = treeOf(pg), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : [];
+    const set = new Set(ids), tops = ids.map((id) => T.byId.get(id)).filter((x) => x && !ancestorsT(T, x).some((a) => set.has(a.id)));
+    if (tops.length < 2 || new Set(tops.map((x) => x.pid || '')).size > 1) return false;
+    const L = pg.layers, inside = (a, b) => a.x >= b.x - 2 && a.y >= b.y - 2 && a.x + a.w <= b.x + b.w + 2 && a.y + a.h <= b.y + b.h + 2;
+    const bg = [...tops].sort((a, b) => L.indexOf(a) - L.indexOf(b))[0];
+    // a text counts by its lines, not its box (a box drawn taller than its text may reach past the card)
+    const seen = (x) => { const b = aabb(x); return x.type === 'text' && !x.rot ? { ...b, h: Math.min(b.h, textHeight(x)) } : b; };
+    if (!bg || !['rect', 'image'].includes(bg.type) || bg.mask || bg.rot || bg.locked || !tops.every((x) => x === bg || inside(seen(x), bg))) return false;
+    const kids = tops.filter((x) => x !== bg), seenB = kids.map(seen);
+    // padding: where the content sits in the card (by the texts' lines); the far side matches the near one, so the
+    // card keeps even margins whatever the text's length
+    const X0 = Math.min(...seenB.map((q) => q.x)), Y0 = Math.min(...seenB.map((q) => q.y)), X1 = Math.max(...seenB.map((q) => q.x + q.w)), Y1 = Math.max(...seenB.map((q) => q.y + q.h));
+    const pad = [Y0 - bg.y, bg.x + bg.w - X1, bg.y + bg.h - Y1, X0 - bg.x].map((v) => Math.max(0, Math.round(v)));
+    mutate(() => {
+      bg.type = 'frame'; bg.name = bg.name || 'Card'; kids.forEach((k) => { k.pid = bg.id; });
+      // what it holds comes right after it, in the order it's seen (top to bottom, or left to right)
+      const blocks = kids.map((k) => [k, ...descendantsT(T, k.id)]);
+      blocks.forEach((b) => b.forEach((x) => L.splice(L.indexOf(x), 1)));
+      L.splice(L.indexOf(bg) + 1, 0, ...blocks.flat());
+      syncTree(pg);
+    });
+    addAL(bg);
+    mutate(() => {
+      const a = bg.al; if (!a) return;
+      if (a.d === 'v') { a.hw = false; a.hh = true; pad[2] = pad[0]; } else { a.hh = false; a.hw = true; pad[1] = pad[3]; } // a column keeps its width, a row its height
+      a.p = pad;
+      treeOf(pg).kids.get(bg.id).forEach((k) => { if (k.type === 'text') { k.ah = true; if (a.d === 'v') k.stc = true; } }); // texts take the card's width and grow down
+      syncTree(pg); ED.ms = []; ED.sel = bg.id;
+    });
+    toast('Card in auto layout: it grows and shrinks with its content');
+    return true;
+  }
 })();
 
 /* ============ v33 · components (brand library, instances with overrides) and shared styles ============ */

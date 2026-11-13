@@ -1,5 +1,5 @@
 import { BadGatewayException, BadRequestException, Injectable } from "@nestjs/common";
-import { news, NEWS_SOURCES, NewsSource, photo, quotes, validSymbol } from "./markets";
+import { news, NEWS_SOURCES, NewsSource, parseTopics, photo, quotes, validSymbol } from "./markets";
 
 @Injectable()
 export class MarketsService {
@@ -13,12 +13,12 @@ export class MarketsService {
     }
   }
 
-  async news(q: { source?: string; q?: string; lang?: string; limit?: string }) {
+  async news(q: { source?: string; q?: string; lang?: string; limit?: string; topics?: string }) {
     const source = (NEWS_SOURCES as readonly string[]).includes(q.source || "") ? (q.source as NewsSource) : "fxstreet";
     const lang = q.lang === "ar" ? "ar" : "en";
     const limit = Math.min(30, Math.max(1, Number(q.limit) || 12));
     try {
-      return await news(source, String(q.q || "").trim().slice(0, 120), lang, limit);
+      return await news(source, String(q.q || "").trim().slice(0, 120), lang, limit, parseTopics(q.topics));
     } catch (e: any) {
       throw new BadGatewayException(e?.message || "The news feed didn't answer");
     }
