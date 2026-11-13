@@ -477,7 +477,7 @@ const TranslateSchema = z.object({
 });
 
 /** Translates the fixed texts and templates of a slide; {placeholders}, line breaks, numbers and brand names stay as they are */
-export async function translateWithClaude(apiKey: string, input: { items: { id: string; text: string }[]; to: "ar" | "en"; brand?: string }) {
+export async function translateWithClaude(apiKey: string, input: { items: { id: string; text: string }[]; to: "ar" | "en"; brand?: string; what?: "slide" | "news" }) {
   const client = new Anthropic({ apiKey, timeout: 90_000, maxRetries: 1 });
   const lang = input.to === "ar" ? "Arabic (Modern Standard Arabic, the wording financial news in the Gulf uses)" : "English";
   const res = await client.beta.messages.create({
@@ -486,7 +486,10 @@ export async function translateWithClaude(apiKey: string, input: { items: { id: 
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
     output_config: { effort: "low", format: zodOutputFormat(TranslateSchema) },
-    system: `You translate the texts of an economic calendar social media post into ${lang}. They are short design texts: titles, labels and templates.
+    system: input.what === "news"
+      ? `You translate financial news headlines and their one-paragraph summaries into ${lang}, for social media posts of a trading brand. Write them the way financial news in the region reads: natural, accurate, the same facts and figures, no additions.
+Rules: keep numbers, percentages, currency codes, tickers, company and person names as they are known in ${lang} (or as written when they have no usual form); keep it about as short as the original so it fits the same space. Return one item per input id.`
+      : `You translate the texts of an economic calendar social media post into ${lang}. They are short design texts: titles, labels and templates.
 Rules: keep every {placeholder} exactly as written (same braces and name) and put it where the grammar of the target language needs it; keep line breaks (\\n) in the same places; keep numbers, currency codes, GMT/UTC, websites, handles${input.brand ? ` and the brand name "${input.brand}"` : ""} unchanged; keep it as short as the original so it fits the same space; use the usual financial terms (Actual, Forecast, Previous, High impact…). Return one item per input id.`,
     messages: [{ role: "user", content: JSON.stringify(input.items) }],
   });
