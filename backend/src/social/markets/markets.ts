@@ -221,18 +221,55 @@ async function feed(source: NewsSource, q: string, lang: "en" | "ar") {
   return items;
 }
 
+/** "gold, silver,Trading" → ["gold", "silver", "trading"]: at most 12 topics of 1 to 40 characters, no duplicates */
+export function parseTopics(raw?: string): string[] {
+  const out: string[] = [];
+  String(raw || "").split(/[,\n]/).map((t) => t.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40)).forEach((t) => { if (t && !out.includes(t)) out.push(t); });
+  return out.slice(0, 12);
+}
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Does a headline talk about one of the topics? Latin words match whole words (with a plural s: "stock" finds "stocks",
+ * "gold" doesn't find "golden"); Arabic and other scripts match anywhere, as their words take prefixes ("الذهب", "بالذهب").
+ */
+export function aboutTopics(item: { title: string; summary?: string }, topics: string[]) {
+  if (!topics.length) return true;
+  const text = `${item.title} ${item.summary || ""}`.toLowerCase();
+  return topics.some((t) => (/^[\x00-\x7f]+$/.test(t) ? new RegExp(`(^|[^a-z0-9])${escRe(t)}(e?s)?($|[^a-z0-9])`, "i").test(text) : text.includes(t)));
+}
+/** Google News search for the topics: "gold" OR "silver" … */
+const topicQuery = (topics: string[]) => topics.map((t) => (/\s/.test(t) ? `"${t}"` : t)).join(" OR ");
+
 /**
  * Latest headlines, newest first. A feed that blocks this server (some answer 403 to data centres)
  * hands over to the other feeds, then Google News; when none answers, the last good headlines are served.
+ * With topics, only headlines about them are kept; when the feed has too few, Google News adds stories on them.
  */
-export async function news(source: NewsSource, q: string, lang: "en" | "ar", limit: number) {
+export async function news(source: NewsSource, q: string, lang: "en" | "ar", limit: number, topics: string[] = []) {
   const want: NewsSource = source === "google" || lang === "ar" ? "google" : source;
   const order: NewsSource[] = [want, ...(["fxstreet", "cnbc", "marketwatch", "google"] as NewsSource[]).filter((x) => x !== want && lang === "en")];
   if (lang === "ar" && !order.includes("google")) order.push("google");
-  const errors: string[] = [], key = `${want}|${q}|${lang}`;
+  const errors: string[] = [], key = `${want}|${q}|${lang}|${topics.join(",")}`;
+  // on Google News the topics are the search itself (a typed topic first)
+  const gq = [q, topics.length ? topicQuery(topics) : ""].filter(Boolean).join(" OR ");
   for (const src of order) {
     try {
-      const items = (await feed(src, src === "google" ? q : "", lang)).slice(0, limit);
+      let items = await feed(src, src === "google" ? gq : "", lang);
+      if (topics.length) {
+        items = items.filter((x) => aboutTopics(x, topics));
+        if (items.length < limit && src !== "google") {
+          // few stories on them: the other news feeds first (their stories have photos), then a Google News search
+          const seen = new Set(items.map((x) => x.title.toLowerCase())), add = (list: NewsItem[]) => list.filter((x) => {
+            const k = x.title.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true;
+          });
+          const others = (["fxstreet", "cnbc", "marketwatch"] as NewsSource[]).filter((x) => x !== src);
+          const more = await Promise.all(others.map((o) => feed(o, "", lang).then((l) => l.filter((x) => aboutTopics(x, topics))).catch(() => [] as NewsItem[])));
+          items = [...items, ...add(more.flat())].sort((a, b) => b.at.localeCompare(a.at));
+          if (items.length < limit) items = [...items, ...add(await feed("google", topicQuery(topics), lang).catch(() => [] as NewsItem[]))];
+        }
+        if (!items.length) throw new Error(`no headlines about ${topics.join(", ")}`);
+      }
+      items = items.slice(0, limit);
       if (src === want) lastNews.set(key, { at: Date.now(), items, source: src });
       return { items, source: src, requested: want, errors, fetchedAt: new Date().toISOString() };
     } catch (e: any) { errors.push(`${src}: ${e?.message || e}`); }

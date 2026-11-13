@@ -526,6 +526,8 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
       op: r3(n.opacity ?? 1), ...blendOf(n), ...(va ? { va } : {}),
       text: chars, size: r1(size), weight: s.fontWeight || 400, font, color, align, lh: r3(lh), ls: r1((s.letterSpacing || 0) * k),
       ...(s.italic ? { it: true } : {}), ...(s.textDecoration === "UNDERLINE" ? { ul: true } : {}),
+      // Figma's auto height (and auto width) texts: the box follows the text, so an auto layout around it fits it
+      ...(n.textAutoResize === "HEIGHT" || n.textAutoResize === "WIDTH_AND_HEIGHT" || n.layoutSizingVertical === "HUG" ? { ah: true } : {}),
       ...(rtl ? { dir: "rtl" } : {}), ...S.props, ...E.props, ...(pid ? { pid } : {}),
     });
     // mixed styles (Figma: characterStyleOverrides + styleOverrideTable) → runs over the text: [{ s, e, ...style }]

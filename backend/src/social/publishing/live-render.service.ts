@@ -141,7 +141,7 @@ export class LiveRenderService implements OnModuleDestroy {
         const u = new URL(path, "http://x"), q = u.searchParams, opt = (k: string) => q.get(k) || undefined;
         if (u.pathname === "/social/markets/quotes") return this.markets.quotes(opt("symbols"));
         if (u.pathname === "/social/markets/photo") return this.markets.photo(opt("url"));
-        if (u.pathname === "/social/markets/news") return this.markets.news({ source: opt("source"), q: opt("q"), lang: opt("lang"), limit: opt("limit") });
+        if (u.pathname === "/social/markets/news") return this.markets.news({ source: opt("source"), q: opt("q"), lang: opt("lang"), limit: opt("limit"), topics: opt("topics") });
         return this.calendar.events({ date: q.get("date") || "", tz: opt("tz"), countries: opt("countries"), source: opt("source") });
       });
       await page.goto(`${this.studioUrl}/social-media/render`, { waitUntil: "load", timeout: RENDER_TIMEOUT_MS });
