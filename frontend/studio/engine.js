@@ -294,7 +294,12 @@ const brand = () => S.brands.find((b) => b.id === S.active) || S.brands[0];
 const kitOf = (b) => ({ name: b.name, colors: b.colors.map((c) => c.hex), fonts: [b.fonts.heading, b.fonts.body], logo: b.name });
 const initialsOf = (n) => { const w = String(n || '').trim().split(/\s+/).filter(Boolean); if (!w.length) return '?'; return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase(); };
 const shade = (h, k) => { const n = parseInt(h.slice(1), 16), f = (v) => Math.max(0, Math.min(255, Math.round(v * (1 + k)))); return '#' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(f).map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase(); };
-const cloneLayers = (ls) => ls.map((l) => ({ ...JSON.parse(JSON.stringify(l)), id: uid() }));
+/** Copies of layers with new ids; a copied container's content follows it (children name their container in `pid`) */
+const cloneLayers = (ls) => {
+  const m = new Map(), out = ls.map((l) => { const c = JSON.parse(JSON.stringify(l)); m.set(c.id, (c.id = uid())); return c; });
+  out.forEach((c) => { if (c.pid && m.has(c.pid)) c.pid = m.get(c.pid); });
+  return out;
+};
 /** Old layer id → new one, in every id and id-keyed entry of a value ("t:<id>" translation keys too) */
 const remapIds = (v, m) => {
   if (Array.isArray(v)) return v.map((x) => remapIds(x, m));
@@ -309,9 +314,28 @@ const liveForTemplate = (live) => {
 };
 /** A template's slide as a fresh page: new layer ids, its Live data following them */
 const pageFromTemplate = (t) => reIdPage(JSON.parse(JSON.stringify({ bg: t.bg || '#0b1220', layers: t.layers || [], ...(t.live ? { live: t.live } : {}) })));
-/** A copied page gets new layer ids; its Live data settings, which name layers by id, follow them */
+/**
+ * Children whose container id is gone (pages and brand templates copied before containers were re-linked: the copy gave
+ * the containers new ids but kept the old ones in `pid`). The list keeps each container's content right after it, so the
+ * container a missing id stood for is the nearest container above that hasn't been matched yet.
+ */
+function repairPids(L) {
+  const ids = new Set(L.map((l) => l.id)), found = new Map(), used = new Set(), open = [];
+  L.forEach((l) => { if (l.pid && ids.has(l.pid)) used.add(l.pid); }); // containers still linked keep their content
+  L.forEach((l) => {
+    if (l.pid && !ids.has(l.pid)) {
+      if (!found.has(l.pid)) { for (let i = open.length - 1; i >= 0; i--) if (!used.has(open[i].id)) { found.set(l.pid, open[i].id); used.add(open[i].id); break; } }
+      if (found.has(l.pid)) l.pid = found.get(l.pid); else delete l.pid;
+    }
+    if (l.type === 'frame' || l.type === 'group') open.push(l);
+  });
+  return L;
+}
+/** A copied page gets new layer ids; its containers' content (pid) and its Live data settings, which name layers by id, follow them */
 function reIdPage(pg) {
-  const m = new Map(); (pg.layers || []).forEach((l) => { const n = uid(); m.set(l.id, n); l.id = n; });
+  const L = repairPids(pg.layers || []), m = new Map();
+  L.forEach((l) => { const n = uid(); m.set(l.id, n); l.id = n; });
+  L.forEach((l) => { if (l.pid && m.has(l.pid)) l.pid = m.get(l.pid); });
   if (pg.live) pg.live = remapIds(pg.live, m);
   return pg;
 }
