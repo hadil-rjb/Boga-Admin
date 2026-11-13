@@ -97,7 +97,11 @@ function fitPage(layers, from, to) {
   layers.forEach((l) => {
     if (l.name === 'Background' && l.locked) { Object.assign(l, { x: 0, y: 0, w: tw, h: th }); return; }
     l.x = r1(l.x * k + ox); l.y = r1(l.y * k + oy); l.w = r1(l.w * k); l.h = r1(l.h * k);
-    ['size', 'ls', 'r', 'sw', 'shb', 'shy'].forEach((p) => { if (l[p]) l[p] = r1(l[p] * k); });
+    ['size', 'ls', 'r', 'sw', 'shb', 'shy', 'shx', 'shs', 'bl', 'bbl'].forEach((p) => { if (l[p]) l[p] = r1(l[p] * k); });
+    if (Array.isArray(l.rs)) l.rs = l.rs.map((v) => r1(v * k));
+    (l.fxs || []).forEach((e) => ['x', 'y', 'b', 's'].forEach((p) => { if (e[p]) e[p] = r1(e[p] * k); }));
+    (l.sts || []).forEach((e) => { if (e.w) e.w = r1(e.w * k); });
+    if (l.al) { l.al.g = r1((l.al.g || 0) * k); if (l.al.p) l.al.p = l.al.p.map((v) => r1(v * k)); }
   });
   return layers;
 }
@@ -363,6 +367,18 @@ function aiCaption(d) {
   if (d.tpl === 'calendar') return CAPS[Math.floor(Math.random() * CAPS.length)] + tags;
   return (d.name.split(' · ')[0] + '. ' + (b.tagline || '')).trim() + (b.cta ? '\n' + b.cta : '') + tags;
 }
+/** A layer showing a picture (an image layer, or a shape, vector or frame filled with one); masks don't count */
+const isPicture = (l) => !!l && !l.mask && l.type !== 'text' && l.type !== 'group' && /url\(/.test(String(l.fill || ''));
+/**
+ * Replaces the picture a layer shows, like Figma's image swap: the layer keeps its box, corners, mask, effects, image
+ * adjustments and the fills above the picture; the new picture fills it the same way (cover, or contain for a fitted one).
+ */
+function swapPicture(l, src, fit) {
+  const parts = String(l.fill || '').split(/,(?![^(]*\))/), old = parts.find((p) => /url\(/.test(p));
+  const contain = fit != null ? fit === 'contain' : /contain/.test(old || '');
+  const nu = `url(${src}) center/${contain ? 'contain' : 'cover'} no-repeat`;
+  l.fill = old ? parts.map((p) => (p === old ? nu : p.trim())).join(', ') : nu;
+}
 function readImage(file, max, cb) {
   const r = new FileReader();
   r.onload = () => {
@@ -387,13 +403,23 @@ function makeBrand(o) {
 
 
 /* ---------- Poster rendering (shared by thumbnails + editor) ---------- */
+/**
+ * Corners of different sizes (Figma's independent corners): `rs` = [top-left, top-right, bottom-right, bottom-left], used
+ * while the largest one is still `r` (changing the radius in the panel makes the corners equal again). Null: one radius.
+ */
+const radiiOf = (l) => (l && Array.isArray(l.rs) && l.rs.length === 4 && Math.abs(Math.max(...l.rs) - (l.r || 0)) < 0.05 ? l.rs : null);
+/** A rounded rectangle with one radius per corner, as SVG path data (each radius kept within the box) */
+function rrectD(x, y, w, h, rs) {
+  const m = Math.min(w / 2, h / 2), [a, b, c, d] = rs.map((v) => Math.max(0, Math.min(v, m)));
+  return `M${x + a} ${y}H${x + w - b}${b ? `A${b} ${b} 0 0 1 ${x + w} ${y + b}` : ''}V${y + h - c}${c ? `A${c} ${c} 0 0 1 ${x + w - c} ${y + h}` : ''}H${x + d}${d ? `A${d} ${d} 0 0 1 ${x} ${y + h - d}` : ''}V${y + a}${a ? `A${a} ${a} 0 0 1 ${x + a} ${y}` : ''}Z`;
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 function lstyle(l) {
   let s = `left:${l.x}px;top:${l.y}px;width:${l.w}px;height:${l.h}px;opacity:${l.op ?? 1};transform:rotate(${l.rot || 0}deg);`;
   if (l.hidden) s += 'display:none;';
   if (l.type === 'text') s += `color:${l.color};font:${l.weight} ${l.size}px/${l.lh} '${l.font}',sans-serif;text-align:${l.align};letter-spacing:${l.ls || 0}px;direction:${l.dir || 'ltr'};`;
   else if (l.type !== 'path') {
-    s += `background:${l.fill};border-radius:${l.type === 'ellipse' ? '50%' : (l.r || 0) + 'px'};`;
+    s += `background:${l.fill};border-radius:${l.type === 'ellipse' ? '50%' : radiiOf(l) ? radiiOf(l).map((v) => v + 'px').join(' ') : (l.r || 0) + 'px'};`;
     if (l.stroke && l.sd && (l.sa || 'inside') === 'inside') s += `border:${l.sw || 3}px ${l.sd === 'dot' ? 'dotted' : 'dashed'} ${l.stroke};box-sizing:border-box;`; // other strokes: paintCss
   }
   return s;
@@ -408,7 +434,10 @@ function svgGrad(g, id, w, h) {
   }
   if (g.kind === 'radial') { // ellipse (or circle) reaching the farthest corner, centered "at x% y%" (default 50% 50%)
     const at = /at\s+(-?[\d.]+)%\s+(-?[\d.]+)%/.exec(g.head || ''), cx = at ? (w * at[1]) / 100 : w / 2, cy = at ? (h * at[2]) / 100 : h / 2;
-    const fx = Math.max(cx, w - cx), fy = Math.max(cy, h - cy), circle = /circle/.test(g.head || ''), rx = circle ? Math.hypot(fx, fy) : fx * Math.SQRT2, ry = circle ? rx : fy * Math.SQRT2;
+    const fx = Math.max(cx, w - cx), fy = Math.max(cy, h - cy), circle = /circle/.test(g.head || '');
+    // an explicit size ("50% 50% at …", "300px 200px at …", Figma imports), else the CSS default: the farthest corner
+    const sz = /^\s*(?:ellipse\s+)?(-?[\d.]+)(%|px)\s+(-?[\d.]+)(%|px)/.exec(g.head || ''), len = (v, u, d) => (u === '%' ? (d * v) / 100 : +v);
+    const rx = sz ? Math.max(0.01, len(sz[1], sz[2], w)) : circle ? Math.hypot(fx, fy) : fx * Math.SQRT2, ry = sz ? Math.max(0.01, len(sz[3], sz[4], h)) : circle ? rx : fy * Math.SQRT2;
     return `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${rx}" gradientTransform="translate(${cx} ${cy}) scale(1 ${ry / rx}) translate(${-cx} ${-cy})">${stops}</radialGradient>`;
   }
   return '';
@@ -4067,7 +4096,7 @@ Object.assign(IC, {
       const fit = /contain/.test(l.fill);
       b.insertAdjacentHTML('beforeend', `<div class="grad7"><span class="label" style="margin:0">Adjust image</span><div class="chips">${Object.keys(PRE).map((k) => `<button class="chip" data-act="imgPre" data-k="${k}">${k}</button>`).join('')}</div>`
         + [['bri', 'Brightness', 50, 150], ['con', 'Contrast', 50, 150], ['sat', 'Saturation', 0, 200]].map(([k, n, a, z]) => `<label class="lab">${n}<input type="range" min="${a}" max="${z}" data-f="${k}" value="${l[k] ?? 100}"></label>`).join('')
-        + `<div class="seg"><button class="${!fit ? 'on' : ''}" data-act="imgFit" data-v="fill">Fill</button><button class="${fit ? 'on' : ''}" data-act="imgFit" data-v="fit">Fit</button></div><label class="btn secondary sm" style="cursor:pointer">${ic('upload', 16)}Replace image<input type="file" accept="image/*" id="rpl" hidden></label></div>`);
+        + `<div class="seg"><button class="${!fit ? 'on' : ''}" data-act="imgFit" data-v="fill">Fill</button><button class="${fit ? 'on' : ''}" data-act="imgFit" data-v="fit">Fit</button></div><label class="btn secondary sm" style="cursor:pointer" title="Or drop an image on the picture: it keeps its size, crop, mask and effects">${ic('upload', 16)}Replace image<input type="file" accept="image/*" id="rpl" hidden></label></div>`);
     }
   }
   function layersExtra() {
@@ -4116,8 +4145,8 @@ Object.assign(IC, {
     else if (t.dataset.f) { if (!ED.pre) ED.pre = snap(); l[t.dataset.f] = +t.value; refreshL(l); }
   });
   document.addEventListener('change', (e) => {
-    const t = e.target; if (t.id !== 'rpl' || !t.files[0]) return; const l = curL(); if (!l) return; const r = new FileReader();
-    r.onload = () => mutate(() => { l.fill = `url(${r.result}) center/cover`; }); r.readAsDataURL(t.files[0]);
+    const t = e.target; if (t.id !== 'rpl' || !t.files[0]) return; const l = curL(); if (!l) return;
+    readImage(t.files[0], 2160, (src) => mutate(() => swapPicture(l, src)));
   });
 
   /* ---------- layer rows and slides: drag to reorder ---------- */
@@ -5452,7 +5481,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return `<div class="im8"><div class="row sp"><span class="label" style="margin:0">Image adjustments</span>${any ? `<button type="button" class="btn link sm" data-act="fxReset">Reset</button>` : ''}</div>
       <div class="chips">${Object.keys(FXPRE).map((k) => `<button type="button" class="chip${fxSig(fx) === fxSig(FXPRE[k]) ? ' on' : ''}" data-act="fxPre" data-k="${k}">${k}</button>`).join('')}</div>
       ${FXK.map(([k, n]) => `<label class="fx8" title="Double-click to reset"><span>${n}</span><input type="range" class="ctr ${k}" min="-100" max="100" data-fx="${k}" value="${fx[k] || 0}"><b>${fx[k] || 0}</b></label>`).join('')}
-      <label class="btn secondary sm" style="cursor:pointer">${ic('upload', 16)}Replace image<input type="file" accept="image/*" id="rpl" hidden></label></div>`;
+      <label class="btn secondary sm" style="cursor:pointer" title="Or drop an image on the picture: it keeps its size, crop, mask and effects">${ic('upload', 16)}Replace image<input type="file" accept="image/*" id="rpl" hidden></label></div>`;
   }
 
   const _ep16 = edProps;
@@ -5919,7 +5948,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* Items that can be dragged: the same buttons that add on click. Dropping places the new layer at the pointer;
      colors, fonts and suggestions dropped on a layer change that layer. */
   const SRC = 'button[data-act="edShape"],button[data-act="edText"],button[data-act="edSugg"],button[data-act="edImg"],button[data-act="edLogo"],button[data-act="edAsset"],button[data-act="edFont"],button[data-act="edColor"],button[data-act="edTpl"],button[data-act="edClip"],button[data-act="edIcon"],button[data-act="vShape"],button[data-act="edCombo"],[data-act="edBTpl"],[data-act="edTpl"]';
-  const ONTO = new Set(['edColor', 'edFont', 'edSugg']); // act on the layer under the pointer when there is one
+  const ONTO = new Set(['edColor', 'edFont', 'edSugg', 'edAsset', 'edLogo']); // act on the layer under the pointer when there is one
+  const SWAP = new Set(['edAsset', 'edLogo']); // pictures: dropped on a picture, they replace it (Alt: added as a new layer)
   const PLACE = new Set(['edShape', 'edText', 'edSugg', 'edLogo', 'edAsset', 'edClip', 'edIcon', 'vShape']);
   const clamp9 = (n, a, b) => Math.max(a, Math.min(b, n));
   let drag = null, hold = null, ghost = null, hl = null, suppress = 0;
@@ -5984,7 +6014,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     e.preventDefault();
     ghost.style.transform = `translate(${e.clientX + 12}px,${e.clientY + 12}px)`;
     const inside = overStage(e.clientX, e.clientY), st = $('#edScroll'); st && st.classList.toggle('dnd9-over', inside);
-    const l = inside && ONTO.has(drag.act) ? layerAt(e.clientX, e.clientY) : null;
+    const l0 = inside && ONTO.has(drag.act) ? layerAt(e.clientX, e.clientY) : null, l = l0 && SWAP.has(drag.act) && (e.altKey || !isPicture(l0)) ? null : l0;
     setHl(l ? elOf(l.id) : null);
     if (inside) {
       if (drag.act === 'edText' || drag.act === 'edSugg' || drag.act === 'edShape') { /* new layer: show where it lands */ }
@@ -6001,6 +6031,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const pt = canvasPoint(e.clientX, e.clientY); if (!pt) return;
     const [W, H] = dim(), act = d.act, fn = ACT[act]; if (!fn) return;
     const target = ONTO.has(act) ? layerAt(e.clientX, e.clientY) : null;
+    if (SWAP.has(act) && target && isPicture(target) && !e.altKey) { // the picture under the pointer takes the brand image or logo
+      const b = brand(), id = d.btn.dataset.id, src = act === 'edAsset' ? (b.assets.find((x) => x.id === id) || {}).src : ((b.logos.find((x) => x.id === id) || b.logos[0]) || {}).src;
+      if (!src) return toast('This logo has no picture to place');
+      mutate(() => { swapPicture(target, src, act === 'edLogo' ? 'contain' : null); ED.sel = target.id; ED.ms = []; });
+      return toast('Image replaced (hold Alt to add it as a new layer)');
+    }
     if (act === 'edColor') {
       if (target) { ED.sel = target.id; ED.ms = []; return fn(d.btn); }
       return ACT.edBg(d.btn); // dropped on the page itself: background color
@@ -6033,12 +6069,16 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   /* image files dragged from the desktop onto the canvas */
   const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
-  document.addEventListener('dragover', (e) => { if (!hasFiles(e) || !document.body.classList.contains('in-editor') || !overStage(e.clientX, e.clientY)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; $('#edScroll').classList.add('dnd9-over'); });
-  document.addEventListener('dragleave', (e) => { if (e.target === $('#edScroll')) $('#edScroll').classList.remove('dnd9-over'); });
+  /** The picture a dropped image would replace (none while Alt is held: the image is added as a new layer) */
+  const swapTarget = (e) => { const l = !e.altKey && layerAt(e.clientX, e.clientY); return l && isPicture(l) ? l : null; };
+  document.addEventListener('dragover', (e) => { if (!hasFiles(e) || !document.body.classList.contains('in-editor') || !overStage(e.clientX, e.clientY)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; $('#edScroll').classList.add('dnd9-over'); const t = swapTarget(e); setHl(t ? elOf(t.id) : null); });
+  document.addEventListener('dragleave', (e) => { if (e.target === $('#edScroll')) { $('#edScroll').classList.remove('dnd9-over'); clearHl(); } });
   document.addEventListener('drop', (e) => {
     if (!hasFiles(e) || !document.body.classList.contains('in-editor') || !overStage(e.clientX, e.clientY)) return;
-    e.preventDefault(); $('#edScroll').classList.remove('dnd9-over');
+    e.preventDefault(); $('#edScroll').classList.remove('dnd9-over'); clearHl();
     const f = [...e.dataTransfer.files].find((x) => /^image\//.test(x.type)); if (!f) return toast('Drop an image file (PNG, JPG or SVG)');
+    const target = swapTarget(e);
+    if (target) return readImage(f, 2160, (src) => { mutate(() => { swapPicture(target, src); ED.sel = target.id; ED.ms = []; }); toast('Image replaced (hold Alt to add it as a new layer)'); });
     const pt = canvasPoint(e.clientX, e.clientY), [W, H] = dim(); ED.dropAt = pt && { x: clamp9(pt.x, 0, W), y: clamp9(pt.y, 0, H) };
     const inp = document.createElement('input'); inp.type = 'file'; inp.id = 'upl'; inp.hidden = true; document.body.appendChild(inp);
     const dt = new DataTransfer(); dt.items.add(f); inp.files = dt.files; inp.dispatchEvent(new Event('change', { bubbles: true }));
@@ -9751,11 +9791,11 @@ function zoomToSelection() {
       };
       const body = [], TT = treeOf(pg), clipIds = new Map();
       /** A frame's clip (page coordinates, rounded corners kept), made once */
-      const frameClip = (f) => { if (!clipIds.has(f.id)) { const id = nid(); defs.push(`<clipPath id="${id}"><rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}"${f.r ? ` rx="${Math.min(f.r, f.w / 2, f.h / 2)}"` : ''}/></clipPath>`); clipIds.set(f.id, id); } return clipIds.get(f.id); };
+      const frameClip = (f) => { if (!clipIds.has(f.id)) { const id = nid(); defs.push(`<clipPath id="${id}">${radiiOf(f) ? `<path d="${rrectD(f.x, f.y, f.w, f.h, radiiOf(f))}"/>` : `<rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}"${f.r ? ` rx="${Math.min(f.r, f.w / 2, f.h / 2)}"` : ''}/>`}</clipPath>`); clipIds.set(f.id, id); } return clipIds.get(f.id); };
       const bgF = await fills(String(pg.bg || '#ffffff'), W, H); bgF.forEach((f) => body.push(`<rect width="${W}" height="${H}" fill="${esc(f)}"/>`));
       for (const l of pg.layers) {
         const anc = ancestorsT(TT, l); // containers: hidden ones hide their content, opacity multiplies, frames clip
-        if (l.hidden || l.type === 'group' || anc.some((a) => a.hidden)) continue;
+        if (l.hidden || l.type === 'group' || l.mask || anc.some((a) => a.hidden)) continue;
         const aop = anc.reduce((k, a) => k * (a.op ?? 1), 1), clips = anc.filter((a) => a.type === 'frame' && !a.noclip).reverse().map(frameClip);
         const w = l.w, h = l.h, [sx, sy] = flips(l), tf = [`translate(${l.x} ${l.y})`]; let inner = '', extra = '';
         if (l.rot) tf.push(`rotate(${l.rot} ${w / 2} ${h / 2})`);
@@ -9769,7 +9809,8 @@ function zoomToSelection() {
         else if (l.type === 'path') inner = await RT.inlineUrls(pathHTML(l, { shadow: false })); // same drawing as the canvas; shadows: the group's filter else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
         else {
           const ell = l.type === 'ellipse', rr = Math.min(l.r || 0, w / 2, h / 2), ov = RT.ovCss ? RT.ovCss(l) : '';
-          const shape = (f, inset, more = '') => (ell ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2 - inset}" ry="${h / 2 - inset}" fill="${esc(f)}"${more}/>` : `<rect x="${inset}" y="${inset}" width="${w - 2 * inset}" height="${h - 2 * inset}"${rr ? ` rx="${Math.max(0, rr - inset)}"` : ''} fill="${esc(f)}"${more}/>`);
+          const rs = !ell && radiiOf(l);
+          const shape = (f, inset, more = '') => (ell ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2 - inset}" ry="${h / 2 - inset}" fill="${esc(f)}"${more}/>` : rs ? `<path d="${rrectD(inset, inset, w - 2 * inset, h - 2 * inset, rs.map((v) => Math.max(0, v - inset)))}" fill="${esc(f)}"${more}/>` : `<rect x="${inset}" y="${inset}" width="${w - 2 * inset}" height="${h - 2 * inset}"${rr ? ` rx="${Math.max(0, rr - inset)}"` : ''} fill="${esc(f)}"${more}/>`);
           (await fills((ov ? ov + ', ' : '') + String(l.fill || 'none'), w, h)).forEach((f) => { inner += shape(f, 0); });
           // strokes, bottom first: inside (inset by half the width), centered on the edge, or outside (outset)
           [...strokesOf(l)].reverse().forEach((k) => {
@@ -9777,7 +9818,9 @@ function zoomToSelection() {
             inner += shape('none', k.a === 'inside' ? k.w / 2 : k.a === 'outside' ? -k.w / 2 : 0, ` stroke="${esc(k.c)}" stroke-width="${k.w}"${dash}`);
           });
         }
-        if (inner) body.push(clips.map((c) => `<g clip-path="url(#${c})">`).join('') + `<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>` + '</g>'.repeat(clips.length));
+        // masks over the layer (page coordinates): alpha masks, or luminance ones
+        const mks = masksOf(TT, l).map((m) => { const id = nid(), sh = maskShape(m); defs.push(...sh.defs, `<mask id="${id}" maskUnits="userSpaceOnUse" x="${-W}" y="${-H}" width="${W * 3}" height="${H * 3}" style="mask-type:${m.mt === 'lum' ? 'luminance' : 'alpha'}"><g transform="${maskPlace(m)}">${sh.el}</g></mask>`); return id; });
+        if (inner) body.push(clips.map((c) => `<g clip-path="url(#${c})">`).join('') + mks.map((m) => `<g mask="url(#${m})">`).join('') + `<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>` + '</g>'.repeat(clips.length + mks.length));
       }
       const fonts = RT.fontCSS ? await RT.fontCSS(posterHTML(pg)) : '';
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
@@ -9957,7 +10000,7 @@ function constrain(k, O, N) {
 }
 /**
  * Auto layout (frame.al = { d: 'h' | 'v', g: gap, p: [top, right, bottom, left], m: main 'start' | 'center' | 'end' | 'between',
- * c: cross 'start' | 'center' | 'end', hw / hh: hug width / height }): places the frame's children in a row or a column.
+ * c: cross 'start' | 'center' | 'end', hw / hh: hug width / height, rv: reversed order }): places the frame's children in a row or a column.
  * A child can fill the main axis (gr), stretch across (stc) or stay out of the flow (ab: positioned by its constraints).
  */
 function layoutFrame(f, kids, keep) { // keep: layers being dragged, they hold their slot but aren't moved
@@ -9970,7 +10013,7 @@ function layoutFrame(f, kids, keep) { // keep: layers being dragged, they hold t
   if (grows.length) { const fixed = kids.filter((k) => !k.gr).reduce((s, k) => s + k[MS], 0), each = Math.max(1, (innerM - fixed - gap * Math.max(0, n - 1)) / grows.length); grows.forEach((k) => { k[MS] = each; }); }
   const sum = kids.reduce((s, k) => s + k[MS], 0), g = between && !grows.length ? (innerM - sum) / (n - 1) : gap, rest = innerM - sum - g * Math.max(0, n - 1);
   let cur = f[M] + m0 + (grows.length || between ? 0 : a.m === 'center' ? rest / 2 : a.m === 'end' ? rest : 0);
-  kids.forEach((k) => {
+  (a.rv ? [...kids].reverse() : kids).forEach((k) => { // rv: the row or column runs from the last layer to the first
     if (keep && keep.has(k.id)) { cur += k[MS] + g; return; }
     if (k.stc) k[CS] = Math.max(1, innerC);
     k[M] = cur; cur += k[MS] + g;
@@ -10049,13 +10092,57 @@ function clipPoly(subj, clip) {
   return out;
 }
 /** CSS clip-path for a layer inside clipping frames (frames don't rotate: their boxes intersect into one rectangle) */
+/* ---------- masks (v34, like Figma): a layer with `mask` draws nothing; it masks the layers above it in its container
+   (and their content) by its shape and alpha. mt: 'lum' masks by luminance, 'vec' by the shape alone. ---------- */
+/** The masks over a layer: for it and each container above it, the nearest visible mask below it among its siblings */
+function masksOf(T, l) {
+  const out = [];
+  for (let n = l, k = 0; n && k < 64; n = n.pid && T.byId.get(n.pid), k++) {
+    if (n.mask) continue;
+    const sibs = T.kids.get(n.pid || '') || [];
+    for (let j = sibs.indexOf(n) - 1; j >= 0; j--) if (sibs[j].mask && !sibs[j].hidden) { out.push(sibs[j]); break; }
+  }
+  return out;
+}
+let maskSeq = 0;
+/** A mask layer's shape in its own box (0 0 w h) as SVG: { defs, el } (its fill's alpha masks; an outline mask: white) */
+function maskShape(m) {
+  const w = Math.max(1, m.w), h = Math.max(1, m.h), defs = [], id = () => 'mk' + ++maskSeq;
+  let f = m.mt === 'vec' ? '#FFFFFF' : String(m.fill || '#FFFFFF').trim();
+  if (/gradient\(/i.test(f)) { const g = RT.gParse && RT.gParse(f), i = id(), def = g && svgGrad(g, i, w, h); if (def) { defs.push(def); f = `url(#${i})`; } else f = (/#[0-9a-f]{3,8}|rgba?\([^)]*\)/i.exec(f) || ['#FFFFFF'])[0]; }
+  else if (/url\(/i.test(f)) { const u = /url\((['"]?)(.*?)\1\)/i.exec(f), i = id(); defs.push(`<pattern id="${i}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(u ? u[2] : '')}" width="${w}" height="${h}" preserveAspectRatio="${/contain/.test(f) ? 'xMidYMid meet' : /100% 100%/.test(f) ? 'none' : 'xMidYMid slice'}"/></pattern>`); f = `url(#${i})`; }
+  else if (!f || f === 'transparent' || f === 'none') f = '#FFFFFF';
+  const op = (m.op ?? 1) < 1 ? ` fill-opacity="${m.op}"` : '', rs = radiiOf(m), fr = m.fr === 'evenodd' ? ' fill-rule="evenodd"' : '';
+  const el = m.type === 'ellipse' ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2}" ry="${h / 2}" fill="${esc(f)}"${op}/>`
+    : m.type === 'path' ? `<path d="${PATH.toD(pathSegs(m))}" fill="${esc(f)}"${op}${fr}/>`
+    : rs ? `<path d="${rrectD(0, 0, w, h, rs)}" fill="${esc(f)}"${op}/>`
+    : `<rect width="${w}" height="${h}"${m.r ? ` rx="${Math.min(m.r, w / 2, h / 2)}"` : ''} fill="${esc(f)}"${op}/>`;
+  return { defs, el };
+}
+/** Page → a mask's own box: the transform that places its shape on the page (SVG, about its box) */
+const maskPlace = (m) => `translate(${m.x} ${m.y}) rotate(${m.rot || 0} ${m.w / 2} ${m.h / 2})${m.fx === true || m.fy === true ? ` translate(${m.w / 2} ${m.h / 2}) scale(${m.fx === true ? -1 : 1} ${m.fy === true ? -1 : 1}) translate(${-m.w / 2} ${-m.h / 2})` : ''}`;
+/** CSS that masks a layer by the masks over it: each mask drawn as an SVG image in the layer's own box (rotation and flips undone) */
+function maskCss(l, ms) {
+  if (!ms || !ms.length) return '';
+  const w = Math.max(1, l.w), h = Math.max(1, l.h), cx = l.x + w / 2, cy = l.y + h / 2, sx = l.fx === true ? -1 : 1, sy = l.fy === true ? -1 : 1;
+  const imgs = ms.map((m) => {
+    const { defs, el } = maskShape(m), mcx = m.x + m.w / 2, mcy = m.y + m.h / 2;
+    const tf = `translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) rotate(${-(l.rot || 0)}) translate(${mcx - cx} ${mcy - cy}) rotate(${m.rot || 0}) scale(${m.fx === true ? -1 : 1} ${m.fy === true ? -1 : 1}) translate(${-m.w / 2} ${-m.h / 2})`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}<g transform="${tf}">${el}</g></svg>`;
+    // single quotes: this CSS goes into style="…" attributes, where a double quote would end the attribute (and the mask)
+    return `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}')`;
+  }).join(','), rep = (v) => ms.map(() => v).join(','), modes = ms.map((m) => (m.mt === 'lum' ? 'luminance' : 'alpha')).join(',');
+  return `-webkit-mask-image:${imgs};-webkit-mask-size:${rep('100% 100%')};-webkit-mask-repeat:${rep('no-repeat')};mask-image:${imgs};mask-size:${rep('100% 100%')};mask-repeat:${rep('no-repeat')};mask-mode:${modes};${ms.length > 1 ? 'mask-composite:intersect;' : ''}`;
+}
 function clipCss(l, frames) {
   let x0 = -Infinity, y0 = -Infinity, x1 = Infinity, y1 = Infinity;
   frames.forEach((f) => { x0 = Math.max(x0, f.x); y0 = Math.max(y0, f.y); x1 = Math.min(x1, f.x + f.w); y1 = Math.min(y1, f.y + f.h); });
   if (x1 <= x0 || y1 <= y0) return 'clip-path:inset(50%);';
   const r2 = (n) => Math.round(n * 100) / 100, own = /^polygon\((.*)\)$/.exec(l.clip || '');
   if (!own && !l.rot && l.fx !== true && l.fy !== true) {
-    const f = frames[0], round = frames.length === 1 && f.r ? ` round ${Math.min(f.r, f.w / 2, f.h / 2)}px` : '';
+    // the clip is rounded like the frame that makes it (a mask frame inside its parent frame: a circle, a rounded card)
+    const f = frames.find((a) => (a.r || radiiOf(a)) && Math.abs(a.x - x0) < 0.5 && Math.abs(a.y - y0) < 0.5 && Math.abs(a.x + a.w - x1) < 0.5 && Math.abs(a.y + a.h - y1) < 0.5);
+    const rr = f && radiiOf(f), round = f ? ` round ${rr ? rr.map((v) => Math.min(v, f.w / 2, f.h / 2) + 'px').join(' ') : Math.min(f.r, f.w / 2, f.h / 2) + 'px'}` : '';
     return `clip-path:inset(${r2(y0 - l.y)}px ${r2(l.x + l.w - x1)}px ${r2(l.y + l.h - y1)}px ${r2(x0 - l.x)}px${round});`;
   }
   let poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([px, py]) => toBox(l, px, py));
@@ -10080,8 +10167,11 @@ function clipCss(l, frames) {
   /* ---------- drawing: hidden / locked / faded containers pass it down, frames clip ---------- */
   const _ls31 = lstyle;
   lstyle = function (l) {
-    let s = _ls31(l); if (!l || !l.pid) return s;
-    const T = RT.tree || (ED.d ? treeOf(P()) : null); if (!T) return s;
+    let s = _ls31(l); if (!l) return s;
+    if (l.mask) s += 'visibility:hidden;'; // a mask draws nothing: it shapes the layers above it
+    const T = RT.tree || (ED.d ? treeOf(P()) : null);
+    if (l.mkCss) s += l.mkCss; else if (T && !l.mask) s += maskCss(l, masksOf(T, l)); // mkCss: baked for a layer drawn alone (video)
+    if (!l.pid || !T) return s;
     const anc = ancestorsT(T, l); if (!anc.length) return s;
     if (anc.some((a) => a.hidden)) return s + 'display:none;';
     const op = anc.reduce((k, a) => k * (a.op ?? 1), l.op ?? 1); if (op !== (l.op ?? 1)) s += `opacity:${Math.round(op * 1000) / 1000};`;
@@ -10140,6 +10230,7 @@ function clipCss(l, frames) {
   RT.wrapSel = wrapSel; // Shift A: a new auto layout frame (v32)
   Object.assign(ACT, {
     msGroup: () => wrapSel('group'), msUngroup: unwrapSel, t31Frame: () => wrapSel('frame'), t31Unwrap: unwrapSel,
+    t34Mask: () => { const l = curL(); l && !isContainer(l) && mutate(() => { if (l.mask) { delete l.mask; delete l.mt; } else l.mask = true; }); },
     t31Clip: () => { const l = curL(); l && l.type === 'frame' && mutate(() => { if (l.noclip) delete l.noclip; else l.noclip = true; }); },
     t31Fold: (a) => { ED.t31Closed = ED.t31Closed || new Set(); const id = a.dataset.id; if (ED.t31Closed.has(id)) ED.t31Closed.delete(id); else ED.t31Closed.add(id); edProps(); },
     t31Tool: () => (FRM.on ? frameTool(false) : frameTool(true)),
@@ -10196,6 +10287,11 @@ function clipCss(l, frames) {
   edProps = function () {
     const r = _ep31.apply(this, arguments), l = curL(), b = $('#edProps .body');
     if (ED.rtab === 'layers') { layersTree(); return r; }
+    if (l && !isContainer(l) && ED.rtab === 'design' && b && l.type !== 'text') { // Figma's "Use as mask"
+      const ms = document.createElement('section'); ms.className = 'ps9'; ms.dataset.sec = 'mask';
+      ms.innerHTML = `<div class="ps9-b"><div class="row sp"><span class="sm-t">Use as mask</span><button class="switch ${l.mask ? 'on' : ''}" data-act="t34Mask" aria-label="Use as mask"></button></div><p class="xs-t muted">${l.mask ? 'Masks the layers above it in its group, by its shape and transparency.' : 'Shows the layers above it in its group only inside this shape.'}</p></div>`;
+      const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(ms) : b.prepend(ms);
+    }
     if (!isContainer(l) || ED.rtab !== 'design' || !b) return r;
     b.querySelectorAll('.rot9').forEach((x) => x.remove());
     if (l.type === 'group') b.querySelectorAll('.ps9[data-sec=fill],.ps9[data-sec=stroke],.ps9[data-sec=fx],.ps9[data-sec=image],.ps9[data-sec=shape]').forEach((x) => x.remove());
@@ -10217,7 +10313,7 @@ function clipCss(l, frames) {
       const c = isContainer(l), open = c && !closed.has(l.id), kids = c ? (T.kids.get(l.id) || []).length : 0;
       rows.push(`<div class="lr31${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}" draggable="true" data-act="edPick" data-id="${l.id}" style="--d:${depth}">`
         + (c && kids ? `<button type="button" class="lr31-tw${open ? ' open' : ''}" data-act="t31Fold" data-id="${l.id}" aria-label="${open ? 'Collapse' : 'Expand'}">${ic('chevD', 12)}</button>` : '<i class="lr31-tw"></i>')
-        + `${ic(TI(l), 15, 'faint')}<span class="nm" data-id="${l.id}" title="Double-click to rename">${esc(l.name || l.type)}</span>`
+        + `${ic(TI(l), 15, 'faint')}<span class="nm" data-id="${l.id}" title="Double-click to rename">${esc(l.name || l.type)}</span>${l.mask ? '<span class="xs-t muted" style="margin-left:auto;padding-right:6px">Mask</span>' : ''}`
         + `<button class="tg" data-act="edVis" data-id="${l.id}" title="Show / hide">${ic(l.hidden ? 'eyeOff' : 'eye', 15)}</button><button class="tg" data-act="edLock" data-id="${l.id}" title="Lock">${ic(l.locked ? 'lock' : 'unlock', 15)}</button></div>`);
       if (c && open) walk(l.id, depth + 1);
     });
@@ -11486,7 +11582,7 @@ function clipCss(l, frames) {
     for (const pg of d.pages) {
       const T = treeOf(pg), bg = await RT.renderPage({ id: 'bg', bg: pg.bg, layers: [] }, W, H, s, false), items = []; onStep(++n / todo);
       for (const l of pg.layers) {
-        if (l.hidden || l.type === 'group') continue;
+        if (l.hidden || l.type === 'group' || l.mask) continue;
         const b = aabb(l), pad = Math.round(Math.max(24, (l.shb || 0) * 2 + Math.abs(l.shx || 0) + Math.abs(l.shy || 0), ...(l.fxs || []).map((x) => (x.b || 0) * 2 + Math.abs(x.x || 0) + Math.abs(x.y || 0) + (x.s || 0)), (l.sw || 0) * 2, (l.bl || 0) * 3));
         // the layer's box with its shadows, kept within the canvas plus a margin (a 2 500 px background stays a sane size)
         const x0 = Math.max(Math.floor(b.x - pad), Math.floor(-W * BLEED)), y0 = Math.max(Math.floor(b.y - pad), Math.floor(-H * BLEED));
@@ -11494,7 +11590,7 @@ function clipCss(l, frames) {
         if (x1 <= x0 || y1 <= y0) continue;
         const x = x0, y = y0, w = x1 - x0, h = y1 - y0;
         // blend and background blur need what is under the layer: they are applied when the frame is composited
-        const c = JSON.parse(JSON.stringify(l)); c.x -= x; c.y -= y; if (c._x != null) { c._x -= x; c._y -= y; } delete c.pid; delete c.blend; delete c.bbl;
+        const c = JSON.parse(JSON.stringify(l)); c.x -= x; c.y -= y; if (c._x != null) { c._x -= x; c._y -= y; } const mk = maskCss(l, masksOf(T, l)); if (mk) c.mkCss = mk; delete c.pid; delete c.blend; delete c.bbl;
         const blend = l.blend && l.blend !== 'normal' ? COMPOSITE[l.blend] || l.blend : 'source-over';
         items.push({ l, cv: await RT.renderPage({ id: 'mo', bg: 'transparent', layers: [c] }, w, h, s, false), x, y, w, h, blend, bbl: l.type !== 'text' && l.bbl > 0 ? l.bbl : 0 });
         onStep(++n / todo);
@@ -11507,7 +11603,7 @@ function clipCss(l, frames) {
   function shapePath(ctx, l, ls, s) {
     const cx = (l.x + l.w / 2 + ls.tx) * s, cy = (l.y + l.h / 2 + ls.ty) * s, w = l.w * s, h = l.h * s, r = Math.min(Math.max(0, +l.r || 0) * s, w / 2, h / 2);
     ctx.translate(cx, cy); ctx.rotate((((l.rot || 0) + ls.r) * Math.PI) / 180); ctx.scale(ls.s, ls.s);
-    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-w / 2, -h / 2, w, h, r) : ctx.rect(-w / 2, -h / 2, w, h);
+    const rs = radiiOf(l); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-w / 2, -h / 2, w, h, rs ? rs.map((v) => Math.min(v * s, w / 2, h / 2)) : r) : ctx.rect(-w / 2, -h / 2, w, h);
   }
   /** Canvases reused from frame to frame: one per scene drawn, and one for the background-blur snapshot */
   const PAD = new Map();

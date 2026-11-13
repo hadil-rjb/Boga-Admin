@@ -144,6 +144,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .frame .ck{position:absolute;right:8px;top:8px;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;background:var(--surface);border:1.5px solid var(--border);color:#fff}
 .frame.on .ck{background:var(--accent);border-color:var(--accent)}
 .frame b{font-size:13px;font-weight:500}.frame small{font-size:11px;color:var(--text-2)}
+/* a frame layer on the canvas (class "ly frame") is not a frame picker card: none of the card's box styles */
+.ly.frame{position:absolute;display:block;gap:0;border:0;border-radius:0;padding:0;text-align:inherit}
 .skel{background:linear-gradient(90deg,var(--pill),var(--icon),var(--pill));background-size:200% 100%;animation:sk 1.2s infinite linear;border-radius:10px}
 .note{display:flex;gap:10px;align-items:flex-start;border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;background:rgba(162,89,255,.1);color:var(--text-2)}
 .note.warn{background:rgba(251,191,36,.12)}
