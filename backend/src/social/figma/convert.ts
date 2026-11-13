@@ -6,13 +6,15 @@
  * 1080×1920) use their usual names; anything else is a custom canvas named "<w>x<h>".
  * Positions come from each node's absolute box, so children of groups (and groups imported on their own) land
  * exactly where they are in Figma, whatever coordinate space their transforms use.
- * Text, rectangles and ellipses become editable layers (fills, gradients, blend modes, strokes,
- * corner radius, strokes, rotation, opacity). Vectors, stars, polygons, lines and boolean operations (and groups drawn
- * only with them: logos, icons) become path layers drawn from Figma's geometry when the studio can paint them the same.
- * Anything the studio can't express (masks, image fills on vectors, shadows on shapes, clipped content) is rendered
- * by Figma and placed as an image.
- * Frames that hold text are never flattened: their effects are drawn by the studio (simplified when needed)
- * and only the shapes that cross their clip are rendered by Figma, cut to the frame's box.
+ * The layer tree is kept like in Figma's Layers panel: frames, components and instances become studio frames (fill,
+ * corners, strokes, effects, clip content, auto layout, constraints) and groups become groups, each child naming its
+ * container in `pid`. A mask stays a layer (`mask`), masking the layers above it in its container by its shape and alpha.
+ * Text, rectangles and ellipses become editable layers (fills, gradients, blend modes, every stroke with its alignment
+ * and dashes, per-corner radius, every drop and inner shadow, blurs, rotation, opacity, italic, underline).
+ * Vectors, stars, polygons, lines and boolean operations (and groups drawn only with them: logos, icons) become path
+ * layers drawn from Figma's geometry when the studio can paint them the same.
+ * Anything the studio can't express (rotated frames, image fills on vectors) is rendered by Figma and
+ * placed as an image; frames that hold text are never flattened (what can't be drawn is simplified, with a note).
  *
  * Fills that need pixels are emitted as placeholders and resolved by the caller:
  *   {{raster:<nodeId>}}  rendered node      {{image:<imageRef>}}  image fill
@@ -82,8 +84,11 @@ function paintCss(p: any, w: number, h: number): string | null {
     }
     case "GRADIENT_RADIAL":
     case "GRADIENT_DIAMOND": {
-      const [c] = p.gradientHandlePositions || [{ x: 0.5, y: 0.5 }];
-      return `radial-gradient(ellipse at ${r1(c.x * 100)}% ${r1(c.y * 100)}%, ${stops()})`;
+      // Figma's handles: the center, then the ends of the two radii; the gradient ends there (not at the box's corners),
+      // as % of the box so it follows when the layer is resized
+      const [c, e1, e2] = p.gradientHandlePositions || [{ x: 0.5, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0.5, y: 1 }];
+      const rx = e1 ? Math.hypot((e1.x - c.x) * w, (e1.y - c.y) * h) : w / 2, ry = e2 ? Math.hypot((e2.x - c.x) * w, (e2.y - c.y) * h) : h / 2;
+      return `radial-gradient(${r1((rx / Math.max(w, 1e-6)) * 100)}% ${r1((ry / Math.max(h, 1e-6)) * 100)}% at ${r1(c.x * 100)}% ${r1(c.y * 100)}%, ${stops()})`;
     }
     case "GRADIENT_ANGULAR": {
       const [c, e] = p.gradientHandlePositions || [{ x: 0.5, y: 0.5 }, { x: 1, y: 0.5 }];
@@ -217,7 +222,11 @@ const CLOSED = new Set(["STAR", "REGULAR_POLYGON", "POLYGON", "BOOLEAN_OPERATION
 
 export function convertFrame(frame: any, uid: () => string, fontFor: (family: string, size: number) => string = defaultFont): ConvertOut {
   // groups have no box of their own: their size is the bounding box of their content
-  const bb0 = frame.absoluteBoundingBox, useBox = frame.type === "GROUP" && bb0;
+  // a frame turned on the Figma canvas (a 1920×1080 frame turned a quarter to show 1080×1920) is imported as it shows:
+  // the canvas is its box on screen, and its content keeps the frame's turn (rootM), so it stands the way it is seen
+  const t0 = frame.type !== "GROUP" && frame.relativeTransform, rootRot = t0 ? (Math.atan2(t0[1][0], t0[0][0]) * 180) / Math.PI : 0;
+  const turned = Math.abs(rootRot) > 0.05, rootM: M = turned ? [[t0[0][0], t0[0][1], 0], [t0[1][0], t0[1][1], 0]] : I;
+  const bb0 = frame.absoluteBoundingBox, useBox = (frame.type === "GROUP" || turned) && bb0;
   const fw = useBox ? bb0.width : frame.size?.x ?? bb0.width, fh = useBox ? bb0.height : frame.size?.y ?? bb0.height;
   const { W, H, k, key: ratio } = canvasOf(fw, fh), offX = 0, offY = 0;
   const fbb = frame.absoluteBoundingBox || { x: 0, y: 0, width: fw, height: fh };
@@ -226,36 +235,93 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
   if (k < 1) warn.add(`The frame is ${Math.round(fw)}×${Math.round(fh)}: scaled down to ${W}×${H} (the studio canvas stops at ${MAX_SIDE}px)`);
 
   const isGroup = frame.type === "GROUP"; // a group imported on its own: transparent, like Figma exports it
-  const fF = imageFills(frame.fills, W, H), frameFill = fF.fill;
+  const fF = imageFills(frame.fills, W, H);
   const paints = visiblePaints(frame.fills), solid = paints.find((p) => p.type === "SOLID");
   const firstStop = paints.find((p) => p.gradientStops?.length)?.gradientStops[0]?.color;
   const bg = solid ? rgba(solid.color, solid.opacity ?? 1) : firstStop ? rgba(firstStop) : "#FFFFFF";
-  layers.push({ id: uid(), type: "rect", name: "Background", x: 0, y: 0, w: W, h: H, rot: 0, op: 1, fill: frameFill || (isGroup ? "transparent" : "#FFFFFF"), r: 0, locked: true, ...(fF.adj ? { adj: fF.adj } : {}), ...(fF.ovs ? { ovs: fF.ovs } : {}) });
+  // the frame's own fill: in a turned frame, a box of the frame's size turned the same way (gradients and pictures turn with it)
+  const sw0 = turned ? (frame.size?.x ?? fw) * k : W, sh0 = turned ? (frame.size?.y ?? fh) * k : H;
+  const fF0 = turned ? imageFills(frame.fills, sw0, sh0) : fF;
+  if (turned && Math.abs(Math.abs(rootRot) - 90) > 0.05 && Math.abs(Math.abs(rootRot) - 180) > 0.05) warn.add("The frame is turned: its background is cut to its box on the canvas");
+  layers.push({ id: uid(), type: "rect", name: "Background", x: r1(W / 2 - sw0 / 2), y: r1(H / 2 - sh0 / 2), w: r1(sw0), h: r1(sh0), rot: r1(rootRot), op: 1, fill: fF0.fill || (isGroup ? "transparent" : "#FFFFFF"), r: 0, locked: true, ...(fF0.adj ? { adj: fF0.adj } : {}), ...(fF0.ovs ? { ovs: fF0.ovs } : {}) });
   visiblePaints(frame.fills).filter((p) => p.type === "IMAGE").forEach((p) => images.push({ ref: p.imageRef, w: W, h: H }));
 
-  /** Axis-aligned box of a node on the studio canvas (for rasterized nodes) */
-  const boxOf = (n: any) => {
-    const b = n.absoluteRenderBounds || n.absoluteBoundingBox;
-    return b ? { x: (b.x - fbb.x) * k + offX, y: (b.y - fbb.y) * k + offY, w: b.width * k, h: b.height * k } : null;
+  /** Axis-aligned box of a node on the studio canvas (for rasterized nodes and groups) */
+  const boxOf = (n: any, render = true) => {
+    const b = (render && n.absoluteRenderBounds) || n.absoluteBoundingBox;
+    return b ? { x: r1((b.x - fbb.x) * k + offX), y: r1((b.y - fbb.y) * k + offY), w: r1(b.width * k), h: r1(b.height * k) } : null;
   };
 
   /**
-   * Effects the studio draws itself: one drop shadow (no spread on shapes), one layer blur and one background blur. `ok` is false when the
-   * node has others (inner shadow, background blur, several shadows): shapes are then rendered by Figma.
+   * Effects as studio fields: the first drop shadow in shx/shy/shb/shs/shc/sha, the other drop and inner shadows in `fxs`,
+   * one layer blur (bl) and one background blur (bbl). `ok` is false when the studio can't draw one of them on this kind of
+   * layer: text and vectors have no inner shadow, no shadow spread and no background blur; several blurs of one kind.
    */
-  const effectsOf = (n: any, isText: boolean) => {
-    const fx = (n.effects || []).filter((e: any) => e.visible !== false), out: Record<string, any> = {};
-    const drops = fx.filter((e: any) => e.type === "DROP_SHADOW"), blurs = fx.filter((e: any) => e.type === "LAYER_BLUR"), bgs = fx.filter((e: any) => e.type === "BACKGROUND_BLUR");
-    const ok = drops.length <= 1 && blurs.length <= 1 && bgs.length <= (isText ? 0 : 1) && drops.length + blurs.length + bgs.length === fx.length && (isText || !drops[0]?.spread);
-    const d = drops[0];
-    if (d) {
-      const c = d.color || { r: 0, g: 0, b: 0, a: 0.25 };
-      Object.assign(out, { shx: r1((d.offset?.x || 0) * k), shy: r1((d.offset?.y || 0) * k), shb: r1(Math.max(0, d.radius || 0) * k), shc: rgba({ ...c, a: 1 }), sha: r3(c.a ?? 1) });
+  const effectsOf = (n: any, kind: "box" | "text" | "path") => {
+    let fx = (n.effects || []).filter((e: any) => e.visible !== false);
+    const out: Record<string, any> = {};
+    // grain (Figma's noise and texture effects): left out on a frosted-glass layer, whose blur only the studio can draw
+    // (rendered by Figma, the layer would lose what's behind it); anything else with grain is rendered by Figma
+    const grain = (e: any) => e.type === "NOISE" || e.type === "TEXTURE";
+    if (fx.some(grain) && kind === "box" && fx.some((e: any) => e.type === "BACKGROUND_BLUR")) { fx = fx.filter((e: any) => !grain(e)); warn.add("Noise and texture effects were left out"); }
+    const blurs = fx.filter((e: any) => e.type === "LAYER_BLUR"), bgs = fx.filter((e: any) => e.type === "BACKGROUND_BLUR");
+    const shadows = fx.filter((e: any) => e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW");
+    let ok = blurs.length <= 1 && bgs.length <= (kind === "box" ? 1 : 0) && shadows.length + blurs.length + bgs.length === fx.length;
+    // Figma lists effects bottom first; the studio's lists are top first
+    const list = [...shadows].reverse().flatMap((e: any) => {
+      const inner = e.type === "INNER_SHADOW";
+      if (inner && kind !== "box") { ok = false; return []; }
+      if (e.spread && kind !== "box") ok = false;
+      const c = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+      return [{ k: inner ? "inner" : "drop", x: r1((e.offset?.x || 0) * k), y: r1((e.offset?.y || 0) * k), b: r1(Math.max(0, e.radius || 0) * k), s: kind === "box" ? r1((e.spread || 0) * k) : 0, c: rgba({ ...c, a: 1 }), o: r3(c.a ?? 1) }];
+    });
+    const d = list.findIndex((e) => e.k === "drop");
+    if (d >= 0) {
+      const e = list.splice(d, 1)[0];
+      Object.assign(out, { shx: e.x, shy: e.y, shb: e.b, shc: e.c, sha: e.o, ...(e.s ? { shs: e.s } : {}) });
     }
+    if (list.length) out.fxs = list.map(({ s, ...e }) => (s ? { ...e, s } : e));
     if (blurs[0]) out.bl = r1(((blurs[0].radius || 0) * k) / 2);
-    if (bgs[0] && !isText) out.bbl = r1(((bgs[0].radius || 0) * k) / 2); // frosted glass: blurs what is behind the layer
+    if (bgs[0] && kind === "box") out.bbl = r1(((bgs[0].radius || 0) * k) / 2); // frosted glass: blurs what is behind the layer
     return { ok, props: out };
   };
+
+  /**
+   * Strokes of a box or a text as studio fields: the top one in stroke/sw/sa/sd, the others in `sts` ({ c, w, a, d }).
+   * Gradient strokes use their first color. `ok` is false when the sides have different weights (a bottom border, say).
+   */
+  const strokesOf = (n: any, kind: "box" | "text") => {
+    const ps = (n.strokeWeight ?? 1) > 0 ? visiblePaints(n.strokes) : [];
+    if (!ps.length) return { ok: true, props: {} as Record<string, any> };
+    let w = n.strokeWeight ?? 1;
+    const iw = n.individualStrokeWeights;
+    if (iw) { const v = [iw.top, iw.right, iw.bottom, iw.left].map((x) => +x || 0); if (new Set(v).size > 1) return { ok: false, props: {} }; w = v[0]; }
+    if (w <= 0) return { ok: true, props: {} };
+    const a = ({ INSIDE: "inside", OUTSIDE: "outside", CENTER: "center" } as Record<string, string>)[n.strokeAlign] || (kind === "text" ? "outside" : "inside");
+    const dd = n.strokeDashes as number[] | undefined;
+    const d = dd?.length && dd.some((x) => x > 0) ? (dd[0] <= 0.01 || (n.strokeCap === "ROUND" && dd[0] <= w * 0.6) ? "dot" : "dash") : null;
+    const list = [...ps].reverse().flatMap((p) => {
+      if (p.type === "SOLID") return [rgba(p.color, p.opacity ?? 1)];
+      const s0 = p.gradientStops?.[0]?.color;
+      if (s0) { warn.add("Gradient strokes use their first color"); return [rgba(s0, p.opacity ?? 1)]; }
+      warn.add("Image strokes were left out"); return [];
+    });
+    if (!list.length) return { ok: true, props: {} };
+    if (kind === "text" && list.length > 1) warn.add("Text with several strokes keeps the top one");
+    const sw = r1(w * k), home = kind === "text" ? "outside" : "inside";
+    const props: Record<string, any> = { stroke: list[0], sw, ...(a !== home ? { sa: a } : {}), ...(d ? { sd: d } : {}) };
+    if (kind === "box" && list.length > 1) props.sts = list.slice(1).map((c) => ({ c, w: sw, a, ...(d ? { d } : {}) }));
+    return { ok: true, props };
+  };
+
+  /** Corner radius: `r` (the largest), plus `rs` [top-left, top-right, bottom-right, bottom-left] when the corners differ */
+  const radiusOf = (n: any) => {
+    const radii = n.rectangleCornerRadii as number[] | undefined;
+    if (radii && radii.length === 4 && new Set(radii).size > 1) return { r: r1(Math.max(...radii) * k), rs: radii.map((x) => r1(x * k)) };
+    const r = (radii ? radii[0] : n.cornerRadius || 0) * k;
+    return r ? { r: r1(r) } : { r: 0 };
+  };
+
   /**
    * Blend mode of a layer. Figma also sets blend modes on fills: when every visible fill and stroke uses the same one
    * (and the layer itself doesn't), it is the layer's blend in the studio, which looks the same.
@@ -267,29 +333,14 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     if (mode === "LINEAR_BURN") warn.add("“Linear burn” is approximated with Multiply");
     return b ? { blend: b } : {};
   };
-  /**
-   * A node rendered by Figma, placed as an image. Inside a clipping frame the image is cut to the frame's box
-   * (the picture keeps its full size, offset in the layer), so content that overflows stays hidden like in Figma.
-   */
-  const raster = (n: any, op: number, clip?: Clip) => {
-    const b = boxOf(n), a = n.absoluteRenderBounds || n.absoluteBoundingBox;
-    if (!b || !a || b.w < 0.5 || b.h < 0.5) return;
-    const c = clip ? cut(clip, { x: a.x, y: a.y, w: a.width, h: a.height, r: 0 }) : null;
-    if (c && (c.w < 0.5 || c.h < 0.5)) return; // entirely outside the frame
+  const nameOf = (n: any, def: string) => String(n.name || def).slice(0, 60);
+
+  /** A node rendered by Figma, placed as an image (the frames around it clip it in the studio, like in Figma) */
+  const raster = (n: any, pid?: string) => {
+    const b = boxOf(n);
+    if (!b || b.w < 0.5 || b.h < 0.5) return;
     rasters.push({ id: n.id, w: b.w, h: b.h });
-    const base = { id: uid(), type: "image", name: String(n.name || "Image").slice(0, 40), rot: 0, op: r3(op), ...blendOf(n) };
-    // rounded frame: the studio has one radius per layer, so the picture takes the frame's radius when it covers
-    // the frame along at least three of its sides (a full-bleed or banner picture), not when it only sits in a corner
-    const edges = c ? [Math.abs(c.x - clip!.x), Math.abs(c.y - clip!.y), Math.abs(c.x + c.w - clip!.x - clip!.w), Math.abs(c.y + c.h - clip!.y - clip!.h)].filter((d) => d < 1).length : 0;
-    const r = edges >= 3 ? r1(clip!.r * k) : 0;
-    if (!c || (c.w >= a.width - 0.5 && c.h >= a.height - 0.5)) {
-      layers.push({ ...base, x: r1(b.x), y: r1(b.y), w: r1(b.w), h: r1(b.h), fill: `url({{raster:${n.id}}}) center/100% 100% no-repeat`, r });
-      return;
-    }
-    layers.push({
-      ...base, x: r1((c.x - fbb.x) * k + offX), y: r1((c.y - fbb.y) * k + offY), w: r1(c.w * k), h: r1(c.h * k), r,
-      fill: `url({{raster:${n.id}}}) ${r1((a.x - c.x) * k)}px ${r1((a.y - c.y) * k)}px/${r1(a.width * k)}px ${r1(a.height * k)}px no-repeat`,
-    });
+    layers.push({ id: uid(), type: "image", name: nameOf(n, "Image"), ...b, rot: 0, op: 1, ...blendOf(n), fill: `url({{raster:${n.id}}}) center/100% 100% no-repeat`, r: 0, ...(pid ? { pid } : {}) });
   };
 
   /**
@@ -315,37 +366,48 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
       return a && (a.x < b.x - 1 || a.y < b.y - 1 || a.x + a.width > b.x + b.width + 1 || a.y + a.height > b.y + b.height + 1);
     });
   };
-  const hasImageInside = (n: any): boolean => visiblePaints(n.fills).some((p) => p.type === "IMAGE") || (n.children || []).some(hasImageInside);
 
-  const shape = (n: any, m: M, op: number, type: "rect" | "ellipse" | "image", fx: Record<string, any> = {}) => {
-    const g = placed(n, m), F = imageFills(n.fills, g.w, g.h), fill = F.fill;
-    const stroke = visiblePaints(n.strokes).find((p) => p.type === "SOLID");
-    if (!fill && !stroke) return;
-    const radii = n.rectangleCornerRadii as number[] | undefined;
-    if (radii && new Set(radii).size > 1) warn.add("Shapes with different corner radii use a single radius");
-    const r = (radii ? Math.max(...radii) : n.cornerRadius || 0) * k;
-    visiblePaints(n.fills).filter((p) => p.type === "IMAGE").forEach((p) => images.push({ ref: p.imageRef, w: g.w, h: g.h }));
+  /**
+   * Opacity of a picture fill (Figma: Image 60 %): with the picture as the only fill and no stroke, it is the layer's
+   * opacity in the studio, which looks the same; otherwise the picture shows opaque, with a note.
+   */
+  const imgOp = (n: any, strokeProps: Record<string, any>) => {
+    const ps = visiblePaints(n.fills), img = ps.find((p) => p.type === "IMAGE"), o = img?.opacity ?? 1;
+    if (o >= 0.999) return 1;
+    if (ps.length === 1 && !strokeProps.stroke) return o;
+    warn.add("Pictures with a fill opacity under other fills or a stroke show opaque");
+    return 1;
+  };
+  /** A rectangle or an ellipse (null when the studio can't draw its effects or strokes: the caller renders it) */
+  const shape = (n: any, m: M, type: "rect" | "ellipse"): any | null | undefined => {
+    const E = effectsOf(n, "box"), S = strokesOf(n, "box");
+    if (!E.ok || !S.ok) return null;
+    const g = placed(n, m), F = imageFills(n.fills, g.w, g.h);
+    if (!F.fill && !S.props.stroke && !Object.keys(E.props).length) return undefined; // draws nothing
     const isImage = visiblePaints(n.fills).some((p) => p.type === "IMAGE");
-    // the studio draws borders inside the box: grow it for centered / outside strokes so the size stays exact
-    const sw = Math.max(1, (n.strokeWeight || 1) * k), grow = !stroke ? 0 : n.strokeAlign === "OUTSIDE" ? sw : n.strokeAlign === "CENTER" ? sw / 2 : 0;
-    layers.push({
-      id: uid(), type: isImage ? "image" : type, name: String(n.name || (type === "ellipse" ? "Circle" : "Shape")).slice(0, 40), ...g,
-      x: r1(g.x - grow), y: r1(g.y - grow), w: r1(g.w + grow * 2), h: r1(g.h + grow * 2), op: r3(op), ...blendOf(n),
-      fill: fill || "transparent", r: r1(r ? r + grow : 0), ...(F.adj ? { adj: F.adj } : {}), ...(F.ovs ? { ovs: F.ovs } : {}),
-      ...(stroke ? { stroke: rgba(stroke.color, stroke.opacity ?? 1), sw: r1(sw) } : {}), ...fx,
-    });
+    const circle = type === "ellipse" && Math.abs(g.w - g.h) < 1;
+    if (isImage && type === "ellipse" && !circle && (S.props.stroke || F.adj)) return null;
+    visiblePaints(n.fills).filter((p) => p.type === "IMAGE").forEach((p) => images.push({ ref: p.imageRef, w: g.w, h: g.h }));
+    // a picture in a circle: an image layer rounded into the circle (it keeps the image tools)
+    const t = isImage && (type === "rect" || circle) ? "image" : type, rad = type === "ellipse" ? (circle && t === "image" ? { r: r1(g.w / 2) } : {}) : radiusOf(n);
+    return {
+      id: uid(), type: t, name: nameOf(n, type === "ellipse" ? "Ellipse" : "Rectangle"), ...g, op: r3((n.opacity ?? 1) * imgOp(n, S.props)), ...blendOf(n),
+      fill: F.fill || "transparent", r: 0, ...rad, ...(F.adj ? { adj: F.adj } : {}), ...(F.ovs ? { ovs: F.ovs } : {}), ...S.props, ...E.props,
+    };
   };
 
   /**
    * A vector, star, polygon, line or boolean shape → path layers drawn from Figma's geometry, or null when the studio can't
-   * draw it the same way (image or angular fills, several fills, per-region fills, effects other than one shadow and one blur).
+   * draw it the same way (image or angular fills, several fills, per-region fills, effects other than drop shadows and one blur).
    * The layer box is the node's own box (rotated and flipped like it), so the geometry keeps Figma's coordinates.
    * Strokes must be centered. Solid ones on closed shapes and lines stay real strokes; the others (open vectors, dashed,
    * gradient, arrow caps) use Figma's stroke outline, filled, as a second layer above the fill.
    */
   const vectorLayers = (n: any, m: M, op: number): any[] | null => {
-    const E = effectsOf(n, false);
-    if (!E.ok || E.props.bbl != null) return null;
+    // a background blur on a vector without fill frosts nothing in Figma: left out
+    const noFill = !visiblePaints(n.fills).length || n.type === "LINE";
+    const E = effectsOf(noFill ? { ...n, effects: (n.effects || []).filter((e: any) => e.type !== "BACKGROUND_BLUR") } : n, "path");
+    if (!E.ok) return null;
     const fills = visiblePaints(n.fills), strokes = (n.strokeWeight ?? 1) > 0 ? visiblePaints(n.strokes) : [];
     if (fills.length > 1 || strokes.length > 1) return null;
     const b = n.absoluteBoundingBox, w0 = n.size?.x ?? b?.width ?? 0, h0 = n.size?.y ?? b?.height ?? 0;
@@ -358,11 +420,13 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
 
     // inside / outside strokes: Figma's stroke outline is twice as wide, meant to be clipped by the fill
     const sp = strokes[0], cap = CAPS[n.strokeCap || "NONE"], join = JOINS[n.strokeJoin || "MITER"];
-    if (sp && (n.strokeAlign || "CENTER") !== "CENTER") return null;
-    const plain = !!sp && sp.type === "SOLID" && !n.strokeDashes?.length && !n.individualStrokeWeights && !!cap && !!join;
+    // an inside stroke: Figma's outline, masked by the shape (outside strokes are rendered by Figma)
+    const insideMask = sp && n.strokeAlign === "INSIDE" && n.type !== "LINE" ? geometry(n.fillGeometry) : null;
+    if (sp && (n.strokeAlign || "CENTER") !== "CENTER" && !insideMask) return null;
+    const plain = !!sp && !insideMask && sp.type === "SOLID" && !n.strokeDashes?.length && !n.individualStrokeWeights && !!cap && !!join;
     const realStroke = plain && (n.type === "LINE" || CLOSED.has(n.type)) ? { stroke, sw: r1((n.strokeWeight ?? 1) * k), cap, join } : null;
     type Part = { segs: Seg[]; fr: string; fill: string; extra?: Record<string, any>; name: string };
-    const parts: Part[] = [], name = String(n.name || "Vector").slice(0, 40);
+    const parts: Part[] = [], name = nameOf(n, "Vector");
     if (n.type === "LINE") {
       if (!realStroke) { const g = geometry(n.strokeGeometry); if (!g) return null; parts.push({ ...g, fill: stroke!, name }); }
       else {
@@ -378,11 +442,12 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
       if (fg && (fill || realStroke)) parts.push({ ...fg, fill: fill || "none", ...(realStroke ? { extra: realStroke } : {}), name });
       if (stroke && !(realStroke && fg)) {
         const g = geometry(n.strokeGeometry); if (!g) return null;
-        parts.push({ ...g, fill: stroke, name: parts.length ? `${name} stroke`.slice(0, 40) : name });
+        parts.push({ ...g, fill: stroke, name: parts.length ? `${name} stroke`.slice(0, 60) : name });
       }
     }
+    if (insideMask) parts.unshift({ ...insideMask, fill: "#FFFFFF", name: `${name} shape`.slice(0, 60), extra: { mask: true, mt: "vec" } });
     // fill and stroke as two layers only look the same when nothing is shared between them
-    if (parts.length > 1 && (o1(op) || Object.keys(E.props).length || Object.keys(blendOf(n)).length)) return null;
+    if (parts.filter((p) => !p.extra?.mask).length > 1 && (op < 0.999 || Object.keys(E.props).length || Object.keys(blendOf(n)).length)) return null;
 
     // the box: the node's own, except along a flat side (a line, a flat vector): there it spans the drawing
     let bx = 0, by = 0, bw = w0, bh = h0;
@@ -396,38 +461,41 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     const g = placed(n, m), dx = bx + bw / 2 - w0 / 2, dy = by + bh / 2 - h0 / 2;
     const cx = g.x + g.w / 2 + (m[0][0] * dx + m[0][1] * dy) * k, cy = g.y + g.h / 2 + (m[1][0] * dx + m[1][1] * dy) * k;
     const { x: _x, y: _y, w: _w, h: _h, ...turn } = g;
-    return parts.map((p) => ({
+    const out: any[] = parts.map((p) => ({
       id: uid(), type: "path", name: p.name, ...turn, x: r1(cx - (bw * k) / 2), y: r1(cy - (bh * k) / 2), w: r1(bw * k), h: r1(bh * k),
       op: r3(op), ...blendOf(n), d: toD(p.segs, -bx, -by), vw: r3(bw), vh: r3(bh), fill: p.fill, ...(p.fr === "evenodd" ? { fr: "evenodd" } : {}),
-      ...(p.extra || {}), ...E.props,
+      ...(p.extra || {}), ...(p.extra?.mask ? {} : E.props),
     }));
+    if (!insideMask) return out;
+    const grp = groupLayer(n); grp.op = 1; // a mask works in its own container: the shape and its stroke in a group
+    return [grp, ...out.map((l) => ({ ...l, op: l.mask ? 1 : l.op, pid: grp.id }))];
   };
-  const o1 = (op: number) => op < 0.999;
 
   /**
    * Layers of a group or frame drawn only with vectors (a logo, an icon), or null when one of them can't be a path layer
    * (or the group itself has effects, a blend mode, a mask or clipped overflow): the whole group is then rendered by Figma.
    */
-  const vectorGroup = (n: any, m: M, op: number): any[] | null => {
+  const vectorGroup = (n: any, m: M, op: number, top = false): any[] | null => {
     if (n.visible === false) return [];
-    if (n.isMask || hasEffects(n)) return null;
-    const o = op * (n.opacity ?? 1), mm = mul(m, relOf(n));
+    if (n.isMask) return null;
+    const o = top ? op : op * (n.opacity ?? 1), mm = mul(m, relOf(n));
     if (o <= 0.001) return [];
-    if (RASTER_TYPES.has(n.type)) return vectorLayers(n, mm, o);
-    if (BLEND[n.blendMode] || visiblePaints(n.fills).length || visiblePaints(n.strokes).length) return null;
+    if (RASTER_TYPES.has(n.type)) return vectorLayers(n, mm, o); // vectors draw their own effects (or say they can't)
+    if (hasEffects(n) || visiblePaints(n.fills).length || visiblePaints(n.strokes).length) return null;
+    if (!top && BLEND[n.blendMode]) return null;
     // a see-through group fades as a whole in Figma: its parts can't fade one by one where they overlap
-    if ((n.opacity ?? 1) < 0.999 && (n.children || []).filter((c: any) => c.visible !== false).length > 1) return null;
+    if (!top && (n.opacity ?? 1) < 0.999 && (n.children || []).filter((c: any) => c.visible !== false).length > 1) return null;
     if (CONTAINERS.has(n.type) && n.clipsContent !== false && overflows(n)) return null;
     const out: any[] = [];
     for (const c of n.children || []) {
-      const ls = vectorGroup(c, n.type === "GROUP" ? m : mm, o); // group children are positioned in the group's parent space
+      const ls = vectorGroup(c, mm, o); // Figma's REST transforms are relative to the parent, groups included
       if (!ls) return null;
       out.push(...ls);
     }
     return out;
   };
 
-  const text = (n: any, m: M, op: number) => {
+  const text = (n: any, m: M, pid?: string, inFlow = false) => {
     const s = n.style || {}, g = placed(n, m);
     let chars = String(n.characters ?? "");
     if (s.textCase === "UPPER") chars = chars.toUpperCase();
@@ -436,24 +504,29 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     const fill = visiblePaints(n.fills)[0];
     if (fill && fill.type !== "SOLID") warn.add("Gradient text uses its first color");
     const color = fill ? rgba(fill.type === "SOLID" ? fill.color : fill.gradientStops?.[0]?.color ?? { r: 0, g: 0, b: 0 }, fill.opacity ?? 1) : "#000000";
-    if (s.italic) warn.add("Italic text is shown upright");
-    const E = effectsOf(n, true);
-    if (!E.ok) warn.add("Some text effects (inner shadows, background blurs, extra shadows) were left out");
+    const E = effectsOf(n, "text");
+    if (!E.ok) warn.add("Some text effects (inner shadows, shadow spread, background blurs) were left out");
+    const S = strokesOf(n, "text");
+    if (s.textDecoration === "STRIKETHROUGH") warn.add("Strikethrough text is shown without its line");
     const size = (s.fontSize || 16) * k;
     const family = String(s.fontFamily || "Inter");
     const font = fontFor(family, size);
     if (font !== family) warn.add(`Font “${family}” isn't available, swapped to ${font}`);
     else if (!STUDIO_FONTS.includes(family)) warn.add(`Font “${family}” is loaded from Google Fonts (a fallback font shows if it isn't there)`);
     const lh = s.lineHeightPx && s.fontSize ? s.lineHeightPx / s.fontSize : 1.2;
-    const align = ({ CENTER: "center", RIGHT: "right" } as Record<string, string>)[s.textAlignHorizontal] || "left";
-    // auto-width text gets a little slack (font metrics differ), growing from the side it is aligned to
-    const slack = n.textAutoResize === "WIDTH_AND_HEIGHT" ? g.w * 0.04 + 2 : 0;
+    const align = ({ CENTER: "center", RIGHT: "right", JUSTIFIED: "justify" } as Record<string, string>)[s.textAlignHorizontal] || "left";
+    // auto-width text gets a little slack (font metrics differ), growing from the side it is aligned to;
+    // not in an auto layout, where its width places the layers after it
+    const slack = n.textAutoResize === "WIDTH_AND_HEIGHT" && !inFlow ? g.w * 0.04 + 2 : 0;
     const va = ({ CENTER: "middle", BOTTOM: "bottom" } as Record<string, string>)[s.textAlignVertical];
+    const rtl = /[֐-ࣿﭐ-﷿ﹰ-﻿]/.test(chars);
     layers.push({
-      id: uid(), type: "text", name: chars.replace(/\s+/g, " ").slice(0, 20) || String(n.name || "Text").slice(0, 20), ...g,
-      x: r1(g.x - (align === "center" ? slack / 2 : align === "right" ? slack : 0)), w: r1(g.w + slack), op: r3(op), ...blendOf(n), ...(va ? { va } : {}),
+      id: uid(), type: "text", name: nameOf(n, chars.replace(/\s+/g, " ").slice(0, 20) || "Text"), ...g,
+      x: r1(g.x - (align === "center" ? slack / 2 : align === "right" ? slack : 0)), w: r1(g.w + slack),
+      op: r3(n.opacity ?? 1), ...blendOf(n), ...(va ? { va } : {}),
       text: chars, size: r1(size), weight: s.fontWeight || 400, font, color, align, lh: r3(lh), ls: r1((s.letterSpacing || 0) * k),
-      ...(/[֐-ࣿ]/.test(chars) ? { dir: "rtl" } : {}), ...E.props,
+      ...(s.italic ? { it: true } : {}), ...(s.textDecoration === "UNDERLINE" ? { ul: true } : {}),
+      ...(rtl ? { dir: "rtl" } : {}), ...S.props, ...E.props, ...(pid ? { pid } : {}),
     });
     // mixed styles (Figma: characterStyleOverrides + styleOverrideTable) → runs over the text: [{ s, e, ...style }]
     const ov: number[] = n.characterStyleOverrides || [], table = n.styleOverrideTable || {}, runs: any[] = [];
@@ -482,92 +555,230 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     if (runs.length || text2 !== chars) { const L = layers[layers.length - 1]; L.text = text2; if (runs.length) { L.runs = runs; L.rt = text2; } }
   };
 
-  /** Layers made from one Figma group or nested frame share a `gid`: they select and move together in the studio */
-  const gnames = new Map<string, string>();
-  const tag = (from: number, gid: string) => { for (let i = from; i < layers.length; i++) layers[i].gid ??= gid; };
-
-  /** Where a node stands against the clip of the frames around it: inside, partly outside, or hidden */
-  const against = (n: any, clip?: Clip): "in" | "part" | "out" => {
-    const a = n.absoluteRenderBounds || n.absoluteBoundingBox;
-    if (!clip || !a) return "in";
-    const c = cut(clip, { x: a.x, y: a.y, w: a.width, h: a.height, r: 0 });
-    if (c.w < 0.5 || c.h < 0.5) return "out";
-    return c.w >= a.width - 0.5 && c.h >= a.height - 0.5 ? "in" : "part";
+  /* ---------- containers: frames, groups, auto layout, masks ---------- */
+  /** Parent of the layers being placed: its layer (undefined for the page), and the auto layout they flow in */
+  /** lh: the auto layout runs along the frame's own x axis (in Figma); turned: the frame is turned on the page */
+  type Par = { id?: string; frame?: boolean; al?: any; mask?: boolean; lh?: boolean; turned?: boolean };
+  const groupLayer = (n: any, pid?: string, name?: string) => {
+    const b = boxOf(n, false) || { x: 0, y: 0, w: 1, h: 1 };
+    return { id: uid(), type: "group", name: name || nameOf(n, "Group"), ...b, rot: 0, op: r3(n.opacity ?? 1), ...(pid ? { pid } : {}) };
+  };
+  /** Figma's auto layout → the studio's (frame.al); wrapping and grid layouts stay as placed */
+  /** Where a node's own x and y axes point on the page (unit steps), when it is turned by quarters or flipped; else null */
+  const axesOf = (m: M) => {
+    const q = (v: number) => (Math.abs(v) < 1e-3 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-3 ? Math.sign(v) : NaN);
+    const dx = [q(m[0][0]), q(m[1][0])], dy = [q(m[0][1]), q(m[1][1])];
+    return [...dx, ...dy].some(Number.isNaN) ? null : { dx, dy };
+  };
+  type Axes = { dx: number[]; dy: number[] };
+  /** A direction on the page → the side it points to: 0 top, 1 right, 2 bottom, 3 left */
+  const sideOf = (d: number[]) => (d[0] > 0 ? 1 : d[0] < 0 ? 3 : d[1] > 0 ? 2 : 0);
+  const neg = (d: number[]) => [-d[0], -d[1]];
+  /** An auto layout in a frame's own axes → the same layout on the page (direction, order, padding, alignment, hugging) */
+  const turnAL = (al: any, A: Axes) => {
+    const p = [0, 0, 0, 0], lp = al.p || [0, 0, 0, 0];
+    p[sideOf(neg(A.dy))] = lp[0]; p[sideOf(A.dx)] = lp[1]; p[sideOf(A.dy)] = lp[2]; p[sideOf(neg(A.dx))] = lp[3];
+    const main = al.d === "h" ? A.dx : A.dy, cross = al.d === "h" ? A.dy : A.dx, back = main[0] + main[1] < 0;
+    const flip = (v: string) => (v === "start" ? "end" : v === "end" ? "start" : v);
+    const m = back ? flip(al.m || "start") : al.m || "start", c = cross[0] + cross[1] < 0 ? flip(al.c || "start") : al.c || "start";
+    const hugW = A.dx[0] ? al.hw : al.hh, hugH = A.dx[1] ? al.hw : al.hh;
+    return { d: main[0] ? "h" : "v", g: al.g, p, m, ...(c !== "start" ? { c } : {}), ...(hugW ? { hw: true } : {}), ...(hugH ? { hh: true } : {}), ...(back ? { rv: true } : {}) };
+  };
+  /** Corners [top-left, top-right, bottom-right, bottom-left] of a turned frame, as they show */
+  const turnCorners = (rs: number[], A: Axes) => {
+    const out = [0, 0, 0, 0];
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([cx, cy], i) => {
+      const x = A.dx[0] * cx + A.dy[0] * cy, y = A.dx[1] * cx + A.dy[1] * cy;
+      out[y < 0 ? (x < 0 ? 0 : 1) : x > 0 ? 2 : 3] = rs[i];
+    });
+    return out;
+  };
+  /** Shadow offsets of a turned frame, as they show */
+  const turnShadows = (props: Record<string, any>, A: Axes) => {
+    const t = (x: number, y: number) => [r1(A.dx[0] * x + A.dy[0] * y), r1(A.dx[1] * x + A.dy[1] * y)];
+    if (props.shx != null || props.shy != null) [props.shx, props.shy] = t(props.shx || 0, props.shy || 0);
+    (props.fxs || []).forEach((e: any) => { [e.x, e.y] = t(e.x || 0, e.y || 0); });
+  };
+  /** A gradient of a turned frame (handles in the frame's own w×h) → handles in its box on the page (W×H) */
+  const turnPaint = (p: any, A: Axes, w: number, h: number, W: number, H: number) => {
+    if (!p?.gradientHandlePositions) return p;
+    const hp = p.gradientHandlePositions.map((q: any) => {
+      const X = (q.x - 0.5) * w, Y = (q.y - 0.5) * h;
+      return { x: (A.dx[0] * X + A.dy[0] * Y) / W + 0.5, y: (A.dx[1] * X + A.dy[1] * Y) / H + 0.5 };
+    });
+    return { ...p, gradientHandlePositions: hp };
+  };
+  const alOf = (n: any) => {
+    if (n.layoutMode !== "HORIZONTAL" && n.layoutMode !== "VERTICAL") return null;
+    if (n.layoutWrap === "WRAP") { warn.add("Wrapping auto layouts keep their positions (no auto layout in the studio)"); return null; }
+    const Hz = n.layoutMode === "HORIZONTAL";
+    const MA: Record<string, string> = { MIN: "start", CENTER: "center", MAX: "end", SPACE_BETWEEN: "between" }, CA: Record<string, string> = { MIN: "start", CENTER: "center", MAX: "end", BASELINE: "end" };
+    const hugW = n.layoutSizingHorizontal ? n.layoutSizingHorizontal === "HUG" : (Hz ? n.primaryAxisSizingMode : n.counterAxisSizingMode) === "AUTO";
+    const hugH = n.layoutSizingVertical ? n.layoutSizingVertical === "HUG" : (Hz ? n.counterAxisSizingMode : n.primaryAxisSizingMode) === "AUTO";
+    const c = CA[n.counterAxisAlignItems || "MIN"] || "start";
+    return {
+      d: Hz ? "h" : "v", g: r1((n.itemSpacing || 0) * k), p: [n.paddingTop, n.paddingRight, n.paddingBottom, n.paddingLeft].map((v) => r1((v || 0) * k)),
+      m: MA[n.primaryAxisAlignItems || "MIN"] || "start", ...(c !== "start" ? { c } : {}), ...(hugW ? { hw: true } : {}), ...(hugH ? { hh: true } : {}),
+    };
+  };
+  const CT: Record<string, string> = { RIGHT: "end", BOTTOM: "end", CENTER: "center", LEFT_RIGHT: "both", TOP_BOTTOM: "both", SCALE: "scale" };
+  /** How a node sits in its frame: auto layout (fills, stretches, absolute) and constraints */
+  const childProps = (n: any, par: Par): Record<string, any> => {
+    const o: Record<string, any> = {};
+    if (!par.frame) return o;
+    if (par.al) {
+      if (n.layoutPositioning === "ABSOLUTE") o.ab = true;
+      else {
+        const Hz = par.lh ?? par.al.d !== "v"; // the child's sizing is in its frame's own axes
+        if (n.layoutGrow === 1 || (Hz ? n.layoutSizingHorizontal : n.layoutSizingVertical) === "FILL") o.gr = true;
+        if (n.layoutAlign === "STRETCH" || (Hz ? n.layoutSizingVertical : n.layoutSizingHorizontal) === "FILL") o.stc = true;
+      }
+    }
+    if (!par.mask && !par.turned && (!par.al || o.ab) && n.constraints) {
+      const ct: Record<string, string> = {}, h = CT[n.constraints.horizontal], v = CT[n.constraints.vertical];
+      if (h) ct.h = h; if (v) ct.v = v;
+      if (Object.keys(ct).length) o.ct = ct;
+    }
+    return o;
   };
 
   /**
-   * m: transform of the node's coordinate parent (frames/components define one, groups don't); gid: enclosing group;
-   * clip: box of the clipping frames around the node (Figma coordinates). Shapes that cross it are rendered by Figma and cut to it.
+   * The children of a container, in paint order. A mask stays a layer of its own (`mask`: it draws nothing and masks
+   * the layers above it in the same container, by its shape and its alpha, like Figma; `mt`: "lum" for a luminance
+   * mask, "vec" for an outline mask, where only the shape counts).
    */
-  const walk = (n: any, m: M, op: number, gid?: string, clip?: Clip) => {
-    if (!n || n.visible === false) return;
-    if (n.isMask) { warn.add("Masks are approximated"); return; }
-    const mm = mul(m, relOf(n)), o = op * (n.opacity ?? 1);
-    if (o <= 0.001) return;
-    const kids: any[] = n.children || [];
-    const where = against(n, clip);
-    if (where === "out") return;
-    const R = () => raster(n, op, clip);
+  const kidsWalk = (n: any, kids: any[], m: M, par: Par, clip?: Clip) => {
+    let cclip = clip;
+    for (const c of kids) {
+      if (!c.isMask) { walk(c, m, par, cclip); continue; }
+      if (c.visible === false) continue;
+      // the mask's alpha is its fill (an outline mask: its shape, painted opaque); strokes and effects don't mask
+      const outline = c.maskType === "VECTOR" || !visiblePaints(c.fills).length;
+      const node = { ...c, isMask: false, effects: [], strokes: [], ...(outline ? { fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1, a: 1 } }] } : {}) };
+      const from = layers.length;
+      walk(node, m, par, undefined);
+      let own = layers.slice(from).filter((l) => l.pid === par.id);
+      if (own.length !== 1 || own[0].type === "group") { layers.length = from; raster(c, par.id); own = layers.slice(from); } // a mask drawn with several shapes: its picture
+      if (own[0]) Object.assign(own[0], { mask: true, ...(c.maskType === "LUMINANCE" ? { mt: "lum" } : outline ? { mt: "vec" } : {}) });
+      const b = c.absoluteBoundingBox;
+      if (b) cclip = cut(clip, { x: b.x, y: b.y, w: b.width, h: b.height, r: 0 }); // what the mask hides entirely is left out
+    }
+  };
 
-    if (BLEND[n.blendMode] && (n.type === "GROUP" || CONTAINERS.has(n.type)) && kids.length) return R(); // blended as a whole
-    if ((n.type === "GROUP" || CONTAINERS.has(n.type)) && vectorOnly(n) && !visiblePaints(n.fills).length) { // logo / icon
-      const ls = where === "in" && !kids.some((c) => c.isMask) ? vectorGroup(n, m, op) : null;
+  /** Where a node stands against the clip of the frames around it: inside (or partly), or entirely hidden */
+  const hiddenBy = (n: any, clip?: Clip) => {
+    const a = n.absoluteRenderBounds || n.absoluteBoundingBox;
+    if (!clip || !a) return false;
+    // a line has no height: it counts as 1px thick
+    const w = Math.max(1, a.width), h = Math.max(1, a.height), x = a.x - (w - a.width) / 2, y = a.y - (h - a.height) / 2;
+    const c = cut(clip, { x, y, w, h, r: 0 });
+    return c.w < 0.5 || c.h < 0.5;
+  };
+
+  /**
+   * One Figma node → studio layers, inside the container `par`. m: transform of the node's parent (Figma's REST
+   * transforms are relative to the parent, groups included); clip: box of the clipping frames around the node, to leave out what they hide entirely.
+   */
+  const walk = (n: any, m: M, par: Par, clip?: Clip) => {
+    if (!n || n.visible === false || (n.opacity ?? 1) <= 0.001 || hiddenBy(n, clip)) return;
+    const from = layers.length, pid = par.id;
+    emit(n, m, par, clip);
+    // the node's own layer (the first one placed in `par`) takes its place in the frame: auto layout, constraints
+    const own = layers.slice(from).filter((l) => l.pid === pid);
+    if (own.length === 1) Object.assign(own[0], childProps(n, par));
+  };
+
+  const emit = (n: any, m: M, par: Par, clip?: Clip) => {
+    const mm = mul(m, relOf(n)), kids: any[] = n.children || [], from = layers.length;
+    const isCont = n.type === "GROUP" || CONTAINERS.has(n.type);
+
+    // a blended group or frame: its layers take its blend mode (the studio's groups don't paint), with a note
+    const gb = isCont && kids.length && BLEND[n.blendMode];
+    if (gb) {
+      emitContent(n, m, mm, par, clip, kids, isCont);
+      const own = layers[from];
+      layers.slice(from).forEach((l) => { if (l.type !== "group" && !l.mask && !l.blend && true) l.blend = gb; });
+      warn.add(`The blend mode of “${nameOf(n, "Group")}” is applied to each of its layers`);
+      return;
+    }
+    emitContent(n, m, mm, par, clip, kids, isCont);
+  };
+
+  const emitContent = (n: any, m: M, mm: M, par: Par, clip: Clip | undefined, kids: any[], isCont: boolean) => {
+    const pid = par.id, from = layers.length;
+    const R = () => { layers.length = from; raster(n, pid); };
+    if (isCont && vectorOnly(n) && !kids.some((c) => c.isMask) && !visiblePaints(n.fills).length && !visiblePaints(n.strokes).length) { // logo / icon
+      const ls = vectorGroup(n, m, 1, true);
       if (!ls) return R();
-      const g = gid || uid(), from = layers.length;
-      if (!gid) gnames.set(g, String(n.name || "Group").slice(0, 40));
-      layers.push(...ls);
-      tag(from, g);
+      if (!ls.length) return;
+      if (ls.length === 1 && ls[0].type !== "group") { layers.push({ ...ls[0], name: nameOf(n, ls[0].name), op: r3((ls[0].op ?? 1) * (n.opacity ?? 1)), ...(pid ? { pid } : {}) }); return; }
+      layers.push(groupLayer(n, pid)); // the group carries its opacity
+      const g = layers[layers.length - 1];
+      layers.push(...ls.map((l) => ({ ...l, pid: l.pid || g.id })));
       return;
     }
     if (n.type === "GROUP") {
-      if (kids.some((c) => c.isMask)) return R(); // masked group: let Figma render it
-      const g = gid || uid(), from = layers.length;
-      if (!gid) gnames.set(g, String(n.name || "Group").slice(0, 40));
-      kids.forEach((c) => walk(c, m, o, g, clip)); // group children are positioned in the group's parent space
-      tag(from, g);
+      const g = groupLayer(n, pid);
+      layers.push(g);
+      // the children's transforms are relative to the group (a turned group turns its content)
+      kidsWalk(n, kids, mm, { id: g.id }, clip);
       return;
     }
-    if (n.type === "TEXT") return text(n, mm, o); // text stays editable, even when a frame cuts part of it
-    if (where === "part" && !CONTAINERS.has(n.type)) return R(); // a shape crossing its frame's edge: cut like in Figma
-    if (clip?.r && !CONTAINERS.has(n.type) && hasImageInside(n)) return R(); // a picture in a rounded frame: rounded like the frame
+    if (n.type === "TEXT") return text(n, mm, pid, !!par.al && n.layoutPositioning !== "ABSOLUTE");
     if (RASTER_TYPES.has(n.type)) {
-      const ls = vectorLayers(n, mm, o);
+      const ls = vectorLayers(n, mm, n.opacity ?? 1);
       if (!ls) return R();
-      const from = layers.length;
-      layers.push(...ls);
-      if (ls.length > 1 && !gid) { const g = uid(); gnames.set(g, String(n.name || "Vector").slice(0, 40)); tag(from, g); } // fill + stroke outline
+      if (ls.length === 1) layers.push({ ...ls[0], ...(pid ? { pid } : {}) });
+      else if (ls[0].type === "group") layers.push({ ...ls[0], ...(pid ? { pid } : {}) }, ...ls.slice(1));
+      else if (ls.length > 1) { const g = groupLayer(n, pid); g.op = 1; layers.push(g, ...ls.map((l) => ({ ...l, pid: l.pid || g.id }))); } // fill + stroke outline
       return;
     }
     if (mirrored(mm) && !["RECTANGLE", "ELLIPSE"].includes(n.type)) return R();
-    if (n.type === "ELLIPSE") {
-      if (n.arcData && (n.arcData.endingAngle - n.arcData.startingAngle < 6.28 || n.arcData.innerRadius > 0)) return R();
-      const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "ellipse", E.props) : R();
+    if (n.type === "ELLIPSE" || n.type === "RECTANGLE") {
+      if (n.type === "ELLIPSE" && n.arcData && (n.arcData.endingAngle - n.arcData.startingAngle < 6.28 || n.arcData.innerRadius > 0)) return R();
+      const L = shape(n, mm, n.type === "ELLIPSE" ? "ellipse" : "rect");
+      if (L === null) return R();
+      if (L) layers.push({ ...L, ...(pid ? { pid } : {}) });
+      return;
     }
-    if (n.type === "RECTANGLE") { const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "rect", E.props) : R(); }
     if (CONTAINERS.has(n.type)) {
-      const clips = n.clipsContent !== false, name = String(n.name || "Frame").slice(0, 40);
-      const radius = n.cornerRadius || (n.rectangleCornerRadii ? Math.max(...n.rectangleCornerRadii) : 0);
-      const E = effectsOf(n, false), fx = hasEffects(n);
-      const flat = kids.some((c) => c.isMask) || fx || (clips && (overflows(n) || (radius > 0 && kids.some(hasImageInside))));
-      // frames with text stay editable: their effects are drawn by the studio and their clip is applied to what crosses it
-      if (flat && (!hasText(n) || kids.some((c) => c.isMask))) return R();
-      if (fx && !E.ok) warn.add(`“${name}”: some effects were simplified so its texts stay editable`);
-      const g = gid || uid(), from = layers.length;
-      if (!gid) gnames.set(g, name);
-      shape(n, mm, o, "rect", fx ? E.props : {});
-      const b = n.absoluteBoundingBox, inner = clips && b ? cut(clip, { x: b.x, y: b.y, w: b.width, h: b.height, r: radius }) : clip;
-      kids.forEach((c) => walk(c, mm, o, g, inner));
-      tag(from, g);
+      const name = nameOf(n, "Frame"), txt = hasText(n), g = placed(n, mm);
+      // the studio's frames stand upright: a frame turned a quarter (or flipped) is rebuilt the way it shows, its auto
+      // layout, padding, corners, gradients and shadows turned with it; a frame turned otherwise is rendered by Figma
+      const A = g.rot || g.fx ? axesOf(mm) : null;
+      if ((g.rot || g.fx) && !A) { if (txt) warn.add(`“${name}” is rotated: it was imported as a picture`); return R(); }
+      const E = effectsOf(n, "box"), S = strokesOf(n, "box");
+      if ((!E.ok || !S.ok || (E.props.bl && kids.length)) && !txt) return R();
+      if (!E.ok) warn.add(`“${name}”: some effects were simplified so its texts stay editable`);
+      if (!S.ok) warn.add(`“${name}”: borders on some sides only were left out so its texts stay editable`);
+      if (E.props.bl && kids.length) { delete E.props.bl; warn.add(`“${name}”: the layer blur was left out so its texts stay editable`); }
+      const box = A ? { ...boxOf(n, false)!, rot: 0 } : g, lw = g.w, lh = g.h;
+      const fills0 = A ? (n.fills || []).map((p: any) => turnPaint(p, A, lw, lh, box.w, box.h)) : n.fills;
+      if (A && visiblePaints(n.fills).some((p) => p.type === "IMAGE")) warn.add(`“${name}” is turned: its picture fill shows unturned`);
+      const F = imageFills(fills0, box.w, box.h);
+      visiblePaints(n.fills).filter((p) => p.type === "IMAGE").forEach((p) => images.push({ ref: p.imageRef, w: box.w, h: box.h }));
+      const al0 = alOf(n), al = al0 && A ? turnAL(al0, A) : al0, clips = n.clipsContent !== false, rad = radiusOf(n);
+      if (A && rad.rs) rad.rs = turnCorners(rad.rs, A);
+      if (A) turnShadows(E.props, A);
+      const L = {
+        id: uid(), type: "frame", name, ...box, op: r3(n.opacity ?? 1), fill: F.fill || "transparent", ...rad,
+        ...(F.adj ? { adj: F.adj } : {}), ...(F.ovs ? { ovs: F.ovs } : {}), ...S.props, ...E.props,
+        ...(clips ? {} : { noclip: true }), ...(al ? { al } : {}), ...(pid ? { pid } : {}),
+      };
+      layers.push(L);
+      const b = n.absoluteBoundingBox, inner = clips && b ? cut(clip, { x: b.x, y: b.y, w: b.width, h: b.height, r: 0 }) : clip;
+      const me: Par = { id: L.id, frame: true, al, ...(al0 ? { lh: al0.d === "h" } : {}), ...(A ? { turned: true } : {}) };
+      kidsWalk(n, kids, mm, me, inner);
       return;
     }
     warn.add(`Unsupported layers (${String(n.type).toLowerCase()}) were skipped`);
   };
 
-  (frame.children || []).forEach((c: any) => walk(c, I, 1));
-  // a "group" of one layer is just a layer
-  const count = new Map<string, number>(); layers.forEach((l) => l.gid && count.set(l.gid, (count.get(l.gid) || 0) + 1));
-  layers.forEach((l) => { if (l.gid && count.get(l.gid)! < 2) delete l.gid; else if (l.gid) l.gn = gnames.get(l.gid); }); // gn: the group's name
-  if (hasEffects(frame)) warn.add("Frame shadows were left out");
+  // the page is the frame: its content is placed on the canvas (the frame's auto layout stays as Figma placed it)
+  const root: Par = {}, rootClip = frame.clipsContent !== false && fbb ? { x: fbb.x, y: fbb.y, w: fbb.width, h: fbb.height, r: 0 } : undefined;
+  const kids0 = frame.children || [];
+  kidsWalk(frame, kids0, rootM, root, rootClip);
+  if (hasEffects(frame)) warn.add("Shadows and blurs of the frame itself were left out");
   return { bg, layers, rasters, images, warnings: [...warn], ratio, width: W, height: H, scale: k };
 }
 
