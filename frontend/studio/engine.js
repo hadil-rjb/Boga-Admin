@@ -10153,8 +10153,9 @@ function maskCss(l, ms) {
     const { defs, el } = maskShape(m), mcx = m.x + m.w / 2, mcy = m.y + m.h / 2;
     const tf = `translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) rotate(${-(l.rot || 0)}) translate(${mcx - cx} ${mcy - cy}) rotate(${m.rot || 0}) scale(${m.fx === true ? -1 : 1} ${m.fy === true ? -1 : 1}) translate(${-m.w / 2} ${-m.h / 2})`;
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}<g transform="${tf}">${el}</g></svg>`;
-    // single quotes: this CSS goes into style="…" attributes, where a double quote would end the attribute (and the mask)
-    return `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}')`;
+    // single quotes: this CSS goes into style="…" attributes, where a double quote would end the attribute (and the mask);
+    // parentheses encoded too: no "url(#gradient)" shows inside, which URL scanners (export, publishing) would fetch
+    return `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29')}')`;
   }).join(','), rep = (v) => ms.map(() => v).join(','), modes = ms.map((m) => (m.mt === 'lum' ? 'luminance' : 'alpha')).join(',');
   return `-webkit-mask-image:${imgs};-webkit-mask-size:${rep('100% 100%')};-webkit-mask-repeat:${rep('no-repeat')};mask-image:${imgs};mask-size:${rep('100% 100%')};mask-repeat:${rep('no-repeat')};mask-mode:${modes};${ms.length > 1 ? 'mask-composite:intersect;' : ''}`;
 }
