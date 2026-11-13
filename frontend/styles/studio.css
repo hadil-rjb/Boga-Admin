@@ -3871,3 +3871,62 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .vb-mi.danger:hover,.vb-mi.danger:focus-visible{background:rgba(220,38,38,.08)}
 .vb-msep{height:1px;margin:4px 6px;background:var(--border)}
 .vr-hic.danger{background:rgba(220,38,38,.1);color:#DC2626}
+
+/* ---------- New version dialog: even cards, a clear summary of what the version gets ---------- */
+.vr-grid{grid-template-columns:minmax(0,1fr) 320px}
+.vr-opt{min-width:112px;min-height:104px;justify-content:flex-start;padding:14px 12px 12px}
+.vr-opt small{text-align:center;line-height:1.3}
+.vr-opt.on small{color:var(--accent)}
+.vr-pv{align-items:stretch}
+.vr-pvb em b{font-weight:700;color:var(--accent)}
+.vr-note{display:flex;align-items:center;justify-content:center;gap:6px;margin:0;padding:8px 10px;border-radius:10px;background:var(--surface);text-align:left}
+.vr-note[hidden]{display:none}
+.vr-note .ic{flex:none;vertical-align:0;color:var(--text-3)}
+.vr-sum{display:flex;flex-direction:column;gap:2px;margin:0;padding:6px;list-style:none;border-radius:12px;background:var(--surface)}
+.vr-sum li{display:flex;align-items:flex-start;gap:10px;padding:7px 8px;border-radius:8px}
+.vr-sum li>.ic{flex:none;margin-top:1px;color:var(--accent)}
+.vr-sum li span{display:flex;flex-direction:column;gap:1px;line-height:1.3}
+.vr-sum b{font-size:12.5px;font-weight:600;color:var(--text-1)}
+.vr-sum small{font-size:11.5px;color:var(--text-3)}
+.vr-sum li:last-child{margin-top:2px;padding-top:9px;border-top:1px solid var(--border);border-radius:0 0 8px 8px}
+.vr-sum li:last-child>.ic{color:var(--text-3)}
+@media (max-width:760px){.vr-opt{min-width:0;min-height:96px}}
+.vr-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.vr-row .vr-opt{min-width:0}
+
+/* ---------- New version dialog, responsive: it follows its own width ---------- */
+.modal .mb:has(> .vr-grid){container-type:inline-size}
+.vr-grid{grid-template-columns:minmax(0,1fr) 300px}
+.vr-pv{order:0;position:sticky}
+.vr-pvb{min-width:0;text-align:center}
+.vr-pvb em{line-height:1.35}
+@container (max-width:680px){
+  .vr-grid{grid-template-columns:minmax(0,1fr);gap:14px}
+  .vr-pv{display:contents}
+  #vrPv{order:-1;padding:12px;border-radius:14px;background:var(--pill)}
+  .vr-pvs{min-height:0}
+  .vr-opts{order:0;gap:14px}
+  #vrNote{order:1}
+  #vrSum{order:2}
+  .vr-sum{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));background:var(--pill)}
+  .vr-sum li:last-child{grid-column:1/-1}
+}
+@container (max-width:480px){
+  .vr-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .vr-opt{min-height:84px;padding:10px 8px;gap:4px}
+  .vr-ico{height:24px}
+  .vr-sum{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:560px){
+  .modal-bg:has(.vr-grid){padding:8px}
+  .modal:has(.vr-grid) .mh{padding:12px 14px}.modal:has(.vr-grid) .mh h2{font-size:16px}
+  .modal:has(.vr-grid) .mb{padding:14px}
+  .modal:has(.vr-grid) .mf{padding:10px 14px}.modal:has(.vr-grid) .mf .btn{flex:1;justify-content:center}
+}
+@media (max-width:560px){
+  .modal:has(.vr-grid) .mf{flex-wrap:nowrap}
+  .modal:has(.vr-grid) .mf .btn.secondary{flex:none}
+  .modal:has(.vr-grid) .mf .btn.primary{flex:1;min-width:0;white-space:nowrap}
+  .modal:has(.vr-grid) .mh .xs-t{display:none}
+}
+@media (max-width:440px){.vr-what{display:none}}

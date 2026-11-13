@@ -12715,8 +12715,10 @@ document.addEventListener('pointerdown', (e) => {
     return { dark: cs[0] && vLum(cs[0]) < 0.2 ? cs[0] : '#0B1220', light: cs[cs.length - 1] && vLum(cs[cs.length - 1]) > 0.85 ? cs[cs.length - 1] : '#F8FAFC' };
   }
   /** Translates the design's fixed texts into `to` (what isn't cached yet); returns "claude", "none" or "error" */
-  async function translate(d, to) {
-    const todo = vTexts(d.pages, to).filter((x) => !TRC.has(to + '|' + x.text)); if (!todo.length) return 'claude';
+  /** The texts live data wrote (headlines, summaries): translated for the preview, until the feed sends its own */
+  const liveTexts = (d) => { const out = []; d.pages.forEach((pg) => pg.layers.forEach((l) => { if (l.type === 'text' && l.feed && l.feed !== '@image' && /\p{L}{2}/u.test(l.text || '')) out.push({ id: 'L' + out.length, text: l.text }); })); return out; };
+  async function translate(d, to, live) {
+    const todo = [...vTexts(d.pages, to), ...(live ? liveTexts(d) : [])].filter((x, i, a) => !TRC.has(to + '|' + x.text) && a.findIndex((y) => y.text === x.text) === i); if (!todo.length) return 'claude';
     let engine = 'claude';
     for (let i = 0; i < todo.length; i += 100) {
       const part = todo.slice(i, i + 100);
@@ -12732,6 +12734,7 @@ document.addEventListener('pointerdown', (e) => {
     const [W, H] = RATIOS[d.ratio], ratio = o.size ? ensureRatio(o.size) : d.ratio, [nw, nh] = RATIOS[ratio];
     const pages = d.pages.map((pg, i) => {
       const x = JSON.parse(JSON.stringify(pg)); delete x.figma; delete x.poster;
+      if (o.lang) x.layers.forEach((l) => { if (l.type === 'text' && l.feed) { const t = TRC.get(o.lang + '|' + l.text); if (t != null) { l.text = t; delete l.runs; } } });
       if (o.lang) { const tr = new Map(); vTexts([pg], o.lang).forEach((t) => { const v = TRC.get(o.lang + '|' + t.text); if (v != null) tr.set(t.id.replace(/^0:/, i + ':'), v); }); vLanguage(x, i, o.lang, tr, brand().fonts || {}); }
       if (o.theme) vTheme(x, o.theme, W, H, palette());
       if (o.size) vResize(x, [W, H], [nw, nh]);
@@ -12742,7 +12745,7 @@ document.addEventListener('pointerdown', (e) => {
     return { ratio, pages };
   }
   const ratioIcon = (w, h) => { const k = 24 / Math.max(w, h); return `<i class="vr-ratio" style="width:${Math.round(w * k)}px;height:${Math.round(h * k)}px"></i>`; };
-  const LANG = { en: 'EN', ar: 'AR' }, THEME = { light: 'Light', dark: 'Dark' };
+  const LANG = { en: 'English', ar: 'Arabic' }, THEME = { light: 'Light', dark: 'Dark' };
   const sizeName = (r) => (V_SIZES.find((z) => z.key === r) || { name: String(r).replace('x', '×') }).name;
 
   /* ---------- the family: an original and its versions (a version names its original in vOf) ---------- */
@@ -12758,7 +12761,6 @@ document.addEventListener('pointerdown', (e) => {
     if (dd.vOf && dd.vSync !== false && dd.vChange && dd.vChange.lang) sp.lang = dd.vChange.lang; // a linked version is the language it was made in (its live texts may still be loading)
     return sp;
   };
-  const specLabel = (sp) => `${LANG[sp.lang] || sp.lang} · ${sizeName(sp.size)} · ${THEME[sp.theme] || sp.theme}`;
   const sameSpec = (a, b) => a.lang === b.lang && a.theme === b.theme && a.size === b.size;
 
   /* ---------- the versions bar, above the canvas: every version of the design, one click away ---------- */
@@ -12799,43 +12801,66 @@ document.addEventListener('pointerdown', (e) => {
       return `<button type="button" class="vr-opt${on ? ' on' : ''}" data-vr="${key}" data-v="${esc(v)}" aria-pressed="${on}"><span class="vr-ico">${glyph}</span><span class="vr-l">${label}</span>${now ? '<small>This design</small>' : sub ? `<small>${sub}</small>` : ''}</button>`;
     };
     const group = (n, title, icon, body) => `<section class="vr-g"><div class="vr-gh"><span class="vr-n">${n}</span>${ic(icon, 16)}<b>${title}</b></div><div class="vr-row">${body}</div></section>`;
-    const options = () => group(1, 'Language', 'globe', opt('lang', 'en', 'English', '<span class="vr-glyph">EN</span>') + opt('lang', 'ar', 'العربية', '<span class="vr-glyph ar">ع</span>'))
+    const options = () => group(1, 'Language', 'globe', opt('lang', 'en', 'English', '<span class="vr-glyph">EN</span>', 'Left to right') + opt('lang', 'ar', 'العربية', '<span class="vr-glyph ar">ع</span>', 'Right to left'))
       + group(2, 'Size', 'frame', V_SIZES.map((z) => opt('size', z.key, z.name, ratioIcon(z.w, z.h), z.key.replace('x', '×'))).join(''))
-      + group(3, 'Theme', 'palette', opt('theme', 'light', 'Light', ic('sun', 20)) + opt('theme', 'dark', 'Dark', ic('moon', 20)));
+      + group(3, 'Theme', 'palette', opt('theme', 'light', 'Light', ic('sun', 20), 'Light colours') + opt('theme', 'dark', 'Dark', ic('moon', 20), 'Dark colours'));
+    /** Where the preview stands: translating, a problem, or nothing to do yet */
     const note = () => {
-      const o = changes(), n = d.pages.length, ex = existing();
-      if (!Object.keys(o).length) return 'Change at least one: language, size or theme.';
-      if (ex) return `${ic('check', 14)} This version already exists. Open it to edit it.`;
-      if (o.lang && st.tr === 'busy') return `<i class="spin"></i> Translating the texts…`;
-      if (o.lang && st.tr === 'none') return 'Add a Claude key in Settings → AI to translate the texts. The layout already reads ' + (o.lang === 'ar' ? 'right to left.' : 'left to right.');
-      if (o.lang && st.tr === 'error') return 'The translation didn’t answer: the texts stay as they are. Try again.';
-      return `${n > 1 ? `All ${n} pages` : 'The page'} · a new version next to this one, which stays as it is${d.pages.some((pg) => pg.live && pg.live.kind) ? ' · live data follows' : ''}`;
+      const o = changes(), ex = existing();
+      if (!Object.keys(o).length) return `${ic('alert', 14)}Pick a language, size or theme to change.`;
+      if (ex) return `${ic('check', 14)}This version already exists: open it to edit it.`;
+      if (o.lang && st.tr === 'busy') return '<i class="spin"></i>Translating the texts…';
+      if (o.lang && st.tr === 'none') return `${ic('alert', 14)}Add a Claude key in Settings → AI to translate the texts. The layout already reads ${o.lang === 'ar' ? 'right to left' : 'left to right'}.`;
+      if (o.lang && st.tr === 'error') return `${ic('alert', 14)}The translation didn’t answer: the texts stay as they are. Pick the language again to retry.`;
+      return '';
+    };
+    /** What the new version gets, one line each */
+    const summary = () => {
+      const o = changes(); if (!Object.keys(o).length || existing()) return '';
+      const n = d.pages.length, live = d.pages.some((pg) => pg.live && pg.live.kind), follows = d.id === rootId(d) || isSynced(d);
+      const row = (icon, b, t) => `<li>${ic(icon, 15)}<span><b>${b}</b>${t ? ` <small>${t}</small>` : ''}</span></li>`;
+      return `<ul class="vr-sum">
+        ${o.lang ? row('globe', `Texts in ${LANG[o.lang] || o.lang}`, o.lang === 'ar' ? 'translated, read right to left' : 'translated, read left to right') : ''}
+        ${o.size ? row('frame', `${sizeName(o.size)} size`, 'the content keeps its proportions') : ''}
+        ${o.theme ? row(o.theme === 'dark' ? 'moon' : 'sun', `${THEME[o.theme]} theme`, 'brand colours and photos kept') : ''}
+        ${live ? row('chart', 'Live data stays live', o.lang ? `the same stories, in ${LANG[o.lang] || o.lang}` : 'it updates by itself') : ''}
+        ${follows ? row('link', 'Follows this design', 'your edits here show in the version') : ''}
+        ${row('copy', n > 1 ? `All ${n} pages, as a new version` : 'A new version', 'this design stays as it is')}
+      </ul>`;
     };
     const preview = () => {
-      const o = changes(), ex = existing(), v = ex ? { ratio: getD(ex.id).ratio, pages: getD(ex.id).pages } : build(d, o), [w, h] = RATIOS[v.ratio], [ow, oh] = RATIOS[d.ratio], box = (W, H) => Math.min(118 / W, 190 / H);
-      return `<div class="vr-pvs"><div class="vr-pvb">${thumb(d.pages[0], d.ratio, ow * box(ow, oh), oh * box(ow, oh))}<span>This design</span><em>${esc(specLabel(cur))}</em></div>
+      const o = changes(), ex = existing(), v = ex ? { ratio: getD(ex.id).ratio, pages: getD(ex.id).pages } : build(d, o), [w, h] = RATIOS[v.ratio], [ow, oh] = RATIOS[d.ratio];
+      // the two thumbnails share the preview's width (the arrow between them), shorter on a narrow dialog
+      const pw = (root && root.querySelector('#vrPv') && root.querySelector('#vrPv').clientWidth) || 268, short = pw > 300 || pw < 240; // stacked above the choices, or tight: shorter
+      const bw = Math.max(60, Math.min(118, (pw - 24 - 40) / 2)), bh = short ? 150 : 190, box = (W, H) => Math.min(bw / W, bh / H);
+      return `<div class="vr-pvs"><div class="vr-pvb">${thumb(d.pages[0], d.ratio, ow * box(ow, oh), oh * box(ow, oh))}<span>This design</span><em>${specHtml(cur)}</em></div>
         <span class="vr-arrow">${ic('chevR', 18)}</span>
-        <div class="vr-pvb on">${thumb(v.pages[0], v.ratio, w * box(w, h), h * box(w, h))}<span>${ex ? 'Existing version' : 'New version'}</span><em>${esc(specLabel({ lang: st.lang, theme: st.theme, size: st.size }))}</em></div></div>`;
+        <div class="vr-pvb on">${thumb(v.pages[0], v.ratio, w * box(w, h), h * box(w, h))}<span>${ex ? 'Existing version' : 'New version'}</span><em>${specHtml({ lang: st.lang, theme: st.theme, size: st.size }, cur)}</em></div></div>`;
     };
+    /** "English · Story · Dark", what differs from `base` in bold */
+    const specHtml = (sp, base) => [['lang', LANG[sp.lang] || sp.lang], ['size', sizeName(sp.size)], ['theme', THEME[sp.theme] || sp.theme]].map(([k, t]) => (base && base[k] !== sp[k] ? `<b>${esc(t)}</b>` : esc(t))).join(' · ');
     let root = null;
     const paint = () => {
       if (!root) return; const o = changes(), ex = existing(), go = Object.keys(o).length && (ex || !(o.lang && st.tr === 'busy'));
       root.querySelector('#vrOpts').innerHTML = options();
       root.querySelector('#vrPv').innerHTML = preview();
-      root.querySelector('#vrNote').innerHTML = note();
+      const nt = note(), nEl = root.querySelector('#vrNote'); nEl.innerHTML = nt; nEl.hidden = !nt;
+      root.querySelector('#vrSum').innerHTML = summary();
       const b = root.querySelector('#vrGo'); b.disabled = !go;
-      b.innerHTML = ex ? `${ic('ext', 16)}Open this version` : `${ic('plus', 16)}${Object.keys(o).length ? 'Create ' + esc(vName('x', o).split(' · ').slice(1).join(' · ')) + ' version' : 'Create version'}`;
+      b.innerHTML = ex ? `${ic('ext', 16)}Open this version` : `${ic('plus', 16)}${Object.keys(o).length ? '<span>Create <span class="vr-what">' + esc(vName('x', o).split(' · ').slice(1).join(' · ')) + ' </span>version</span>' : 'Create version'}`;
     };
     const fetchLang = (to) => {
       if (st.lang === cur.lang) return;
-      st.tr = 'busy'; const job = st.job = translate(d, to).then((e) => { if (st.job === job) st.tr = e; }).catch(() => { if (st.job === job) st.tr = 'error'; }).finally(() => { if (st.job === job) paint(); });
+      st.tr = 'busy'; const job = st.job = translate(d, to, true).then((e) => { if (st.job === job) st.tr = e; }).catch(() => { if (st.job === job) st.tr = 'error'; }).finally(() => { if (st.job === job) paint(); });
     };
     modal(`<div class="mh"><span class="vr-hic">${ic('copy', 20)}</span><div class="grow"><h2>New version of “${esc(String(d.name || 'this design').slice(0, 60))}”</h2><p class="xs-t muted">Pick what changes. The versions stay together above the canvas.</p></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
-      <div class="mb"><div class="vr-grid"><div class="vr-opts" id="vrOpts"></div><div class="vr-pv"><div id="vrPv"></div><p class="vr-note" id="vrNote" aria-live="polite"></p></div></div></div>
+      <div class="mb"><div class="vr-grid"><div class="vr-opts" id="vrOpts"></div><div class="vr-pv"><div id="vrPv"></div><p class="vr-note" id="vrNote" aria-live="polite"></p><div id="vrSum"></div></div></div></div>
       <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="vrGo" disabled>${ic('plus', 16)}Create version</button></div>`, {
       wide: true,
       onMount: (bg, close) => {
         root = bg; paint();
+        // the thumbnails follow the dialog's width
+        let pvW = 0; const ro = new ResizeObserver(() => { const pv = bg.querySelector('#vrPv'), w = pv ? pv.clientWidth : 0; if (w && Math.abs(w - pvW) > 8) { pvW = w; pv.innerHTML = preview(); } }); ro.observe(bg.querySelector('.vr-grid'));
         bg.addEventListener('click', async (e) => {
           const b = e.target.closest('[data-vr]');
           if (b) {
