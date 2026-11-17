@@ -3946,3 +3946,26 @@ textarea.ds-sum{min-height:84px;max-width:none}
   .modal:has(.vr-grid) .mh .xs-t{display:none}
 }
 @media (max-width:440px){.vr-what{display:none}}
+
+/* ============ Design cards: tags on the preview, one tidy line below ============ */
+/* tags (video length, Figma, versions): top left, dark glass so they read on any picture; they move aside for the
+   select box when it shows (hover, selection mode, touch screens) */
+.dc-tags{position:absolute;left:10px;top:10px;z-index:2;display:flex;flex-wrap:wrap;gap:6px;max-width:calc(100% - 20px);pointer-events:none;transition:transform .15s ease-out}
+.dc-tags:empty{display:none}
+.dc-tag{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:11px;font-weight:600;line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);box-shadow:0 1px 2px rgba(0,0,0,.18)}
+.dc-tag .ic{width:12px;height:12px;flex:none}
+.card.dc .pv .dc-tag.b-mo37{position:static}
+.card.dc:hover .dc-tags,.card.dc:focus-within .dc-tags,.selmode39 .dc-tags{transform:translateX(30px)}
+@media (hover:none){.dc-tags{transform:translateX(30px)}}
+.dc-pv.dc-playing .dc-tag.b-mo37 .ic{color:var(--accent)}
+.dc-chk{left:10px;top:10px}
+/* status: only past Draft, solid enough to read on a picture */
+.card.dc .pv .st{right:10px;top:10px;z-index:2}
+.card.dc .pv .st .badge{position:static;box-shadow:0 1px 2px rgba(0,0,0,.18);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+/* below the preview: the name on two lines at most (two kept, so a row of cards lines up), then format and time */
+.card.dc .meta{gap:6px;padding:12px 14px 14px}
+.card.dc .meta b{min-height:calc(2em * 1.35);font-size:14px;line-height:1.35}
+.dc-sub{display:flex;align-items:baseline;gap:8px;min-width:0}
+.dc-fmt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dc-sub time{flex:none;white-space:nowrap;color:var(--text-3)}
+@media (prefers-reduced-motion:reduce){.dc-tags{transition:none}}
