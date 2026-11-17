@@ -1004,7 +1004,10 @@ select option{background:var(--surface);color:var(--text-1)}
 .c7card{border-radius:16px;box-shadow:var(--shadow-xs)}
 .chk7{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px;gap:8px}
 #cPvTabs:empty{display:none}
-#pvT{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;background:transparent;padding:0}
+/* The tabs wrap (no scroller) and never shrink: in the modal's scrolling column a scroller could be squeezed to
+   nothing, cutting the pills off when the post is taller than the window. The post scrolls instead. */
+#pvT{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;background:transparent;padding:2px 0;overflow:visible;flex-shrink:0;max-width:100%}
+#pvB{flex-shrink:0;width:100%}
 #pvT button{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;border:1px solid var(--border);border-radius:999px;padding:6px 12px;color:var(--text-2)}
 #pvT button.on{background:var(--text-1);color:var(--surface);border-color:var(--text-1)}
 .modal .mf{align-items:center;flex-wrap:wrap}
@@ -3404,6 +3407,8 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .vs-tl-scroll::-webkit-scrollbar{height:6px}.vs-tl-scroll::-webkit-scrollbar-thumb{background:rgba(148,163,184,.35);border-radius:3px}
 .vs-tl-track{position:relative;height:100%;min-width:100%;cursor:pointer}
 .vs-tl-rows{position:absolute;left:0;right:0}
+/* Remove pauses: where a pause was cut out of the clip */
+.vs-tl-joint{position:absolute;top:4px;bottom:4px;width:2px;margin-left:-1px;background:#fff;opacity:.85;border-radius:1px;pointer-events:none;z-index:1}
 .vs-tl-row{position:relative}
 .vs-tl-row+.vs-tl-row{box-shadow:inset 0 1px 0 rgba(148,163,184,.12)}
 .vs-tl-row.off>*{opacity:.4}
@@ -3511,6 +3516,17 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .ft-mi span{font-variant-numeric:tabular-nums}
 .ft-media>.btn{align-self:flex-start}
 .ft-alt{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+/* a design card: how many versions the original has (the versions themselves are in the editor's Versions bar) */
+.dc-vn{display:inline-flex;align-items:center;gap:3px;vertical-align:-2px}
+/* Look filters: swatch chips (sky, skin and shade through each filter) */
+.ft-fxs{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin:8px 0 12px}
+.ft-fx{display:flex;flex-direction:column;align-items:center;gap:5px;padding:5px;border-radius:10px;border:1px solid var(--border,rgba(148,163,184,.3));background:transparent;color:var(--text-2);font-size:11.5px;cursor:pointer}
+.ft-fx i,.ft-fx img{display:block;width:100%;aspect-ratio:1.4;border-radius:7px;object-fit:cover}
+.ft-light-h{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+.ft-light-h .btn{gap:5px}
+.ft-fx.on{border-color:var(--accent);color:var(--text-1);box-shadow:0 0 0 1px var(--accent)}
+.ft-fx:disabled{opacity:.5;cursor:default}
+.ft-heard{display:inline-flex;align-items:center;gap:5px;margin-right:auto}
 .ft-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px;counter-reset:ftstep}
 .ft-steps li{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px 12px 12px 44px;border:1px solid var(--border-soft);border-radius:10px;counter-increment:ftstep}
 .ft-steps li::before{content:counter(ftstep);position:absolute;left:12px;top:11px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--track);color:var(--text-2)}

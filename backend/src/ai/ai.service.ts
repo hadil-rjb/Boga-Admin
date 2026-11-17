@@ -17,6 +17,7 @@ import { coverProfile } from "./cover-profile";
 import { hfImageModels, hfWhoami } from "./hf";
 import { trackClaude } from "./usage";
 import { NoAnthropicKey, parseJsonLoose } from "../footage/caption-style";
+import { FIX_SYSTEM } from "../footage/transcript-fix";
 
 export type Provider = "anthropic" | "groq";
 const LABEL: Record<Provider, string> = { anthropic: "Claude", groq: "Groq" };
@@ -278,6 +279,18 @@ Every key must be present; "highlight" is always an object and "y" is always a t
 Describe only what is visible. When unsure, use the most common value.`;
     const { text } = await this.complete(system, user, { maxTokens: 700, json: true, images, model, provider: "anthropic", feature: "Footage captions" });
     return { style: (parseJsonLoose(text) as Record<string, any>) ?? {}, model };
+  }
+
+  /**
+   * Fixes for one part of a video's transcript (transcript-fix.ts: the prompt, then parseFixes on the answer). Always
+   * Claude (the settings model, else claude-sonnet-5-5); throws NoAnthropicKey without a Claude key.
+   */
+  async transcriptFixes(user: string): Promise<any> {
+    const s = await this.load();
+    if (!this.key(s, "anthropic")) throw new NoAnthropicKey();
+    const model = /^claude-(?!2|instant)/i.test(s.anthropicModel ?? "") ? s.anthropicModel : "claude-sonnet-5-5";
+    const { text } = await this.complete(FIX_SYSTEM, user, { maxTokens: 4000, json: true, model, provider: "anthropic", feature: "Footage captions" });
+    return parseJsonLoose(text);
   }
 
   /** One spoken line per scene, as many words as fit the scene at a natural pace (about 2.5 words a second) */

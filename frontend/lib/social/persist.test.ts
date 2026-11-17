@@ -137,6 +137,23 @@ describe("persist: design revisions", () => {
     expect(api.designs.get("d1")!.item.name).toBe("Edited in B");
   });
 
+  it("a conflict carries the version this tab last synced, so the studio can merge edits to different parts", async () => {
+    const a = await page();
+    const b = await page();
+    b.design().motion.fps = 60; // tab B: one part
+    expect(await b.persist.flush()).toBe(true);
+    a.design().name = "Renamed in A"; // tab A: another part
+    await a.persist.flush();
+    expect(a.conflicts).toHaveLength(1);
+    expect(a.conflicts[0].base).toMatchObject({ id: "d1", name: "Key events", motion: { fps: 30 } });
+    expect(a.conflicts[0].item.motion.fps).toBe(60);
+    // the studio merges (merge.js) into its design; the next save is based on B's revision: no second conflict
+    a.design().motion.fps = 60;
+    expect(await a.persist.flush()).toBe(true);
+    expect(a.conflicts).toHaveLength(1);
+    expect(api.designs.get("d1")!.item).toMatchObject({ name: "Renamed in A", motion: { fps: 60 } });
+  });
+
   it("a tab resuming its older local copy can't claim another tab's unanswered write", async () => {
     const a = await page(), b = await page(); // two tabs, both on rev 1
     a.design().name = "Edited in A";

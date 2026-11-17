@@ -16,6 +16,18 @@ done; fi
 
 get() { [ -s "$2" ] || { echo "Downloading $(basename "$2")…"; mkdir -p "$(dirname "$2")"; curl -fsSL --retry 3 -o "$2.part" "$1" && mv "$2.part" "$2"; }; }
 
+# ---------- DeepFilterNet 0.5.6 (MIT / Apache-2.0): the voice model of the video editor's "Reduce background noise" ----------
+# One self-contained binary (~28 MB, the model inside). Without it the editor falls back to an ffmpeg filter.
+DF_VER=0.5.6
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) DF_T=aarch64-apple-darwin ;; Darwin-x86_64) DF_T=x86_64-apple-darwin ;;
+  Linux-aarch64|Linux-arm64) DF_T=aarch64-unknown-linux-gnu ;; Linux-x86_64) DF_T=x86_64-unknown-linux-musl ;; *) DF_T= ;;
+esac
+if [ -n "$DF_T" ]; then
+  get "https://github.com/Rikorose/DeepFilterNet/releases/download/v$DF_VER/deep-filter-$DF_VER-$DF_T" ".tts/bin/deep-filter-$DF_VER-$DF_T"
+  chmod +x ".tts/bin/deep-filter-$DF_VER-$DF_T"
+else echo "No DeepFilterNet build for $(uname -s)-$(uname -m): background noise uses the ffmpeg filter"; fi
+
 # ---------- Kokoro (Apache-2.0) ----------
 [ -x .tts/venv/bin/python ] || "$PY" -m venv .tts/venv
 .tts/venv/bin/pip install --quiet --upgrade pip
@@ -69,6 +81,16 @@ if ! ls -d .tts/hf/hub/models--*faster-whisper-large-v3-turbo >/dev/null 2>&1; t
   HF_HOME="$PWD/.tts/hf" .tts/venv/bin/python - <<'PY'
 from faster_whisper import WhisperModel
 WhisperModel("large-v3-turbo", device="cpu", compute_type="int8")
+PY
+fi
+# large-v3 (MIT, ~3.1 GB): optional model for the dialect pass of Arabic captions (src/footage/dialect.ts), used when
+# the API runs with WHISPER_DIALECT_MODEL=large-v3. Off by default (about 5 x slower than the video on a laptop CPU, and
+# it can formalize dialect): DIALECT_MODEL=1 downloads it
+if [ "${DIALECT_MODEL:-0}" = "1" ] && ! ls -d .tts/hf/hub/models--Systran--faster-whisper-large-v3 >/dev/null 2>&1; then
+  echo "Downloading faster-whisper large-v3 (dialect pass, ~3.1 GB)…"
+  HF_HOME="$PWD/.tts/hf" .tts/venv/bin/python - <<'PY'
+from faster_whisper import WhisperModel
+WhisperModel("large-v3", device="cpu", compute_type="int8")
 PY
 fi
 

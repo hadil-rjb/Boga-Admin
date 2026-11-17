@@ -3,8 +3,9 @@
    Pure DOM / WebGL, no engine imports. createPlayer(host, opts) builds everything inside `host` and fills it
    (the caller sizes `host` at the output aspect ratio). The pure helpers at the top are unit-tested.
    ============================================================ */
-import { GLSL_TWEAK } from './look.js';
+import { GLSL_TWEAK, GLSL_FILTER, filterParams, fxOf } from './look.js';
 import { draw as drawCaptions, DEFAULT_STYLE } from './captions.js';
+import { cutAt } from './pauses.js';
 
 /* ---------- pure helpers ---------- */
 /** object-fit: cover of a src (sw × sh) into an output (ow × oh): the centred source rectangle to show, in 0..1 texture units.
@@ -32,6 +33,18 @@ export function fmtMs(ms) {
   return `${m}:${String(s).padStart(2, '0')}.${t % 10}`;
 }
 
+/**
+ * Remove pauses while playing: where to jump from media time `ms` (the presented frame's), or null to play on. A frame
+ * that started less than one frame before a cut's end is past the cut: after a jump to the end the browser shows the
+ * frame that contains it, whose time is a little earlier, and taking it for "still in the cut" jumped again and again
+ * (playback stuck at the cut). The jump lands half a frame past the end, inside the first frame after the cut.
+ */
+export function jumpFor(cuts, ms, frameMs = 1000 / 30) {
+  const c = cutAt(cuts, ms);
+  if (!c || ms >= c[1] - frameMs) return null;
+  return c[1] + frameMs / 2;
+}
+
 /* ---------- shaders ---------- */
 const VS = `#version 300 es
 in vec2 p; out vec2 uv;
@@ -40,13 +53,16 @@ const FS = `#version 300 es
 precision highp float; precision highp sampler3D;
 in vec2 uv; out vec4 o;
 uniform sampler2D u_vid; uniform sampler3D u_lut;
-uniform vec4 u_crop; uniform float u_n, u_hasLut, u_strength, u_exposure, u_temp, u_sat, u_split;
+uniform vec4 u_crop; uniform float u_n, u_hasLut, u_strength, u_exposure, u_temp, u_sat, u_split, u_vig, u_grain, u_seed;
 ${GLSL_TWEAK}
+${GLSL_FILTER}
 void main() {
   vec3 c = texture(u_vid, u_crop.xy + vec2(uv.x, 1.0 - uv.y) * u_crop.zw).rgb;
   if (uv.x < u_split) { o = vec4(c, 1.0); return; } // Before: the raw proxy
   vec3 g = u_hasLut > 0.5 ? texture(u_lut, (clamp(c, 0.0, 1.0) * (u_n - 1.0) + 0.5) / u_n).rgb : c;
-  o = vec4(lookTweak(mix(c, g, u_strength), u_exposure, u_temp, u_sat), 1.0);
+  vec3 x = lookFilter(lookTone(lookTweak(mix(c, g, u_strength), u_exposure, u_temp, u_sat))) * vignetteAt(uv, u_vig);
+  x += u_grain * 0.12 * grainAt(floor(gl_FragCoord.xy), u_seed); // film grain: the same luma noise on r, g, b
+  o = vec4(clamp(x, 0.0, 1.0), 1.0);
 }`;
 
 function compile(gl, type, src) {
@@ -73,7 +89,7 @@ function glSetup(canvas) {
   const lut = tex(1, gl.TEXTURE_3D);
   [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R].forEach((k) => gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE));
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  const U = {}; ['u_vid', 'u_lut', 'u_crop', 'u_n', 'u_hasLut', 'u_strength', 'u_exposure', 'u_temp', 'u_sat', 'u_split'].forEach((n) => (U[n] = gl.getUniformLocation(pr, n)));
+  const U = {}; ['u_vid', 'u_lut', 'u_crop', 'u_n', 'u_hasLut', 'u_strength', 'u_exposure', 'u_temp', 'u_sat', 'u_split', 'u_vig', 'u_grain', 'u_seed', 'u_tsh', 'u_thi', 'u_famt', 'u_fsat', 'u_fcon', 'u_ffade', 'u_fmono', 'u_fsh', 'u_fhi'].forEach((n) => (U[n] = gl.getUniformLocation(pr, n)));
   gl.uniform1i(U.u_vid, 0); gl.uniform1i(U.u_lut, 1);
   return { gl, U, vid, lut };
 }
@@ -86,7 +102,7 @@ function glSetup(canvas) {
  */
 export function createPlayer(host, opts) {
   const out = { w: 1080, h: 1920, fps: 30, ...(opts.out || {}) };
-  const st = { look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions: { style: null, lines: [] }, split: null, lutKey: null, hasLut: false, dead: false, raf: 0, vfc: 0, ms: 0 };
+  const st = { look: { lut: null, strength: 1, exposure: 0, temp: 0, sat: 0 }, captions: { style: null, lines: [] }, split: null, cuts: [], skipTo: null, lutKey: null, hasLut: false, dead: false, raf: 0, vfc: 0, ms: 0 };
   host.classList.add('ftp');
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous'; video.playsInline = true; video.preload = 'auto'; video.muted = false;
@@ -148,6 +164,11 @@ export function createPlayer(host, opts) {
       gl.uniform1f(U.u_strength, st.hasLut ? Math.max(0, Math.min(1, +L.strength))  : 0);
       gl.uniform1f(U.u_exposure, +L.exposure || 0); gl.uniform1f(U.u_temp, +L.temp || 0); gl.uniform1f(U.u_sat, +L.sat || 0);
       gl.uniform1f(U.u_split, st.split == null ? -1 : st.split);
+      // look filters (look.fx): the colour style, vignette and grain, as the export draws them
+      const fx = fxOf(L.fx), P = filterParams(fx);
+      gl.uniform1f(U.u_famt, P.amount); gl.uniform1f(U.u_fsat, P.sat); gl.uniform1f(U.u_fcon, P.con); gl.uniform1f(U.u_ffade, P.fade); gl.uniform1f(U.u_fmono, P.mono);
+      gl.uniform3f(U.u_fsh, P.sh[0], P.sh[1], P.sh[2]); gl.uniform3f(U.u_fhi, P.hi[0], P.hi[1], P.hi[2]);
+      gl.uniform1f(U.u_tsh, fx.shadows); gl.uniform1f(U.u_thi, fx.highlights); gl.uniform1f(U.u_vig, fx.vignette); gl.uniform1f(U.u_grain, fx.grain); gl.uniform1f(U.u_seed, Math.floor(st.ms / (1000 / (out.fps || 30))) % 997);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     } else if (c2) {
       c2.fillStyle = '#000'; c2.fillRect(0, 0, W, H);
@@ -159,16 +180,27 @@ export function createPlayer(host, opts) {
     opts.onTime && opts.onTime(st.ms, !video.paused);
   }
 
+  /** Remove pauses: while playing, a frame inside a cut jumps to the cut's end (the video's end: it stops there). true when it jumped */
+  function skip() {
+    if (!st.cuts.length || video.paused || video.ended) return false;
+    if (video.seeking && st.skipTo != null) return true; // the jump is on its way
+    const to = jumpFor(st.cuts, st.ms, 1000 / (out.fps || 30)); if (to == null) { st.skipTo = null; return false; }
+    const d = isFinite(video.duration) ? video.duration * 1000 : Infinity;
+    st.skipTo = to;
+    if (to >= d - 1) { video.pause(); st.ms = d; video.currentTime = d / 1000; return true; }
+    video.currentTime = to / 1000;
+    return true;
+  }
   /* frame loop: requestVideoFrameCallback gives the exact presented media time; rAF otherwise (and while paused nothing runs) */
   const hasVfc = typeof video.requestVideoFrameCallback === 'function';
-  const onVfc = (_now, meta) => { if (st.dead) return; st.ms = meta && meta.mediaTime != null ? meta.mediaTime * 1000 : video.currentTime * 1000; render(); st.vfc = video.requestVideoFrameCallback(onVfc); };
-  const onRaf = () => { if (st.dead || video.paused) { st.raf = 0; return; } st.ms = video.currentTime * 1000; render(); st.raf = requestAnimationFrame(onRaf); };
+  const onVfc = (_now, meta) => { if (st.dead) return; st.ms = meta && meta.mediaTime != null ? meta.mediaTime * 1000 : video.currentTime * 1000; if (!skip()) render(); st.vfc = video.requestVideoFrameCallback(onVfc); };
+  const onRaf = () => { if (st.dead || video.paused) { st.raf = 0; return; } st.ms = video.currentTime * 1000; if (!skip()) render(); st.raf = requestAnimationFrame(onRaf); };
   if (hasVfc) st.vfc = video.requestVideoFrameCallback(onVfc);
   const still = () => { st.ms = video.currentTime * 1000; render(); };
   const on = (ev, fn) => video.addEventListener(ev, fn);
   on('loadeddata', still); on('seeked', still);
   on('loadedmetadata', () => { opts.onReady && opts.onReady(video.duration * 1000); });
-  on('play', () => { if (!hasVfc && !st.raf) st.raf = requestAnimationFrame(onRaf); opts.onTime && opts.onTime(st.ms, true); });
+  on('play', () => { st.ms = video.currentTime * 1000; skip(); if (!hasVfc && !st.raf) st.raf = requestAnimationFrame(onRaf); opts.onTime && opts.onTime(st.ms, true); });
   on('pause', () => { st.ms = video.currentTime * 1000; render(false); });
   on('ended', () => { opts.onTime && opts.onTime(st.ms, false); });
   on('error', () => { opts.onError && opts.onError(video.error); });
@@ -179,13 +211,15 @@ export function createPlayer(host, opts) {
     pause: () => video.pause(),
     toggle: () => (video.paused || video.ended ? P.play() : P.pause()),
     playing: () => !video.paused && !video.ended,
-    seek: (ms) => { const d = isFinite(video.duration) ? video.duration * 1000 : Infinity; const t = Math.max(0, Math.min(+ms || 0, d)); st.ms = t; video.currentTime = t / 1000; render(false); },
+    seek: (ms) => { const d = isFinite(video.duration) ? video.duration * 1000 : Infinity; const t = Math.max(0, Math.min(+ms || 0, d)); st.ms = t; st.skipTo = null; video.currentTime = t / 1000; render(false); },
     time: () => (video.paused ? st.ms : video.currentTime * 1000),
     duration: () => (isFinite(video.duration) ? video.duration * 1000 : 0),
     frameMs: () => 1000 / (out.fps || 30),
     /** Re-uploads the 3D texture only when `look.lut` changes (or when its cube was not loaded on the last call) */
     setLook: (look) => { st.look = { ...st.look, ...(look || {}) }; uploadLut(); render(false); },
     setCaptions: (c) => { st.captions = { style: null, lines: [], ...(c || {}) }; render(false); },
+    /** Remove pauses: [[start, end]] ms that playback jumps over (pauses.js pauseCuts); seeking into one still shows it */
+    setCuts: (c) => { st.cuts = Array.isArray(c) ? c : []; st.skipTo = null; },
     setSplit: (x) => { st.split = x == null ? null : Math.max(0, Math.min(1, +x)); render(false); },
     /** The original sound's volume, 0..1 (the export applies the same; "Mute preview" stays separate: video.muted) */
     setVolume: (v) => { const n = +v; video.volume = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1; },

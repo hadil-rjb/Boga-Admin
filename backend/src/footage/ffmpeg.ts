@@ -89,32 +89,85 @@ export function parseProgress(line: string, durMs: number): number | null {
 
 /** A music bed for the export: a local audio file, its volume (0..1) and whether it dips under the original's speech */
 export type ExportMusic = { path: string; vol: number; duck: boolean };
-export type ExportArgs = { src: string; probe: Probe; cube: string; concat: string; out: string; w: number; h: number; fps: number; limitSec?: number; vol?: number; music?: ExportMusic | null };
+/** Kept frames of the constant-rate output, [[first, last]] inclusive (pauses.js keepFrames); null keeps everything */
+export type ExportKeep = [number, number][] | null;
+export type ExportArgs = { src: string; probe: Probe; cube: string; concat: string; out: string; w: number; h: number; fps: number; limitSec?: number; vol?: number; music?: ExportMusic | null; denoise?: boolean; voice?: string | null; keep?: ExportKeep; grain?: number; vignette?: number };
+
+/**
+ * "Reduce background noise" without the voice model (DeepFilterNet missing on this machine, see jobs.service.ts): a high-pass under the voice (rumble, wind, engine), then FFT denoising that tracks the noise
+ * floor as it changes (tn=1). Used by the preview's clean proxy (buildCleanArgs) and the export, so both sound the same.
+ */
+export const DENOISE = 'highpass=f=80,afftdn=nr=15:nf=-40:tn=1';
+/** The sound's rate in the export when frames are cut: one frame of video is exactly 48000 / fps samples (24, 25, 30, 60 all divide) */
+export const CUT_RATE = 48000;
+/** select / aselect expression keeping frames `keep` (n is the frame number, the same for the video and the frame-sized audio chunks) */
+export const keepExpr = (keep: [number, number][]) => keep.map(([a, b]) => (a === b ? `eq(n,${a})` : `between(n,${a},${b})`)).join("+"); // quoted in the graph: the commas need no escaping
+const cutting = (keep: ExportKeep | undefined): keep is [number, number][] => Array.isArray(keep) && keep.length > 0;
+
+/** The original's sound for the voice model: 48 kHz mono 16-bit WAV (DeepFilterNet's rate) */
+export function buildVoiceInArgs(src: string, wav: string): string[] {
+  return ['-y', '-hide_banner', '-loglevel', 'error', '-i', src, '-vn', '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', '-f', 'wav', wav];
+}
+
+/**
+ * The vignette as one frame, looped: black whose alpha is the shader's darkening (look.js vignetteAt: 0.6 × amount × a
+ * smoothstep from 0.35 to 0.95 of the distance to the centre, the corners at 1). Laid over the picture it multiplies it,
+ * as the shader does. Drawn once by geq, not per frame.
+ */
+export function vignetteSource(w: number, h: number, amount: number): string {
+  const a = +Math.max(0, Math.min(1, amount)).toFixed(3);
+  const t = `clip((hypot(X/W-0.5,Y/H-0.5)*1.4142-0.35)/0.6,0,1)`;
+  return `color=c=black:s=${w}x${h}:d=0.04,format=rgba,geq=r=0:g=0:b=0:a='255*${a}*0.6*${t}*${t}*(3-2*${t})',loop=loop=-1:size=1:start=0`;
+}
+
+/**
+ * The preview's clean proxy: the proxy's picture copied as is, with the voice the model isolated (voice.wav) or, without
+ * it, the proxy's sound through DENOISE (the player swaps it in while "Reduce background noise" is on).
+ */
+export function buildCleanArgs(proxy: string, out: string, voice: string | null = null): string[] {
+  if (voice) return ['-y', '-hide_banner', '-loglevel', 'error', '-i', proxy, '-i', voice, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', '-f', 'mp4', out];
+  return ['-y', '-hide_banner', '-loglevel', 'error', '-i', proxy, '-map', '0:v:0', '-map', '0:a:0', '-c:v', 'copy', '-af', DENOISE, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-f', 'mp4', out];
+}
 
 const gain = (v: number) => String(+Math.max(0, Math.min(1, v)).toFixed(3));
 /**
  * The audio half of the export: extra inputs, the filtergraph chains (appended to -filter_complex), the -map and codec args.
- * - original only at volume 1: a plain copy of the first audio stream (as before);
+ * - the original first goes through DENOISE (denoise) and loses the cut frames (keep: resampled to 48 kHz, split into
+ *   chunks of one video frame, the same select expression as the picture, timestamps rebuilt);
+ * - original only at volume 1, nothing else: a plain copy of the first audio stream (as before);
  * - original at another volume: [0:a:0]volume=V[aout];
  * - original + music: the music (input 2) looped with aloop and set to its volume; with duck, a sidechain compressor keyed by
  *   the original (before its volume, so a quiet original still ducks the music) dips it under speech; amix sums the two
  *   (normalize=0: no halving, the preview adds the two the same way), duration=first: the original sets the length;
- * - music alone (no original audio, or the original at 0): the looped music trimmed to the video;
+ * - music alone (no original audio, or the original at 0): the looped music trimmed to the (cut) video;
  * - nothing to hear: -an.
+ * The music is added after the cuts: it plays on under the edited video without jumps.
+ * With `voice` (the model's isolated voice, a WAV of the same length) that file is the original's sound (input 2, the music
+ * moves to input 3) and DENOISE is not needed.
  */
-export function exportAudio(probe: Probe, vol = 1, music: ExportMusic | null = null, limitSec?: number): { inputs: string[]; graph: string; map: string[]; codec: string[] } {
+export function exportAudio(probe: Probe, vol = 1, music: ExportMusic | null = null, limitSec?: number, opts: { denoise?: boolean; voice?: string | null; keep?: ExportKeep; fps?: number } = {}): { inputs: string[]; graph: string; map: string[]; codec: string[] } {
   const orig = probe.audio && vol > 0, aac = ['-c:a', 'aac', '-b:a', '192k'];
   if (!orig && !music) return { inputs: [], graph: '', map: [], codec: ['-an'] };
-  if (!music) {
-    if (vol >= 1) return { inputs: [], graph: '', map: ['-map', '0:a:0?'], codec: aac };
-    return { inputs: [], graph: `;[0:a:0]volume=${gain(vol)}[aout]`, map: ['-map', '[aout]'], codec: aac };
+  const voice = orig && opts.denoise && opts.voice ? opts.voice : null, vin = voice ? ['-i', voice] : [];
+  const src = voice ? '2:a:0' : '0:a:0', mi = voice ? 3 : 2;
+  const pre: string[] = [];
+  if (opts.denoise && !voice) pre.push(DENOISE);
+  if (cutting(opts.keep)) {
+    const fps = opts.fps || 30;
+    pre.push(`aresample=${CUT_RATE}:first_pts=0`, `asetnsamples=n=${CUT_RATE / fps}:p=1`, `aselect='${keepExpr(opts.keep)}'`, 'asetpts=N/SR/TB');
   }
-  const m = `[2:a:0]aloop=-1:2e9,volume=${gain(music.vol)}`;
+  const a0 = pre.length ? `[${src}]${pre.join(',')},` : `[${src}]`;
+  const outSec = cutting(opts.keep) ? opts.keep.reduce((n, [a, b]) => n + b - a + 1, 0) / (opts.fps || 30) : probe.dur;
+  if (!music) {
+    if (vol >= 1 && !pre.length) return { inputs: vin, graph: '', map: ['-map', `${src}?`], codec: aac };
+    return { inputs: vin, graph: `;${a0}volume=${gain(vol)}[aout]`, map: ['-map', '[aout]'], codec: aac };
+  }
+  const m = `[${mi}:a:0]aloop=-1:2e9,volume=${gain(music.vol)}`;
   let graph: string;
-  if (!orig) graph = `;${m},atrim=0:${+(limitSec ?? probe.dur).toFixed(3)}[aout]`;
-  else if (music.duck) graph = `;[0:a:0]asplit=2[a0s][sc];[a0s]volume=${gain(vol)}[a0];${m}[m];[m][sc]sidechaincompress=threshold=0.05:ratio=8[md];[a0][md]amix=inputs=2:duration=first:normalize=0[aout]`;
-  else graph = `;[0:a:0]volume=${gain(vol)}[a0];${m}[m];[a0][m]amix=inputs=2:duration=first:normalize=0[aout]`;
-  return { inputs: ['-i', music.path], graph, map: ['-map', '[aout]'], codec: aac };
+  if (!orig) graph = `;${m},atrim=0:${+Math.min(limitSec ?? Infinity, outSec).toFixed(3)}[aout]`;
+  else if (music.duck) graph = `;${a0}asplit=2[a0s][sc];[a0s]volume=${gain(vol)}[a0];${m}[m];[m][sc]sidechaincompress=threshold=0.05:ratio=8[md];[a0][md]amix=inputs=2:duration=first:normalize=0[aout]`;
+  else graph = `;${a0}volume=${gain(vol)}[a0];${m}[m];[a0][m]amix=inputs=2:duration=first:normalize=0[aout]`;
+  return { inputs: [...vin, '-i', music.path], graph, map: ['-map', '[aout]'], codec: aac };
 }
 
 /**
@@ -129,13 +182,21 @@ export function exportAudio(probe: Probe, vol = 1, music: ExportMusic | null = n
  * fps (phones record 30.004). `-r fps` then sets the output rate. shortest=1: the source video sets the length, never the
  * overlay (which runs a little past the end).
  */
-export function buildExportArgs({ src, probe, cube, concat, out, w, h, fps, limitSec, vol = 1, music = null }: ExportArgs): string[] {
+export function buildExportArgs({ src, probe, cube, concat, out, w, h, fps, limitSec, vol = 1, music = null, denoise = false, voice = null, keep = null, grain = 0, vignette = 0 }: ExportArgs): string[] {
   const v: string[] = [];
   if (ROTATE[probe.rotation]) v.push(ROTATE[probe.rotation]);
   v.push(`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'format=rgb48le', `lut3d=file=${cube}:interp=tetrahedral`, `scale=${RGB_TO_709}`, 'format=yuv420p');
   const o = ['format=rgba', `scale=${RGB_TO_709}`, 'format=yuva420p'];
-  const A = exportAudio(probe, vol, music, limitSec);
-  const fc = `[0:v]${v.join(',')}[v];[1:v]${o.join(',')}[o];[v][o]overlay=0:0:format=auto:eof_action=repeat:shortest=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]${A.graph}`;
+  const A = exportAudio(probe, vol, music, limitSec, { denoise, voice, keep, fps });
+  // Remove pauses: the source on the fps grid first (frame n shows n / fps; before the overlay, which ends the stream with
+  // shortest=1 and would cost fps its last frame), then the kept frames selected after the captions, timestamps rebuilt
+  if (cutting(keep)) v.unshift(`fps=${fps}`);
+  const cut = cutting(keep) ? `,select='${keepExpr(keep)}',setpts=N/${fps}/TB` : '';
+  // film grain and vignette (look filters), under the captions, drawn as the preview shader does (look.js GLSL_FILTER)
+  let fxg = '';
+  if (grain > 0) v.push(`noise=c0s=${Math.round(grain * 15)}:c0f=t+u`); // ±0.06 × grain of the range on luma, new each frame
+  if (vignette > 0) fxg = `;${vignetteSource(w, h, vignette)}[vg];[v][vg]overlay=0:0:format=auto:shortest=1,format=yuv420p[v2]`;
+  const fc = `[0:v]${v.join(',')}[v]${fxg};[1:v]${o.join(',')}[o];[${vignette > 0 ? 'v2' : 'v'}][o]overlay=0:0:format=auto:eof_action=repeat:shortest=1${cut},format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv[out]${A.graph}`;
   return [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-noautorotate', '-display_rotation', '0', '-i', src, // as the proxy: we rotate ourselves, no display matrix survives

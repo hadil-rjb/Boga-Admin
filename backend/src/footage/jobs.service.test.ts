@@ -73,7 +73,7 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'jobs-')); process.env.FOOTAGE_DIR = root; store = new FootageStore();
   calls = []; probeJson = fx('probe-hlg-1080.json'); failProxy = false; failFrames = false; failGrade = false; failAudio = false; ffmpegActive = 0; ffmpegMax = 0;
   model = fakeModel({ [ID1]: {}, [ID2]: {} });
-  svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner;
+  svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner; svc.deepFilter = () => null;
   ask = vi.fn(async (_r: any, _t?: number) => ({ ok: true, lang: 'ar', words: [{ t: ' مرحبا ', s: 100, e: 400.4, p: 0.9 }, { t: '  ', s: 410, e: 420, p: 0.5 }, { t: 'بكم', s: 390, e: 800, p: 0.8 }] }));
   svc.whisper = { ask } as any;
   writeFileSync(svc.cube, 'cube');
@@ -225,7 +225,7 @@ describe('JobsService recovery and cube', () => {
       [ID1]: { status: 'assembling', updatedAt: new Date(now - 20 * 60_000) },
       [ID2]: { status: 'processing', jobs: { probe: { state: 'done' }, proxy: { state: 'running', progress: 0.3 } } },
     });
-    svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner;
+    svc = new JobsService(model, store, {} as any); svc.runner = fakeRunner; svc.deepFilter = () => null;
     const enq = vi.spyOn(svc, 'enqueue').mockResolvedValue();
     await svc.recover(now);
     expect(model.docs[ID1].status).toBe('uploading');
@@ -269,6 +269,41 @@ describe('JobsService transcribe', () => {
     expect(ask.mock.calls[0][0].lang).toBeUndefined();
     expect(JSON.parse(readFileSync(store.file(ID1, 'words.json'), 'utf8'))).toEqual([{ t: 'مرحبا', s: 100, e: 400, p: 0.9 }, { t: 'بكم', s: 390, e: 800, p: 0.8 }]);
     expect(model.docs[ID1].jobs.transcribe.state).toBe('done');
+  });
+  it('Claude fixes misheard words in words.json, keeping their time; without fixes or on an error the heard words stay', async () => {
+    // one fix sounds like what was heard (kept), one is another word (refused by the verbatim guard)
+    const fixes = vi.fn().mockResolvedValue({ fixes: [{ from: 0, to: 0, text: 'أهلا' }, { from: 1, to: 1, text: 'بكن' }] });
+    (svc as any).ai = { transcriptFixes: fixes };
+    await svc.enqueue(ID1, 'transcribe'); await svc.idle(ID1);
+    expect(fixes.mock.calls[0][0]).toContain('0:مرحبا 1:بكم');
+    expect(JSON.parse(readFileSync(store.file(ID1, 'words.json'), 'utf8'))).toEqual([{ t: 'مرحبا', s: 100, e: 400, p: 0.9 }, { t: 'بكن', s: 390, e: 800, p: 0.8 }]);
+    fixes.mockRejectedValue(new Error('overloaded'));
+    await svc.enqueue(ID1, 'transcribe'); await svc.idle(ID1);
+    expect(JSON.parse(readFileSync(store.file(ID1, 'words.json'), 'utf8'))[1].t).toBe('بكم');
+    expect(model.docs[ID1].jobs.transcribe.state).toBe('done');
+  });
+  it('Levantine speech: a second pass hinted in that dialect, its words kept, the dialect stored', async () => {
+    const lev = 'مشان هيك عم قلكن هلق شو بدي احكي'.split(' ').map((t, i) => ({ t, s: i * 300, e: i * 300 + 250, p: 0.9 }));
+    ask.mockResolvedValueOnce({ ok: true, lang: 'ar', words: lev }).mockResolvedValueOnce({ ok: true, lang: 'ar', words: [{ t: 'هلق', s: 0, e: 300, p: 0.95 }] });
+    await svc.enqueue(ID1, 'transcribe'); await svc.idle(ID1);
+    expect(ask).toHaveBeenCalledTimes(2);
+    expect(ask.mock.calls[1][0]).toMatchObject({ lang: 'ar', prompt: expect.stringContaining('هلق') });
+    expect(JSON.parse(readFileSync(store.file(ID1, 'words.json'), 'utf8'))).toEqual([{ t: 'هلق', s: 0, e: 300, p: 0.95 }]);
+    expect(model.docs[ID1].meta).toMatchObject({ lang: 'ar', dialect: 'levantine' });
+  });
+  it('the dialect pass runs on the full model, and on the default one when that takes too long', async () => {
+    const lev = 'مشان هيك عم قلكن هلق شو بدي احكي'.split(' ').map((t, i) => ({ t, s: i * 300, e: i * 300 + 250, p: 0.9 }));
+    ask.mockResolvedValueOnce({ ok: true, lang: 'ar', words: lev }).mockRejectedValueOnce(new Error('The worker took too long'))
+      .mockResolvedValueOnce({ ok: true, lang: 'ar', words: [{ t: 'شي', s: 0, e: 300, p: 0.9 }] });
+    svc.dialectModel = 'large-v3'; // WHISPER_DIALECT_MODEL
+    await svc.enqueue(ID1, 'transcribe'); await svc.idle(ID1);
+    expect(ask.mock.calls.map((c) => c[0].model ?? null)).toEqual([null, 'large-v3', null]);
+    expect(JSON.parse(readFileSync(store.file(ID1, 'words.json'), 'utf8'))).toEqual([{ t: 'شي', s: 0, e: 300, p: 0.9 }]);
+  });
+  it('formal Arabic: one pass only', async () => {
+    await svc.enqueue(ID1, 'transcribe'); await svc.idle(ID1);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(model.docs[ID1].meta.dialect).toBeNull();
   });
   it('a failed transcribe does not fail the footage and does not re-run probe', async () => {
     ask.mockRejectedValue(new Error('x'));

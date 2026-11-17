@@ -14,14 +14,23 @@ import { apiUrl } from '../lib/api';
 import { group, retime, DEFAULT_STYLE, FONTS_CSS, draw as drawCaptions } from './captions.js';
 import { lineText, captionsOn, langFromLines, editStyle, fileBase, NEEDS_VIDEO } from './caption-panels.js';
 import { dragCaption } from './caption-inspector.js';
-import { parseCube } from './look.js';
+import { parseCube, FILTERS, fxOf, filterParams, applyFilter, applyTone, tweak as lookTweak } from './look.js';
 import { capsOf, styleOf, migrateCaptions } from './caption-store.js';
 import { createPlayer, fitBox, fmtMs } from './footage-player.js';
 import { uploadFootage, isVideoFile, isAbort } from './upload.js';
+import { pausesOf, pauseCuts, editedMs, cutTotal, toEdited, toSource, editPeaks, PAUSE_MIN_MS, PAUSE_MAX_MS } from './pauses.js';
 
 /* ---------- 1. pure helpers ---------- */
 const BUSY = ['queued', 'running'];
-const STEPS = ['probe', 'proxy', 'frames', 'transcribe', 'grade', 'caption-style'];
+const STEPS = ['probe', 'proxy', 'frames', 'clean', 'transcribe', 'grade', 'caption-style'];
+const DIALECTS = { levantine: 'Levantine Arabic', gulf: 'Gulf Arabic', egyptian: 'Egyptian Arabic', maghrebi: 'Maghrebi Arabic', iraqi: 'Iraqi Arabic' };
+/** What the transcription heard, from the footage's meta (the server's transcribe step): "Levantine Arabic", "Arabic", "English"… or null */
+export function heardAs(meta) {
+  const m = meta || {};
+  if (m.dialect && DIALECTS[m.dialect]) return DIALECTS[m.dialect];
+  if (!m.lang) return null;
+  try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(m.lang) || null; } catch (e) { return null; }
+}
 /** Where the editor keeps the matched grade: a marker for the original's look.cube (the export reads the same file) */
 export const lookPath = (id) => `footage/${id}/look.cube`;
 /** One pipeline step of a record: { state, progress, error } (state undefined when never requested) */
@@ -42,7 +51,7 @@ export function analysis(rec, ref) {
   const refDone = !ref || ['ready', 'failed'].includes(ref.status);
   const style = ref ? stepInfo(ref, 'caption-style') : { state: 'skipped', progress: 0, error: null };
   return {
-    transcribe: stepInfo(rec, 'transcribe'), grade: stepInfo(rec, 'grade'), style,
+    clean: stepInfo(rec, 'clean'), transcribe: stepInfo(rec, 'transcribe'), grade: stepInfo(rec, 'grade'), style,
     proxy: stepInfo(rec, 'proxy'), failed: !!rec && rec.status === 'failed', error: (rec && rec.error) || null,
     busy: (s) => BUSY.includes(s.state) || (s.state === undefined && !!rec && !recDone),
     // a step queued or running means more results are coming, whatever the status says (a step requested while `ready` was saved)
@@ -159,6 +168,62 @@ const clampN2 = (v, a, b) => Math.min(Math.max(v, a), b);
 /** The grade sliders' integer ranges: strength 0..100 (value 0..1), the others -100..100 (value -1..1) */
 export const GRADE_KEYS = { strength: [0, 100], exposure: [-100, 100], temp: [-100, 100], sat: [-100, 100] };
 export const GRADE_RESET = { strength: 1, exposure: 0, temp: 0, sat: 0 };
+/* ---- Look filters (look.js FILTERS): a colour style, film grain and a vignette over the grade ---- */
+/** look.fx after one change: filter (a FILTERS key: its light balance comes with it) or a 0..100 slider */
+export function fxPatch(look, key, value) {
+  const fx = fxOf(look && look.fx);
+  if (key === 'filter') {
+    const id = Object.prototype.hasOwnProperty.call(FILTERS, value) ? value : 'none', [sh, hi] = FILTERS[id].light || [0, 0];
+    return { ...fx, filter: id, shadows: sh, highlights: hi };
+  }
+  if (!['amount', 'shadows', 'highlights', 'grain', 'vignette'].includes(key)) return fx;
+  return { ...fx, [key]: unitOf(value) };
+}
+/** A skin-coloured pixel (YCbCr skin box, any skin tone): what Auto measures the person's face on */
+const isSkin = (r, g, b) => {
+  const cb = 128 - 0.1687 * r - 0.3313 * g + 0.5 * b, cr = 128 + 0.5 * r - 0.4187 * g - 0.0813 * b;
+  return cb >= 77 && cb <= 127 && cr >= 135 && cr <= 173 && r > g && r > b;
+};
+/**
+ * Light balance measured on a frame (RGBA bytes, w × h): how much to brighten the person and tone down the background.
+ * - the face: skin-coloured, not near-white pixels in the upper middle (a talking video: centred), else that whole area;
+ *   darker than 0.58 asks for shadows up to 1 (at 0.33);
+ * - the body under it (dark clothes, hair against a bright window): a mean under 0.25 asks for shadows up to 0.5;
+ * - the background: the frame's brightest 5 % over 0.85 gets highlights up to 0.7 (a blown-out window has no more
+ *   detail to show, it only turns grey).
+ * Rounded to the slider's steps.
+ */
+export function autoLight(data, w, h) {
+  if (!data || !(w > 0 && h > 0)) return { shadows: 0, highlights: 0 };
+  const L = (i) => (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+  let skin = 0, ns = 0, area = 0, na = 0, body = 0, nb = 0; const all = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4, v = L(i); all.push(v);
+    if (x > w * 0.3 && x < w * 0.7 && y > h * 0.12 && y < h * 0.45) {
+      area += v; na++;
+      if (v < 0.85 && isSkin(data[i], data[i + 1], data[i + 2])) { skin += v; ns++; }
+    } else if (x > w * 0.25 && x < w * 0.75 && y > h * 0.55 && y < h * 0.95) { body += v; nb++; }
+  }
+  all.sort((a, b) => a - b);
+  const face = ns >= na * 0.03 ? skin / ns : na ? area / na : 0.5, dress = nb ? body / nb : 0.5;
+  const p95 = all[Math.min(all.length - 1, Math.floor(all.length * 0.95))] || 0;
+  const r = (v, top = 1) => Math.round(Math.min(top, Math.max(0, v)) * 100) / 100;
+  return { shadows: r(Math.max((0.58 - face) / 0.25, ((0.25 - dress) / 0.25) * 0.5)), highlights: r(((p95 - 0.85) / 0.15) * 0.7, 0.7) };
+}
+/** One frame through the look (tweaks, light, filter; not the LUT): RGBA bytes in place, for the filter thumbnails */
+export function lookPixels(data, look, fx) {
+  const X = fxOf(fx), P = filterParams(X), T = { exposure: +(look && look.exposure) || 0, temp: +(look && look.temp) || 0, sat: +(look && look.sat) || 0 };
+  for (let i = 0; i < data.length; i += 4) {
+    const c = applyFilter(applyTone(lookTweak([data[i] / 255, data[i + 1] / 255, data[i + 2] / 255], T), X.shadows, X.highlights), P);
+    data[i] = c[0] * 255; data[i + 1] = c[1] * 255; data[i + 2] = c[2] * 255;
+  }
+  return data;
+}
+/** A filter's swatch: sky, skin and shade through it at full amount, as a CSS gradient */
+export function swatchOf(id) {
+  const P = filterParams({ filter: id, amount: 1 }), hex = (c) => '#' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
+  return `linear-gradient(135deg,${[[0.45, 0.62, 0.82], [0.86, 0.66, 0.54], [0.2, 0.18, 0.2]].map((c) => hex(applyFilter(c, P))).join(',')})`;
+}
 /** A grade value as the slider's integer */
 export function gradeToSlider(key, v) {
   const [a, b] = GRADE_KEYS[key], x = v == null && key === 'strength' ? 1 : +v || 0;
@@ -198,11 +263,21 @@ export function applyLookTo(caps, ft, look, lines) {
 const unit = (v, d) => { const n = v == null || v === '' ? d : +v; return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : d; };
 /** The id of a hosted audio file (/api/media/<24hex>.<ext>), or null */
 export const mediaIdOf = (src) => (/\/media\/([0-9a-f]{24})\./.exec(String(src || '')) || [])[1] || null;
-/** `d.footage.audio` with its defaults: { vol 0..1 (1), music: { src, mediaId, name, vol 0..1 (0.6), duck (true), dur ms } | null } */
+/**
+ * `d.footage.audio` with its defaults: { vol 0..1 (1), music: { src, mediaId, name, vol 0..1 (0.6), duck (true), dur ms } | null,
+ * denoise (false: Reduce background noise), pauses: { on (false), min ms (600) } (Remove pauses, pauses.js) }
+ */
 export function ftAudioOf(ft) {
   const a = (ft && ft.audio) || {}, m = a.music;
   const music = m && m.src ? { src: String(m.src), mediaId: m.mediaId || mediaIdOf(m.src), name: String(m.name || 'Music'), vol: unit(m.vol, 0.6), duck: m.duck !== false, dur: +m.dur || 0 } : null;
-  return { vol: unit(a.vol, 1), music };
+  return { vol: unit(a.vol, 1), music, denoise: !!a.denoise, pauses: pausesOf(a.pauses) };
+}
+/** The pauses to cut in the preview: none while Remove pauses is off, before the words are in, or before the length is known */
+export const cutsFor = (audio, words, durMs) => (audio && audio.pauses && audio.pauses.on && durMs > 0 ? pauseCuts(words, durMs, audio.pauses.min) : []);
+/** "Removes 12.3 s · new length 0:58.1" (nothing to cut: says so) */
+export function pausesNote(cuts, durMs) {
+  if (!cuts.length) return 'No pauses that long in this video.';
+  return `Removes ${(cutTotal(cuts) / 1000).toFixed(1)} s in ${cuts.length} ${cuts.length === 1 ? 'place' : 'places'} · new length ${fmtMs(editedMs(cuts, durMs)).replace(/\.0$/, '')}`;
 }
 /** The music the design stores for a file the picker returned ({ src, name, dur }); the volume and ducking of `prev` stay. null for a file the server does not host */
 export function musicRecord(f, prev) {
@@ -260,7 +335,8 @@ export function exportSizes(out) {
 /** POST /footage/export body: the server reads nothing from the design store, so everything the MP4 needs travels here */
 export function exportPayload(d, size) {
   const ft = d.footage, caps = capsOf(d), on = captionsOn(d), out = ft.out || {}, fps = [24, 25, 30, 60].includes(+out.fps) ? +out.fps : 30;
-  const A = ftAudioOf(ft), audio = { vol: A.vol, music: A.music && A.music.mediaId ? { mediaId: A.music.mediaId, vol: A.music.vol, duck: A.music.duck } : null };
+  const A = ftAudioOf(ft), audio = { vol: A.vol, music: A.music && A.music.mediaId ? { mediaId: A.music.mediaId, vol: A.music.vol, duck: A.music.duck } : null,
+    ...(A.denoise ? { denoise: true } : {}), ...(A.pauses.on ? { pauses: { min: A.pauses.min } } : {}) };
   return { designId: d.id, footage: { src: ft.src, look: ft.look, captions: { style: on ? styleOf(d) : null, lines: on ? caps.lines || [] : [] }, out: ft.out, audio }, w: size.w, h: size.h, fps };
 }
 /** The download's file name: the design name, the size, .mp4 */
@@ -292,7 +368,7 @@ export function installFootageEditor(ctx, FT) {
     if (prepareOpen(d)) save();
     const old = $('#ftStage'); if (old) old.remove(); // a new video in the same design: the stage is made again (its size observer too)
     if (!d.footage.src && !FT.upload(d)) ED.tab = 'scenes'; // an empty video opens on Scenes (the stage shows the drop zone)
-    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false, musicMuted: false, mel: null, aLive: null, aBusy: false, spans: null, spansOf: null };
+    F = { d, id: d.footage.src, ref: d.footage.ref, rec: null, refRec: null, cube: null, cubes: {}, cubeBad: {}, cubeGone: {}, timer: 0, player: null, split: null, dur: 0, lastRefresh: 0, applied: false, err: null, note: null, gen: 0, sig: '', peaks: null, ac: new AbortController(), retx: false, muted: false, musicMuted: false, mel: null, aLive: null, aBusy: false, spans: null, spansOf: null, words: null, wordsBusy: false, cuts: [], pLive: null, srcKind: 'proxy', cleanAsked: false };
     loadFonts();
     ed.rail(); ed.panel(); // edAll draws the panels before the stage: show the footage panels right away
     poll();
@@ -322,6 +398,8 @@ export function installFootageEditor(ctx, FT) {
     }
     if (S.rec && S.rec.proxyUrl && !S.player) mountPlayer();
     const A = analysis(S.rec, S.refRec);
+    if (A.transcribe.state === 'done' && S.words == null) loadWords(S);
+    cleanSync();
     if (A.settled && !S.applied) { S.applied = true; await results(S); }
     if (!alive(S) || gen !== S.gen) return;
     redraw();
@@ -352,12 +430,45 @@ export function installFootageEditor(ctx, FT) {
     sync();
   }
 
+  /** The transcript's words, once (Remove pauses cuts between them); a failure counts as none */
+  async function loadWords(S) {
+    if (S.wordsBusy) return; S.wordsBusy = true;
+    let w = [];
+    try { const r = await api(`/footage/${S.id}/words`); if (Array.isArray(r)) w = r; } catch (e) { /* no words: nothing is cut */ }
+    S.wordsBusy = false;
+    if (!alive(S)) return;
+    S.words = w; cutsSync();
+    if (ED.tab === 'audio') ed.panel();
+  }
+  /** Remove pauses: the player skips the cuts, the timeline hatches them, the top bar shows the new length */
+  function cutsSync() {
+    if (!F) return;
+    const a = ftAudioOf(ED.d.footage), p = F.pLive != null ? { ...a, pauses: { on: true, min: F.pLive } } : a;
+    const cuts = cutsFor(p, F.words || [], F.dur), was = F.cuts;
+    F.cuts = cuts;
+    if (F.player) F.player.setCuts(cuts);
+    if (JSON.stringify(was) !== JSON.stringify(cuts)) { if (F.peaks) VS.setPeaks(editPeaks(F.peaks, cuts, F.dur)); lane(); if (F.player) VS.tick(toEdited(cuts, F.player.time()), F.player.playing()); }
+  }
+  /** Reduce background noise: the preview plays the clean proxy (asked for once, made by the server's clean step) */
+  function cleanSync() {
+    const S = F; if (!S || !S.rec || !S.rec.proxyUrl) return;
+    const want = ftAudioOf(ED.d.footage).denoise && hasSound(), st = stepInfo(S.rec, 'clean');
+    if (want && !S.rec.cleanUrl && !BUSY.includes(st.state) && st.state !== 'failed' && !S.cleanAsked && can()) {
+      S.cleanAsked = true;
+      api(`/footage/${S.id}/retry`, { method: 'POST', body: { step: 'clean' } })
+        .then(() => { if (alive(S)) { S.sig = ''; S.gen++; poll(); } })
+        .catch((e) => { S.cleanAsked = false; toast((e && e.message) || 'Background noise could not be reduced'); });
+    }
+    const kind = want && S.rec.cleanUrl ? 'clean' : 'proxy';
+    if (S.player && kind !== S.srcKind) { S.srcKind = kind; S.player.setSrc(apiUrl(kind === 'clean' ? S.rec.cleanUrl : S.rec.proxyUrl)); }
+  }
   /** The player follows the design (after results, undo, redo) */
   function sync() {
     if (!F || !F.player) return;
     const ft = ED.d.footage;
     ensureCube(F, ft.look.lut);
     F.player.setLook(ft.look); F.player.setCaptions(capsOf(ED.d)); F.player.setSplit(F.split);
+    cutsSync(); cleanSync();
     soundSync();
   }
 
@@ -384,7 +495,7 @@ export function installFootageEditor(ctx, FT) {
     const lines = capsOf(ED.d).lines || [];
     if (S.spansOf !== lines) { S.spansOf = lines; S.spans = speechSpans(lines); }
     el.volume = S.musicMuted ? 0 : Math.max(0, Math.min(1, musicGainAt(ms, a, S.spans, hasSound())));
-    const dur = isFinite(el.duration) ? el.duration : 0, want = musicTimeAt(ms, dur);
+    const dur = isFinite(el.duration) ? el.duration : 0, want = musicTimeAt(toEdited(S.cuts, ms), dur); // the music runs on under the cuts, as in the export
     const off = Math.abs(el.currentTime - want), drift = dur ? Math.min(off, dur - off) : off;
     const seek = () => { try { el.currentTime = want; } catch (e) { /* not seekable yet */ } };
     if (playing) { if (el.paused) { seek(); el.play().catch(() => {}); } else if (drift > 0.3) seek(); }
@@ -406,11 +517,13 @@ export function installFootageEditor(ctx, FT) {
     S.player = createPlayer(box, {
       proxyUrl: apiUrl(S.rec.proxyUrl), out: ft.out, look: ft.look, captions: capsOf(S.d),
       cube: (lut) => (lut === lookPath(S.id) ? S.cube : S.cubes[lut] || null),
-      onTime: (ms, playing) => { VS.tick(ms, playing); musicTick(ms, playing); },
-      onReady: (dur) => { S.dur = dur; VS.tick(S.player.time(), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
+      onTime: (ms, playing) => { VS.tick(toEdited(S.cuts, ms), playing); musicTick(ms, playing); }, // the shell's clock is the edited video's
+      onReady: (dur) => { S.dur = dur; cutsSync(); VS.tick(toEdited(S.cuts, S.player.time()), S.player.playing()); lane(); loadPeaks(S); FT.ensurePoster && FT.ensurePoster(S.d, apiUrl(S.rec.proxyUrl)); },
       onError: (err) => refreshProxy(S, err),
     });
-    S.player.setSplit(S.split);
+    S.player.setSplit(S.split); S.srcKind = 'proxy'; cleanSync();
+    // the first frame is in: the Look panel's filter thumbnails can be drawn from it
+    S.player.video.addEventListener('loadeddata', () => { if (alive(S) && !S.thumbs) ed.props(); }, { once: true });
     S.player.setVolume(ftAudioOf(ft).vol);
     if (S.muted) S.player.video.muted = true;
   }
@@ -418,7 +531,7 @@ export function installFootageEditor(ctx, FT) {
     const now = Math.floor(Date.now() / 1000);
     if (!alive(S) || !shouldRefreshProxy(err, S.player && S.player.video.src, now, S.lastRefresh)) { if (alive(S)) { S.err = 'The video could not be played.'; drawStage(); } return; }
     S.lastRefresh = now;
-    try { const rec = await api('/footage/' + S.id); if (alive(S) && rec.proxyUrl) { S.rec = rec; S.player.setSrc(apiUrl(rec.proxyUrl)); } } catch (e) { /* the next error shows the message */ }
+    try { const rec = await api('/footage/' + S.id); if (alive(S) && rec.proxyUrl) { S.rec = rec; S.player.setSrc(apiUrl(S.srcKind === 'clean' && rec.cleanUrl ? rec.cleanUrl : rec.proxyUrl)); } } catch (e) { /* the next error shows the message */ }
   }
 
   let fontsLoaded = false;
@@ -466,7 +579,7 @@ export function installFootageEditor(ctx, FT) {
     else if (A.failed) m = failBox(A.error || 'This video could not be processed.', F.id, firstFailed(F.rec) || 'probe');
     else if (!F.player) m = `<div class="ft-wait">${skel(2)}<p>Preparing your video…${pct(A.proxy)}</p></div>`;
     msg.innerHTML = m; msg.hidden = !m; msg.classList.toggle('ft-empty', !F.id);
-    const work = [[A.transcribe, 'Transcribing'], [A.grade, 'Matching the grade'], [A.style, 'Reading the caption style']].filter(([s]) => BUSY.includes(s.state)).map(([s, l]) => l + pct(s));
+    const work = [[A.clean, 'Cleaning up the sound'], [A.transcribe, 'Transcribing'], [A.grade, 'Matching the grade'], [A.style, 'Reading the caption style']].filter(([s]) => BUSY.includes(s.state)).map(([s, l]) => l + pct(s));
     prog.innerHTML = work.length ? `<span class="ft-dot"></span>${esc(work.join(' · '))}…` : ''; prog.hidden = !work.length || A.failed;
     $('#ftSplit').hidden = F.split == null;
     if (F.split != null) $('#ftSplit').style.left = F.split * 100 + '%';
@@ -488,14 +601,19 @@ export function installFootageEditor(ctx, FT) {
     const clip = poster ? `<div class="vs-tl-clip has-poster" style="${esc(`background-image:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url("${poster}")`)}"><span dir="auto">${esc(name)}</span></div>`
       : `<div class="vs-tl-clip"><span dir="auto">${esc(name)}</span></div>`;
     return [
-      { id: 'video', icon: ic('vsFilm', 14), label: 'Video', html: () => clip },
+      { id: 'video', icon: ic('vsFilm', 14), label: 'Video', html: (pps) => clip + jointsHTML(pps) },
       // a track with nothing on it leaves the timeline for the shell's "+ Track" row (dock.js); the voice is the clip's own sound
-      { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end, text: lineText(l), on })),
+      { id: 'captions', icon: ic('type', 14), label: 'Captions', hidden: !on, blocks: (caps.lines || []).map((l) => ({ id: l.id, start: toEdited(F.cuts, l.start), end: toEdited(F.cuts, l.end), text: lineText(l), on })),
         empty: !(caps.lines || []).length, add: { label: 'Captions', act: 'edTab', k: 'captions' } },
       { id: 'voice', icon: ic('ftVoice', 14), label: 'Voice', hidden: !!F.muted },
       { id: 'music', icon: ic('music38', 14), label: 'Music', toggle: 'mute', hidden: !!F.musicMuted, html: musicClipHTML,
         empty: !ftAudioOf(ED.d.footage).music, add: { label: 'Music', act: 'ftAudioOpen' } },
     ];
+  }
+  /** Remove pauses: a thin mark on the clip where each pause was cut out (none at the very start or end) */
+  function jointsHTML(pps) {
+    const ed = editedMs(F.cuts, F.dur);
+    return F.cuts.map((c) => toEdited(F.cuts, c[0])).filter((t) => t > 0 && t < ed).map((t) => `<i class="vs-tl-joint" style="left:${((t / 1000) * pps).toFixed(1)}px" title="Pause removed"></i>`).join('');
   }
   /** The Music track: the bed over the whole video (it loops), or "+ Add music"; both open the Audio panel */
   function musicClipHTML() {
@@ -507,6 +625,7 @@ export function installFootageEditor(ctx, FT) {
   function onRetime(id, start, end, live) {
     const S = F; if (!S || !alive(S)) return;
     if (live && start == null) { sync(); return; } // a drag ended without a change: the preview shows the design again
+    if (start != null) { start = Math.round(toSource(S.cuts, start)); end = Math.round(toSource(S.cuts, end, true)); } // the timeline's edited clock → the captions' own
     if (live) { const cap = capsOf(ED.d); S.player && S.player.setCaptions({ ...cap, lines: cap.lines.map((x) => (x.id === id ? retime(x, start, end) : x)) }); return; }
     VS.captions.edit((a) => a.map((x) => (x.id === id ? retime(x, start, end) : x)));
   }
@@ -534,7 +653,7 @@ export function installFootageEditor(ctx, FT) {
       if (!alive(S)) return;
       S.peaks = peakBuckets(audio.getChannelData(0), PEAK_BUCKETS);
       for (let ch = 1; ch < audio.numberOfChannels; ch++) { const o = peakBuckets(audio.getChannelData(ch), PEAK_BUCKETS); for (let k = 0; k < o.length; k++) if (o[k] > S.peaks[k]) S.peaks[k] = o[k]; }
-      VS.setPeaks(S.peaks);
+      VS.setPeaks(editPeaks(S.peaks, S.cuts, S.dur));
     } catch (e) { /* no audio track, no decoder or the request stopped: the Voice track stays without a waveform */ } finally { actx && actx.close && actx.close().catch(() => {}); }
   }
 
@@ -556,7 +675,7 @@ export function installFootageEditor(ctx, FT) {
       try {
         await api(`/footage/${S.id}/retry`, { method: 'POST', body: { step: 'transcribe' } });
         if (!alive(S)) return;
-        toast('Transcribing again'); S.retx = true; S.applied = false; S.err = null; S.sig = ''; S.gen++; poll();
+        toast('Transcribing again'); S.words = null; S.retx = true; S.applied = false; S.err = null; S.sig = ''; S.gen++; poll();
       } catch (e) { toast((e && e.message) || 'Could not start the transcription'); }
     });
   }
@@ -573,6 +692,8 @@ export function installFootageEditor(ctx, FT) {
     if (!F.id) return stepsHTML();
     const A = analysis(F.rec, F.refRec);
     if (A.transcribe.state === 'failed') return failBox(A.transcribe.error || 'The speech could not be transcribed.', F.id, 'transcribe') + altHTML();
+    // the sound is cleaned first (noise removed), then the speech is heard on the clean voice
+    if (BUSY.includes(A.clean.state)) return `<p class="xs-t muted">Removing background noise before listening…</p>${skel(6)}`;
     if (A.busy(A.transcribe) || !F.rec) return `<p class="xs-t muted">Listening to your video…${pct(A.transcribe)}</p>${skel(6)}`;
     if (A.transcribe.state === 'skipped') return '<p class="sm-t muted">This video has no sound, so there is nothing to caption.</p>' + altHTML();
     return '<p class="sm-t muted">No speech was found in this video.</p>' + altHTML();
@@ -638,7 +759,10 @@ export function installFootageEditor(ctx, FT) {
     FT.attach(ED.d, file, { replace }).then((ok) => { if (!ok) return; toast(replace ? 'Video replaced. Making the captions again…' : 'Video added. Making the captions…'); });
   }
   /** Re-transcribe, next to Add line */
-  const retxHTML = () => { const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe); return `<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`; };
+  const retxHTML = () => {
+    const A = F && analysis(F.rec, F.refRec), off = !F || !F.rec || A.busy(A.transcribe), heard = heardAs(F && F.rec && F.rec.meta);
+    return `${heard ? `<span class="xs-t muted ft-heard" title="Captions are written in the speaker's own dialect">${ic('ftVoice', 13)}${esc(heard)}</span>` : ''}<button class="btn ghost sm" data-act="ftRetx" ${off ? 'disabled' : ''}>${ic('refresh', 15)}Re-transcribe</button>`;
+  };
 
   /* ---------- Look panel ---------- */
   // a slider that goes below zero fills from its centre (.ctr), so −13 reads as a little below neutral, not as 43 % full
@@ -709,7 +833,42 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     const A = analysis(F.rec, F.refRec), ft = ED.d.footage, src = F.ref ? 'the reference video' : 'your brand look', dis = can() ? '' : 'disabled';
     return `<div class="body ft-look-p"><h3>Look</h3>
       <section class="ft-sec">${gradeHTML(ft, A, src, dis)}</section>
+      <section class="ft-sec">${filtersHTML(ft, dis)}</section>
       <section class="ft-sec">${looksHTML(ft, !can())}</section></div>`;
+  }
+  /** Filters: one-click styles (thumbnails of the video's own frame), the light balance with Auto, then Amount, Grain and Vignette */
+  function filtersHTML(ft, dis) {
+    const fx = fxOf(ft.look.fx), pc = (v) => Math.round(v * 100), th = fxThumbs(ft);
+    const chips = Object.entries(FILTERS).map(([id, f]) => `<button type="button" class="ft-fx${fx.filter === id ? ' on' : ''}" data-act="ftFilter" data-f="${id}" aria-pressed="${fx.filter === id}" ${dis}>${th[id] ? `<img src="${th[id]}" alt="">` : `<i style="background:${swatchOf(id)}"></i>`}<span>${esc(f.label)}</span></button>`).join('');
+    return `<span class="label">Filters</span><div class="ft-fxs" role="group" aria-label="Filters">${chips}</div>
+      ${fx.filter !== 'none' ? rgHTML('data-ft-fx', 'amount', 'Amount', 0, 100, 1, pc(fx.amount), dis) : ''}
+      <div class="ft-light-h"><span class="label">Light</span><button type="button" class="btn ghost sm" data-act="ftAutoLight" title="Measure this frame: brighten a dark person, tone down a bright background" ${dis || (F && F.player ? '' : 'disabled')}>${ic('sun', 14)}Auto</button></div>
+      ${rgHTML('data-ft-fx', 'shadows', 'Brighten the person', 0, 100, 1, pc(fx.shadows), dis)}
+      ${rgHTML('data-ft-fx', 'highlights', 'Tone down the background', 0, 100, 1, pc(fx.highlights), dis)}
+      ${rgHTML('data-ft-fx', 'grain', 'Film grain', 0, 100, 1, pc(fx.grain), dis)}
+      ${rgHTML('data-ft-fx', 'vignette', 'Vignette', 0, 100, 1, pc(fx.vignette), dis)}`;
+  }
+  /** A small frame of the video at the playhead (RGBA), or null before it can be read */
+  function frameAt(w) {
+    const v = F && F.player && F.player.video; if (!v || v.readyState < 2 || !v.videoWidth) return null;
+    const h = Math.max(1, Math.round((w * v.videoHeight) / v.videoWidth)), c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true }); if (!x) return null;
+    try { x.drawImage(v, 0, 0, w, h); return { c, x, w, h, img: x.getImageData(0, 0, w, h) }; } catch (e) { return null; }
+  }
+  /** Each filter's thumbnail: the frame at the playhead through it (with this design's light balance), made once per frame and look */
+  function fxThumbs(ft) {
+    if (!F) return {};
+    const fx = fxOf(ft.look.fx), key = JSON.stringify([Math.round((F.player && F.player.time()) / 500), ft.look.exposure, ft.look.temp, ft.look.sat, fx.amount]);
+    if (F.thumbs && F.thumbs.key === key) return F.thumbs.map;
+    const f = frameAt(72); if (!f) return {};
+    const map = {};
+    for (const id of Object.keys(FILTERS)) {
+      const [sh, hi] = FILTERS[id].light || [0, 0], px = new ImageData(new Uint8ClampedArray(f.img.data), f.w, f.h);
+      lookPixels(px.data, ft.look, { ...fx, filter: id, shadows: sh, highlights: hi });
+      f.x.putImageData(px, 0, 0); map[id] = f.c.toDataURL('image/jpeg', 0.8);
+    }
+    F.thumbs = { key, map };
+    return map;
   }
 
   /* ---------- Audio panel: the original's volume, the music bed (the reel's picker: compose or upload), ducking ---------- */
@@ -729,13 +888,32 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
         ${m.duck && (!hasSound() || a.vol === 0) ? '<p class="xs-t muted">The original sound is off, so the music stays at its volume.</p>' : ''}`;
     return `<div class="body ft-look-p ft-audio-p"><h3>Audio</h3>
       <section class="ft-sec"><span class="label">Original sound</span>${orig}</section>
+      ${F.id && hasSound() ? `<section class="ft-sec"><span class="label">Clean up</span>${cleanupHTML(a, dis)}</section>` : ''}
       <section class="ft-sec"><span class="label">Music</span>${music}</section></div>`;
+  }
+  /** Remove pauses (with the shortest pause it cuts) and Reduce background noise */
+  function cleanupHTML(a, dis) {
+    const A = analysis(F.rec, F.refRec), p = a.pauses, min = F.pLive != null ? F.pLive : p.min;
+    const noWords = A.transcribe.state === 'done' && F.words && !F.words.length;
+    const waiting = A.busy(A.transcribe) || (A.transcribe.state === 'done' && F.words == null);
+    const pOff = dis || (A.transcribe.state === 'failed' || A.transcribe.state === 'skipped' || noWords ? 'disabled' : '');
+    const pNote = !p.on ? '' : A.transcribe.state === 'failed' ? 'Pauses are found from the transcript, which failed. Retry it in Captions.'
+      : waiting ? 'Finding the pauses once the speech is transcribed…' : noWords ? 'No speech was found, so nothing is cut.' : pausesNote(F.cuts, F.dur);
+    const sec = (min / 1000).toFixed(1);
+    const slider = p.on ? `<label class="ft-rg"><span>Shortest pause</span><input type="range" data-ft-p="min" min="${PAUSE_MIN_MS / 1000}" max="${PAUSE_MAX_MS / 1000}" step="0.1" value="${sec}" style="--p:${((min - PAUSE_MIN_MS) / (PAUSE_MAX_MS - PAUSE_MIN_MS)) * 100}%" ${dis}><output>${sec} s</output></label>` : '';
+    const cl = stepInfo(F.rec, 'clean');
+    const nNote = !a.denoise ? '' : cl.state === 'failed' ? `<span class="ft-err">${esc(cl.error || 'The noise could not be reduced.')}</span>`
+      : !F.rec || !F.rec.cleanUrl ? 'Cleaning up the sound for the preview…' : 'Hum, wind and room noise are lowered under the voice.';
+    return `<div class="au2-opt">${ic('ftVoice', 15)}<span>Remove pauses</span><button type="button" class="switch ${p.on ? 'on' : ''}" data-act="ftPauses" aria-label="Remove pauses" aria-pressed="${p.on}" ${pOff}></button></div>
+      ${p.on ? `${slider}<p class="xs-t muted" data-ft-pnote>${esc(pNote)}</p>` : '<p class="xs-t muted">Cuts the silences between sentences out of the timeline, the preview and the export.</p>'}
+      <div class="au2-opt">${ic('vsLook', 15)}<span>Reduce background noise</span><button type="button" class="switch ${a.denoise ? 'on' : ''}" data-act="ftDenoise" aria-label="Reduce background noise" aria-pressed="${a.denoise}" ${dis}></button></div>
+      ${a.denoise ? `<p class="xs-t muted">${nNote}</p>` : ''}`;
   }
   /** One undoable change of d.footage.audio */
   function setAudio(fn) {
     if (!F || !can()) return;
     F.aLive = null;
-    mutate(() => { const ft = ED.d.footage, a = ftAudioOf(ft); ft.audio = fn({ vol: a.vol, music: a.music }); }, () => { soundSync(); lane(); if (ED.tab === 'audio') ed.panel(); });
+    mutate(() => { const ft = ED.d.footage, a = ftAudioOf(ft); ft.audio = fn(a); }, () => { cutsSync(); cleanSync(); soundSync(); lane(); if (ED.tab === 'audio') ed.panel(); });
     save();
   }
   function pickMusic(btn) {
@@ -749,15 +927,21 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     });
   }
 
+  const srcDur = () => (F ? F.dur || (F.player && F.player.duration()) || 0 : 0);
   /** The player as the shell drives it (transport, keys, timeline): a no-op until the video can play */
   const player = {
     ready: () => !!(F && F.player),
     toggle: () => F && F.player && F.player.toggle(),
     play: () => F && F.player && F.player.play(),
     pause: () => F && F.player && F.player.pause(),
-    seek: (ms) => F && F.player && F.player.seek(ms),
-    time: () => (F && F.player ? F.player.time() : 0),
-    duration: () => (F ? F.dur || (F.player && F.player.duration()) || 0 : 0),
+    seek: (ms) => F && F.player && F.player.seek(toSource(F.cuts, ms)),
+    // Remove pauses: the shell (transport, timeline, keys) runs on the edited clock, the cut stretches gone from it
+    time: () => (F && F.player ? toEdited(F.cuts, F.player.time()) : 0),
+    duration: () => (F ? editedMs(F.cuts, srcDur()) : 0),
+    /** the video's own clock, which the captions use (the Captions panel reads and seeks it) */
+    mediaTime: () => (F && F.player ? F.player.time() : 0),
+    seekMedia: (ms) => F && F.player && F.player.seek(ms),
+    mediaDuration: () => srcDur(),
     playing: () => !!(F && F.player && F.player.playing()),
     frameMs: () => (F && F.player ? F.player.frameMs() : 1000 / 30),
   };
@@ -795,6 +979,13 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     ftSaveLook: () => saveLook(),
     ftApplyLook: (a) => applyLook(a.dataset.id),
     ftUseMatched: () => useMatched(),
+    ftAutoLight: () => {
+      if (!F || !can()) return; const f = frameAt(160); if (!f) { toast('Play or seek the video first, then try Auto.'); return; }
+      const { shadows, highlights } = autoLight(f.img.data, f.w, f.h), cur = fxOf(ED.d.footage.look.fx);
+      mutate(() => { ED.d.footage.look.fx = { ...cur, shadows, highlights }; }, () => { sync(); ed.props(); }); save();
+      toast(shadows || highlights ? `Light balanced: person +${Math.round(shadows * 100)}, background −${Math.round(highlights * 100)}` : 'The light is already balanced in this frame.');
+    },
+    ftFilter: (a) => { if (!F || !can()) return; const v = fxPatch(ED.d.footage.look, 'filter', a.dataset.f); mutate(() => { ED.d.footage.look.fx = v; }, () => { sync(); ed.props(); }); save(); },
     ftPick: () => { const i = $('[data-ft-add-file]'); if (i) i.click(); else ACT.edTab({ dataset: { k: 'scenes' } }); },
     ftStopUp: () => { if (ED.d) { FT.stopUpload(ED.d); toast('Upload stopped. Drop the same file again to pick up where it stopped.'); } },
     ftReplace: () => {
@@ -810,6 +1001,8 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     ftAudioOpen: () => ACT.edTab({ dataset: { k: 'audio' } }),
     ftMusicPick: (b) => pickMusic(b),
     ftMusicDel: () => setAudio((a) => ({ ...a, music: null })),
+    ftPauses: () => setAudio((a) => ({ ...a, pauses: { ...a.pauses, on: !a.pauses.on } })),
+    ftDenoise: () => { if (F) F.cleanAsked = false; setAudio((a) => ({ ...a, denoise: !a.denoise })); },
     ftDuck: () => setAudio((a) => (a.music ? { ...a, music: { ...a.music, duck: !a.music.duck } } : a)),
     ftRetry: async (a) => {
       if (!F || a.disabled) return; const S = F; a.disabled = true;
@@ -885,6 +1078,32 @@ const rgHTML = (attr, key, label, min, max, step, val, dis) => `<label class="ft
     setAudio((x) => (k === 'vol' ? { ...x, vol: v } : { ...x, music: { ...x.music, vol: v } }));
   });
   document.addEventListener('change', (e) => { const t = e.target; if (t && t.matches && t.matches('[data-ft-g]')) gradeCommit(t); });
+  /* ---- Look filters' sliders: previewed on `input`, one mutate() on `change` ---- */
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-fx]') || !F || !F.player || !can()) return;
+    setOut(t); F.player.setLook({ ...ED.d.footage.look, fx: fxPatch(ED.d.footage.look, t.dataset.ftFx, t.value) });
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-fx]') || !F || !can()) return;
+    const v = fxPatch(ED.d.footage.look, t.dataset.ftFx, t.value);
+    if (JSON.stringify(v) === JSON.stringify(fxOf(ED.d.footage.look.fx))) { sync(); return; }
+    mutate(() => { ED.d.footage.look.fx = v; }, sync); save();
+  });
+  /* ---- Remove pauses: the shortest pause, previewed on `input` (timeline and note), one mutate() on `change` ---- */
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-p]') || !F || !can()) return;
+    const ms = Math.round(+t.value * 1000); F.pLive = ms;
+    const o = t.closest('.ft-rg').querySelector('output'); if (o) o.textContent = `${(+t.value).toFixed(1)} s`;
+    t.style.setProperty('--p', ((ms - PAUSE_MIN_MS) / (PAUSE_MAX_MS - PAUSE_MIN_MS)) * 100 + '%');
+    cutsSync();
+    const n = $('[data-ft-pnote]'); if (n) n.textContent = pausesNote(F.cuts, F.dur);
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t || !t.matches || !t.matches('[data-ft-p]') || !F || !can()) return;
+    const ms = Math.round(+t.value * 1000); F.pLive = null;
+    if (ftAudioOf(ED.d.footage).pauses.min === ms) { cutsSync(); return; }
+    setAudio((a) => ({ ...a, pauses: { ...a.pauses, min: ms } }));
+  });
 
   /* dragging the caption on the video sets its height (y): preview through the player, one mutate() on release */
   function captionDrag(e) {

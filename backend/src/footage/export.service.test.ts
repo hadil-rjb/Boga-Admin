@@ -285,3 +285,36 @@ describe('ExportService', () => {
     expect([...lastConcat.matchAll(/duration ([\d.]+)/g)].reduce((s, m) => s + Number(m[1]), 0)).toBeCloseTo(2);
   });
 });
+
+describe('Remove pauses and Reduce noise in the export request', () => {
+  const withAudio = (audio: any) => body({ footage: { ...body().footage, audio } });
+  it('accepts the switches and keeps them out of the hash while off', () => {
+    const r = validateExport(withAudio({ vol: 1, denoise: true, pauses: { min: 700.4 } }));
+    expect(r.audio).toEqual({ vol: 1, music: null, denoise: true, pauses: { min: 700 } });
+    expect(validateExport(withAudio({ vol: 1, denoise: false })).audio).toEqual({ vol: 1, music: null });
+    expect(exportHash(validateExport(withAudio({ vol: 1, denoise: false })), null)).toBe(exportHash(req(), null));
+    expect(exportHash(r, null)).not.toBe(exportHash(req(), null));
+  });
+  it('a new transcript changes the hash only when pauses are removed', () => {
+    const r = validateExport(withAudio({ pauses: { min: 600 } }));
+    expect(exportHash(r, null, EXPORT_PIPELINE_VERSION, 'a')).not.toBe(exportHash(r, null, EXPORT_PIPELINE_VERSION, 'b'));
+    expect(exportHash(req(), null, EXPORT_PIPELINE_VERSION, 'a')).toBe(exportHash(req(), null, EXPORT_PIPELINE_VERSION, 'b'));
+  });
+  it('rejects malformed values', () => {
+    for (const a of [{ denoise: 'yes' }, { pauses: 600 }, { pauses: { min: 100 } }, { pauses: { min: 5000 } }]) expect(() => validateExport(withAudio(a)), JSON.stringify(a)).toThrow(ExportInvalid);
+  });
+});
+
+describe('look filters in the export request', () => {
+  const withFx = (fx: any) => body({ footage: { ...body().footage, look: { ...body().footage.look, fx } } });
+  it('kept when something is on, dropped (same hash as before) when nothing is', () => {
+    expect(validateExport(withFx({ filter: 'cinematic', amount: 0.5, grain: 0.2, vignette: 0 })).look.fx).toEqual({ filter: 'cinematic', amount: 0.5, shadows: 0, highlights: 0, grain: 0.2, vignette: 0 });
+    expect(validateExport(withFx({ filter: 'none', shadows: 0.6, highlights: 0.4 })).look.fx).toMatchObject({ filter: 'none', shadows: 0.6, highlights: 0.4 }); // light balance alone counts
+    const off = validateExport(withFx({ filter: 'none', amount: 0.8, grain: 0, vignette: 0 }));
+    expect(off.look.fx).toBeUndefined();
+    expect(exportHash(off, null)).toBe(exportHash(req(), null));
+  });
+  it('rejects unknown filters and out-of-range sliders', () => {
+    for (const fx of [{ filter: 'neon' }, { filter: 'warm', grain: 2 }, { filter: 'portrait', shadows: -1 }, 'warm']) expect(() => validateExport(withFx(fx)), JSON.stringify(fx)).toThrow(ExportInvalid);
+  });
+});

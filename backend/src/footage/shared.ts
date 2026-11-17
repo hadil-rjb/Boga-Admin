@@ -15,13 +15,13 @@ async function importEsm(href: string): Promise<any> {
   }
 }
 
-type Shared = { look: any; captions: any };
+type Shared = { look: any; captions: any; pauses: any };
 let cached: Promise<Shared> | null = null;
 
 export function loadShared(): Promise<Shared> {
   if (!cached) {
     const load = (name: string) => importEsm(pathToFileURL(join(__dirname, 'shared', name)).href);
-    cached = Promise.all([load('look.mjs'), load('captions.mjs')]).then(([look, captions]) => ({ look, captions }));
+    cached = Promise.all([load('look.mjs'), load('captions.mjs'), load('pauses.mjs')]).then(([look, captions, pauses]) => ({ look, captions, pauses }));
   }
   return cached;
 }

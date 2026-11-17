@@ -165,13 +165,40 @@ export function activeWord(line, ms) {
 }
 
 const shown = (t, style) => (style.case === 'upper' ? t.toUpperCase() : style.case === 'lower' ? t.toLowerCase() : t);
-const isRtl = (text) => {
-  for (const ch of text) {
-    if (RTL_CHAR.test(ch)) return true;
-    if (STRONG_LTR.test(ch)) return false;
-  }
-  return false;
-};
+/* ---- direction: Arabic lines read right to left, with English words and numbers kept left to right inside them ---- */
+/** A word's direction class: 'R' Arabic (or Hebrew) script, 'L' Latin letters, 'D' digits only (with signs), 'N' punctuation */
+export function wordClass(t) {
+  const s = String(t || '');
+  if (RTL_CHAR.test(s)) return 'R';
+  if (STRONG_LTR.test(s)) return 'L';
+  return /\d/.test(s) ? 'D' : 'N';
+}
+/** A line reads right to left when it has Arabic words and at least as many of them as Latin ones (an English word first does not flip it) */
+export function lineRtl(words) {
+  let r = 0, l = 0;
+  for (const w of words || []) { const c = wordClass(w && w.t); if (c === 'R') r++; else if (c === 'L') l++; }
+  return r > 0 && r >= l;
+}
+/**
+ * The order to draw `words` from left to right in a line of direction `rtl` (word-level Unicode bidi): in a right-to-left
+ * line the Arabic words run right to left while a run of English words and numbers ("Space X", "12 GB") keeps its
+ * left-to-right order; in a left-to-right line an Arabic phrase keeps its own right-to-left order. Punctuation between two
+ * words of the same direction joins them, else follows the line.
+ */
+export function visualOrder(words, rtl) {
+  const n = (words || []).length, base = rtl ? 'R' : 'L';
+  const cls = words.map((w) => { const c = wordClass(w && w.t); return c === 'D' ? 'L' : c; });
+  const dir = cls.map((c, i) => {
+    if (c !== 'N') return c;
+    let p = i - 1; while (p >= 0 && cls[p] === 'N') p--;
+    let q = i + 1; while (q < n && cls[q] === 'N') q++;
+    return p >= 0 && q < n && cls[p] === cls[q] ? cls[p] : base;
+  });
+  const runs = []; // [dir, [indices]]
+  for (let i = 0; i < n; i++) { const r = runs[runs.length - 1]; if (r && r[0] === dir[i]) r[1].push(i); else runs.push([dir[i], [i]]); }
+  if (rtl) runs.reverse();
+  return runs.flatMap(([d, ix]) => (d === 'R' ? ix.reverse() : ix));
+}
 // The canvas font of a style at px (the export page loads it before drawing).
 export const fontOf = (style, px) => {
   const stack = FONT_STACKS[style.font] || FONT_STACKS['sans-bold'];
@@ -261,7 +288,7 @@ export function layout(ctx, line, style, w, h) {
   const gap = ctx.measureText(' ').width + style.ls * px;
   const rowW = (a, b) => widths.slice(a, b).reduce((x, y) => x + y, 0) + gap * Math.max(0, b - a - 1);
   const total = rowW(0, widths.length);
-  const rtl = isRtl(line.words.map((x) => x.t).join(' '));
+  const rtl = lineRtl(line.words);
   const wrap = style.lines === 2 && widths.length > 1 && total > 0.86 * w;
   const rows = wrap ? splitRows(widths, gap) : [[0, widths.length]];
   const lh = wrap ? px * (style.lh === 1.15 ? 1.25 : (1.25 * style.lh) / 1.15) : px;
@@ -271,12 +298,11 @@ export function layout(ctx, line, style, w, h) {
   const bx = style.align === 'left' ? ax : style.align === 'right' ? ax - bw : ax - bw / 2;
   const words = [];
   rows.forEach(([a, b], r) => {
-    const idx = []; for (let i = a; i < b; i++) idx.push(i);
-    if (rtl) idx.reverse();
+    const idx = visualOrder(line.words.slice(a, b), rtl).map((k) => a + k);
     const rw = rowW(a, b);
     let x = style.align === 'left' ? bx : style.align === 'right' ? bx + bw - rw : ax - rw / 2;
     const y = top + r * lh + (lh - px) / 2;
-    for (const i of idx) { words[i] = { i, x, y, w: widths[i], h: px }; x += widths[i] + gap; }
+    for (const i of idx) { const c = wordClass(line.words[i].t); words[i] = { i, x, y, w: widths[i], h: px, rtl: c === 'R' || (c === 'N' && rtl) }; x += widths[i] + gap; }
   });
   return { x: bx, y: top, w: bw, h: lh * rows.length, words };
 }
@@ -299,6 +325,7 @@ function drawWord(ctx, text, b, style, fill, scale, h) {
   ctx.translate(cx, cy);
   ctx.scale(scale, scale);
   ctx.font = fontOf(style, b.h);
+  if (b.rtl) ctx.direction = 'rtl'; // (inside save/restore) an Arabic word's own punctuation ("الخير،") lands on its left; textAlign 'left' stays the left edge
   if (style.stroke) {
     ctx.lineWidth = style.stroke.width * h; ctx.strokeStyle = style.stroke.color; ctx.lineJoin = 'round';
     ctx.strokeText(text, -b.w / 2, 0);

@@ -1,24 +1,28 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { ChildProcess, spawn } from "child_process";
-import { existsSync, promises as fs } from "fs";
+import { existsSync, promises as fs, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { Model } from "mongoose";
 import { PyWorker } from "../ai/local-tts.service";
 import { CaptionAi, FOOTAGE_AI, mergeStyle, NoAnthropicKey, NOTE_AI_FAILED, NOTE_NO_KEY, NOTE_NO_TEXT, NOTE_UNREADABLE } from "./caption-style";
 import { loadShared } from "./shared";
-import { buildCaptionCropArgs, buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
+import { buildCaptionCropArgs, buildCleanArgs, buildVoiceInArgs, buildFramesArgs, buildProxyArgs, parseProbe, parseProgress, Probe } from "./ffmpeg";
 import { planRecovery, Step } from "./footage.recovery";
 import { Footage, FootageDocument } from "./footage.schema";
+import { alternatives, applyFixes, Fix, FIX_CHUNK, fixPrompt, guardFixes, parseFixes } from "./transcript-fix";
+import { detectDialect, Dialect, DIALECT_HINT } from "./dialect";
+import { envelope, joinSplitTerms, readWav, snapWords } from "./speech-timing";
 import { FootageStore } from "./footage.store";
 
 export type { Step } from "./footage.recovery";
 
 export const PQ_UNSUPPORTED = "HDR10 footage is not supported yet. Record in HLG or SDR, or convert it first.";
 /** Pipeline order */
-const CHAIN: Step[] = ["probe", "proxy", "frames", "transcribe", "grade", "caption-style"];
-/** Steps that follow each other automatically after probe. transcribe and grade are requested by the pair endpoint (originals only); caption-style follows frames of a reference only. */
+const CHAIN: Step[] = ["probe", "proxy", "frames", "clean", "transcribe", "grade", "caption-style"];
+/** clean (the speaker's voice isolated from the noise, and its preview proxy) runs before transcribe: speech is detected and
+ * captioned on the clean voice. The pair endpoint requests both for an original. Steps that follow each other automatically after probe. transcribe and grade are requested by the pair endpoint (originals only); caption-style follows frames of a reference only. */
 const AUTO: Step[] = ["probe", "proxy", "frames", "caption-style"];
 /** The step that follows automatically; none after frames, and none for steps outside the auto chain */
 const autoNext = (s: Step): Step | undefined => (AUTO.includes(s) ? AUTO[AUTO.indexOf(s) + 1] : undefined);
@@ -26,6 +30,14 @@ const FATAL: Step[] = ["probe", "proxy"];
 const NOT_DONE = ["queued", "running"];
 /** Thrown by a step that has to wait for another footage; the step stays queued and is requested again when that footage is ready */
 class Wait extends Error {}
+/**
+ * The Whisper model of the dialect pass, when not the default one (WHISPER_DIALECT_MODEL, e.g. "large-v3"). Off by default:
+ * measured on a Levantine clip (2026-11-16), large-v3 took 4.7 x the video on 8 CPU cores and rewrote dialect into
+ * formal Arabic in places, where large-v3-turbo with the dialect hint kept the speaker's words.
+ */
+export const DIALECT_MODEL = process.env.WHISPER_DIALECT_MODEL || "";
+/** The dialect pass on DIALECT_MODEL may take this many times the video's length (plus 2 min to load it) */
+export const DIALECT_TIME = Number(process.env.WHISPER_DIALECT_TIME) || 6;
 export const REF_UNREADABLE = "The reference video could not be read";
 export const LOOK_MISSING = "This brand look no longer exists";
 export type Word = { t: string; s: number; e: number; p: number };
@@ -99,6 +111,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private children = new Set<ChildProcess>();
   /** Replaceable in tests */
   runner: Runner = (cmd, args, o) => runProcess(cmd, args, o, this.children);
+  /** The dialect pass's model (DIALECT_MODEL; "" = the worker's default). Replaceable in tests. */
+  dialectModel = DIALECT_MODEL;
   private ffmpegLock: Promise<void> = Promise.resolve(); // one ffmpeg process at a time overall
   private root = [process.cwd(), resolve(__dirname, "..", ".."), resolve(__dirname, "..", "..", "..")].find((d) => existsSync(join(d, "tts", "footage", "grade.py"))) ?? process.cwd();
   private python = process.env.TTS_PYTHON || join(this.root, ".tts", "venv", "bin", "python");
@@ -112,6 +126,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   constructor(@InjectModel(Footage.name) private model: Model<FootageDocument>, private store: FootageStore, @Inject(FOOTAGE_AI) private ai: CaptionAi) {}
 
   get cube(): string { return join(this.store.root, HLG_CUBE_NAME); }
+
+  /**
+   * DeepFilterNet's command-line tool (the voice model of "Reduce background noise"): DEEP_FILTER, else the one
+   * tts/setup.sh puts in .tts/bin; null when neither is there (the ffmpeg filter is used instead). Replaceable in tests.
+   */
+  deepFilter: () => string | null = () => {
+    const env = process.env.DEEP_FILTER;
+    if (env) return existsSync(env) ? env : null;
+    const bin = join(this.root, ".tts", "bin");
+    try { const n = readdirSync(bin).find((f) => /^deep-filter(-[\w.-]+)?$/.test(f)); return n ? join(bin, n) : null; } catch { return null; }
+  };
 
   onModuleDestroy() { for (const c of this.children) c.kill("SIGKILL"); this.whisperWorker?.stop(); }
 
@@ -273,9 +298,25 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.withFfmpeg(async () => this.runner("ffmpeg", buildProxyArgs(await this.sourcePath(id), tmp, meta, this.cube), { onLine, timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
         await fs.rename(tmp, out);
+        await fs.rm(this.store.file(id, "proxy-clean.mp4"), { force: true }); // made from the old proxy: asked for again by the editor
       } catch (e) {
         await fs.rm(tmp, { force: true });
         throw e;
+      }
+    } else if (step === "clean") {
+      const meta = await this.metaOf(id);
+      if (!meta.audio) return "skipped";
+      const out = this.store.file(id, "proxy-clean.mp4"), tag = randomBytes(6).toString("hex"), tmp = join(dir, `clean.${tag}.tmp.mp4`), work = join(dir, `voice.${tag}.tmp`);
+      try {
+        // the voice model isolates the speaker into voice.wav (the export uses it too); without it, an ffmpeg filter
+        const voice = await this.ensureVoice(id, meta);
+        await this.withFfmpeg(() => this.runner("ffmpeg", buildCleanArgs(this.store.file(id, "proxy.mp4"), tmp, voice), { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
+        await fs.rename(tmp, out);
+      } catch (e) {
+        await fs.rm(tmp, { force: true });
+        throw e;
+      } finally {
+        await fs.rm(work, { recursive: true, force: true });
       }
     } else if (step === "frames") {
       const meta = await this.metaOf(id), frames = join(dir, "frames");
@@ -288,10 +329,34 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (!meta.audio) return "skipped";
       const wav = join(dir, `audio.${randomBytes(6).toString("hex")}.tmp.wav`);
       try {
-        await this.withFfmpeg(async () => this.runner("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", await this.sourcePath(id), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", wav], { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
+        // Whisper hears the voice the model isolated (street and engine noise gone): more words right, and faster
+        const voice = await this.ensureVoice(id, meta).catch((e) => { this.log.warn(`voice for ${id}: ${e?.message ?? e}`); return null; });
+        await this.withFfmpeg(async () => this.runner("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", voice ?? await this.sourcePath(id), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", wav], { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
         const lang = (doc as any)?.pair?.lang;
         const res = await this.whisper.ask({ audio: wav, ...(lang ? { lang } : {}) }, 2 * meta.dur * 1000 + 60_000);
-        const words = normalizeWords(res?.words);
+        const heard = res?.lang ?? lang ?? null;
+        // Arabic: the dialect from the first pass (its marker words, else Claude's reading of the corrected text), then
+        // a second pass hinted in that dialect, so the speaker's own words are spelled as said ("شي", "هلق", "إنه")
+        let dialect: Dialect | null = heard === "ar" ? detectDialect(normalizeWords(res?.words))?.dialect ?? null : null;
+        let fixed = await this.fixWords(id, normalizeWords(res?.words), heard, dialect);
+        if (heard === "ar") {
+          dialect = dialect ?? fixed.dialect ?? detectDialect(fixed.words)?.dialect ?? null;
+          // the dialect pass runs on the full model (DIALECT_MODEL, more accurate on dialects than the turbo one);
+          // where it and the first pass heard different words, Claude may take the first pass's (both were heard)
+          // the full model can be too slow on a small machine: past its time the pass runs again on the default model
+          const pass = (model?: string) => this.whisper.ask({ audio: wav, lang: "ar", prompt: DIALECT_HINT[dialect!], ...(model ? { model } : {}) }, (model ? DIALECT_TIME : 2) * meta.dur * 1000 + 120_000)
+            .catch((e) => { this.log.warn(`dialect pass for ${id}${model ? ` on ${model}` : ""}: ${e?.message ?? e}`); return null; });
+          const again = dialect ? (this.dialectModel ? (await pass(this.dialectModel)) ?? (await pass()) : await pass()) : null;
+          const w2 = again ? normalizeWords(again.words) : [];
+          if (dialect && w2.length) {
+            const alts = alternatives(w2, normalizeWords(res?.words));
+            this.log.log(`dialect pass for ${id}: ${dialect}, model ${again?.model ?? "?"}, ${alts.length} places the two passes differ`);
+            fixed = await this.fixWords(id, w2, "ar", dialect, alts);
+          }
+        }
+        await this.set(id, { "meta.lang": heard, "meta.dialect": dialect });
+        // word edges onto the voice itself (Whisper starts words late after a pause: late captions, pause cuts into speech)
+        const words = joinSplitTerms(await this.onVoice(wav, fixed.words));
         const out = this.store.file(id, "words.json"), tmp = `${out}.${randomBytes(6).toString("hex")}.tmp`;
         await fs.writeFile(tmp, JSON.stringify(words));
         await fs.rename(tmp, out);
@@ -320,6 +385,62 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     } else if (step === "caption-style") {
       if (!(await this.isReference(id))) return "skipped"; // only a reference has subtitles to describe
       await this.captionStyle(id);
+    }
+  }
+
+  /** The words with their edges moved onto the voice in `wav` (speech-timing.ts); as they are when it can't be read */
+  private async onVoice(wav: string, words: Word[]): Promise<Word[]> {
+    try {
+      const w = readWav(await fs.readFile(wav));
+      return w ? snapWords(words, envelope(w.pcm, w.rate)) : words;
+    } catch { return words; }
+  }
+
+  /**
+   * Claude reads the transcript and fixes what Whisper misheard (English terms in Arabic letters, words the context makes
+   * obvious), part by part (transcript-fix.ts). Never fails the step: without a Claude key, or on any error, the words
+   * Whisper heard are kept.
+   */
+  private async fixWords(id: string, words: Word[], lang: string | null, dialect: Dialect | null = null, alts: Fix[] = []): Promise<{ words: Word[]; dialect: Dialect | null }> {
+    if (!words.length || !this.ai.transcriptFixes) return { words, dialect: null };
+    const fixes: Fix[] = [], said: string[] = [];
+    const text = (a: number, b: number) => words.slice(Math.max(0, a), Math.max(0, b)).map((w) => w.t).join(" ");
+    try {
+      for (let a = 0; a < words.length; a += FIX_CHUNK) {
+        const b = Math.min(words.length, a + FIX_CHUNK);
+        const raw = await this.ai.transcriptFixes(fixPrompt(words.slice(a, b), a, text(a - 40, a), text(b, b + 40), lang, dialect, alts));
+        fixes.push(...parseFixes(raw, a, b - 1));
+        if (typeof raw?.dialect === "string") said.push(raw.dialect);
+      }
+    } catch (e: any) {
+      if (!(e instanceof NoAnthropicKey)) this.log.warn(`transcript fixes for ${id}: ${e?.message ?? e}`);
+      return { words, dialect: null };
+    }
+    const kept = guardFixes(words, fixes, alts), keptSet = new Set(kept);
+    if (fixes.length) this.log.log(`transcript fixes for ${id}: ${kept.length} kept, ${fixes.length - kept.length} refused (not verbatim)`);
+    for (const f of fixes) this.log.log(`  ${keptSet.has(f) ? "kept" : "refused"}: ${words.slice(f.from, f.to + 1).map((w) => w.t).join(" ")} -> ${f.text}`);
+    const named = said.find((d): d is Dialect => d in DIALECT_HINT) ?? null;
+    return { words: applyFixes(words, kept), dialect: named };
+  }
+
+  /**
+   * voice.wav: the speaker alone, isolated by DeepFilterNet from the source's sound (made once; the clean step, the
+   * transcription and the export share it). null when the model is not installed (a stale file is removed).
+   */
+  private async ensureVoice(id: string, meta: Probe): Promise<string | null> {
+    const df = this.deepFilter(), voice = this.store.file(id, "voice.wav");
+    if (!df) { await fs.rm(voice, { force: true }); return null; }
+    if (existsSync(voice)) return voice;
+    const work = join(this.store.dir(id), `voice.${randomBytes(6).toString("hex")}.tmp`), wav = join(work, "in.wav");
+    try {
+      await fs.mkdir(work, { recursive: true });
+      await this.withFfmpeg(async () => this.runner("ffmpeg", buildVoiceInArgs(await this.sourcePath(id), wav), { timeoutMs: STEP_TIMEOUT.media(meta.dur) }));
+      // -D: the model's look-ahead is compensated, so the voice stays on the picture's timing
+      await this.runner(df, ["-D", "-o", join(work, "out"), wav], { timeoutMs: STEP_TIMEOUT.media(meta.dur) });
+      await fs.rename(join(work, "out", "in.wav"), voice);
+      return voice;
+    } finally {
+      await fs.rm(work, { recursive: true, force: true });
     }
   }
 

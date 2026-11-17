@@ -206,6 +206,7 @@ export class FootageController {
     if (d.ref) pair.ref = d.ref; else if (d.lookId) pair.lookId = d.lookId; // a reference wins over a saved look; neither is a video imported without one (grade is skipped)
     if (d.lang) pair.lang = d.lang;
     await this.model.updateOne({ _id: id }, { $set: { pair, ...(doc.status === "ready" ? { status: "processing" } : {}) } });
+    await this.jobs.enqueue(id, "clean"); // the voice cleaned first: the captions are heard on it
     await this.jobs.enqueue(id, "transcribe");
     await this.jobs.enqueue(id, "grade");
     return this.view(await this.find(id));
@@ -216,6 +217,8 @@ export class FootageController {
     if (doc.status === "uploading") o.received = await this.store.received(id);
     const hasProxy = await fs.stat(this.store.file(id, "proxy.mp4")).then(() => true, () => false);
     if (hasProxy) o.proxyUrl = signFile(id, "proxy.mp4");
+    // the noise-reduced copy for the preview (Reduce background noise), once the clean step has made it
+    if (hasProxy && (await fs.stat(this.store.file(id, "proxy-clean.mp4")).then(() => true, () => false))) o.cleanUrl = signFile(id, "proxy-clean.mp4");
     return o;
   }
 
@@ -252,11 +255,12 @@ export class FootageController {
     const jobs: Record<string, any> = doc.jobs || {}, busy = (s: Step) => ["queued", "running"].includes(jobs[s]?.state);
     if ((step === "transcribe" || step === "grade") && (doc.role !== "original" || !doc.pair)) throw new BadRequestException("Import this video first");
     if (step === "caption-style" && doc.role !== "reference") throw new BadRequestException("Only a reference video has a subtitle style");
+    if (step === "clean" && (doc.role !== "original" || doc.status === "failed")) throw new BadRequestException("Only your own video can be cleaned up");
     if (busy(step)) return this.view(doc);
     const steps: Step[] = [step];
     if ((step === "probe" || step === "proxy") && doc.role === "original" && doc.pair) {
       // a fatal failure cleared the runner's queue, so a transcribe or grade still persisted as queued is orphaned: request it too (harmless if not)
-      for (const s of ["transcribe", "grade"] as Step[]) if (!["done", "skipped", "running"].includes(jobs[s]?.state)) steps.push(s);
+      for (const s of ["clean", "transcribe", "grade"] as Step[]) if (!["done", "skipped", "running"].includes(jobs[s]?.state)) steps.push(s);
     }
     if (doc.status === "ready" || doc.status === "failed") await this.model.updateOne({ _id: id }, { $set: { status: "processing", error: null } });
     for (const s of steps) await this.jobs.enqueue(id, s);
@@ -275,7 +279,7 @@ export class FootageController {
 
   /** Signed-URL file (the browser cannot send a Bearer header from <video> or a download link) */
   async send(id: string, file: string, token: string, req: any, res: any, download?: string) {
-    if (!isId(id) || !/^(proxy\.mp4|exports\/[\w-]{1,64}\.mp4)$/.test(file)) throw new NotFoundException();
+    if (!isId(id) || !/^(proxy(-clean)?\.mp4|exports\/[\w-]{1,64}\.mp4)$/.test(file)) throw new NotFoundException();
     if (!verifyFile(id, file, token)) throw new ForbiddenException("Invalid or expired link");
     const path = this.store.file(id, file as any);
     const stat = await fs.stat(path).catch(() => null);
@@ -295,6 +299,9 @@ export class FootageController {
 
   @Public() @Get(":id/proxy.mp4")
   proxy(@Param("id") id: string, @Query("t") t: string, @Req() req: any, @Res() res: any) { return this.send(id, "proxy.mp4", t, req, res); }
+
+  @Public() @Get(":id/proxy-clean.mp4")
+  clean(@Param("id") id: string, @Query("t") t: string, @Req() req: any, @Res() res: any) { return this.send(id, "proxy-clean.mp4", t, req, res); }
 
   @Public() @Get(":id/exports/:job.mp4")
   exported(@Param("id") id: string, @Param("job") job: string, @Query("t") t: string, @Req() req: any, @Res() res: any, @Query("dl") dl?: string) {

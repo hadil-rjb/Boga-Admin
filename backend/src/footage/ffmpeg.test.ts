@@ -129,3 +129,20 @@ describe('buildExportArgs', () => {
   });
   it('limitSec adds -t, the output is last', () => { const a = buildExportArgs({ ...base, probe: parseProbe(ref), limitSec: 10 }); expect(a.join(' ')).toMatch(/-t 10 /); expect(a.at(-1)).toBe('o.mp4'); });
 });
+
+describe('Reduce background noise with the voice model', () => {
+  const base = { src: 's', cube: 'c', concat: 'l', out: 'o', w: 64, h: 64, fps: 30, probe: { dur: 3, w: 64, h: 64, rotation: 0 as const, fps: 30, hdr: null, audio: true } };
+  it('the isolated voice replaces the original sound (input 2), with no filter on top; the music moves to input 3', () => {
+    const a = buildExportArgs({ ...base, denoise: true, voice: 'v.wav', music: { path: 'm.mp3', vol: 0.5, duck: true } });
+    const ins = a.flatMap((x, i) => (x === '-i' ? [a[i + 1]] : []));
+    expect(ins).toEqual(['s', 'l', 'v.wav', 'm.mp3']);
+    const fc = a[a.indexOf('-filter_complex') + 1];
+    expect(fc).toContain('[2:a:0]asplit'); expect(fc).toContain('[3:a:0]aloop'); expect(fc).not.toContain('afftdn');
+  });
+  it('alone at full volume it is mapped as is; without the model the filter is used', () => {
+    const a = buildExportArgs({ ...base, denoise: true, voice: 'v.wav' });
+    expect(a.slice(a.indexOf('[out]'))).toContain('2:a:0?');
+    expect(buildExportArgs({ ...base, denoise: true }).join(' ')).toContain('afftdn');
+    expect(buildExportArgs({ ...base, voice: 'v.wav' }).join(' ')).not.toContain('v.wav'); // switched off: the original
+  });
+});

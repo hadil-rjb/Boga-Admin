@@ -8,7 +8,7 @@ import { Model } from "mongoose";
 import type { Browser, Page } from "puppeteer-core";
 import type { MediaDocument } from "../media/media.schema";
 import { launchChromium } from "../social/publishing/headless";
-import { buildExportArgs, ExportMusic, parseProgress, Probe } from "./ffmpeg";
+import { buildExportArgs, ExportKeep, ExportMusic, parseProgress, Probe } from "./ffmpeg";
 import { Footage, FootageDocument } from "./footage.schema";
 import { signFile } from "./footage.sign";
 import { FootageStore } from "./footage.store";
@@ -43,9 +43,17 @@ export const INTERRUPTED = "This export was interrupted. Export again.";
 
 export type Word = { t: string; s: number; e: number };
 export type Line = { id?: string; start: number; end: number; words: Word[] };
-export type ExportLook = { lut: string | null; strength: number; exposure: number; temp: number; sat: number };
+/** fx: the look filters (look.js FILTERS: a colour style baked into the LUT, film grain and a vignette drawn by ffmpeg) */
+export type ExportFx = { filter: string; amount: number; shadows: number; highlights: number; grain: number; vignette: number };
+export type ExportLook = { lut: string | null; strength: number; exposure: number; temp: number; sat: number; fx?: ExportFx };
 /** The sound: the original's volume (0 mutes it) and an optional music bed (a hosted audio file, /api/media/<id>) */
-export type ExportAudio = { vol: number; music: { mediaId: string; vol: number; duck: boolean } | null };
+export type ExportAudio = {
+  vol: number; music: { mediaId: string; vol: number; duck: boolean } | null;
+  /** Reduce background noise on the original (ffmpeg DENOISE) */
+  denoise?: boolean;
+  /** Remove pauses: silences of at least `min` ms between the transcript's words are cut (pauses.js, the preview's own rule) */
+  pauses?: { min: number } | null;
+};
 /** Loads a hosted audio file's bytes (null when it does not exist or is not audio) */
 export type MusicSource = (mediaId: string) => Promise<{ data: Buffer; mime: string } | null>;
 export const MUSIC_GONE = "The music file was not found. Choose the music again.";
@@ -103,6 +111,13 @@ export function validateExport(body: any, { allowLimit = false } = {}): ExportRe
     temp: L.temp == null ? 0 : num(L.temp, -1, 1, "Temperature"),
     sat: L.sat == null ? 0 : num(L.sat, -1, 1, "Saturation"),
   };
+  if (L.fx != null) {
+    const X = L.fx;
+    if (!isObj(X) || typeof X.filter !== "string" || !FX_FILTERS.includes(X.filter)) throw new ExportInvalid("Invalid look filter");
+    const u = (v: unknown, what: string) => (v == null ? 0 : num(v, 0, 1, what));
+    const fx = { filter: X.filter, amount: X.amount == null ? 0.8 : num(X.amount, 0, 1, "The filter amount"), shadows: u(X.shadows, "Brighten the person"), highlights: u(X.highlights, "Tone down the background"), grain: u(X.grain, "Grain"), vignette: u(X.vignette, "Vignette") };
+    if (fx.filter !== "none" || fx.shadows > 0 || fx.highlights > 0 || fx.grain > 0 || fx.vignette > 0) look.fx = fx; // nothing on: same request (and hash) as before filters existed
+  }
   const C = isObj(ft.captions) ? ft.captions : {};
   const rawLines = C.lines == null ? [] : C.lines;
   if (!Array.isArray(rawLines)) throw new ExportInvalid("Subtitles must be a list");
@@ -136,27 +151,38 @@ function validateAudio(a: unknown): ExportAudio {
   if (a == null) return { vol: 1, music: null };
   if (!isObj(a)) throw new ExportInvalid("Invalid audio");
   const vol = a.vol == null ? 1 : num(a.vol, 0, 1, "The original sound volume");
-  if (a.music == null) return { vol, music: null };
+  if (a.denoise != null && typeof a.denoise !== "boolean") throw new ExportInvalid("Invalid noise reduction");
+  let pauses: { min: number } | null = null;
+  if (a.pauses != null) {
+    if (!isObj(a.pauses)) throw new ExportInvalid("Invalid pause removal");
+    pauses = { min: Math.round(num(a.pauses.min, 300, 2000, "The shortest pause")) };
+  }
+  const extra = { ...(a.denoise ? { denoise: true } : {}), ...(pauses ? { pauses } : {}) };
+  if (a.music == null) return { vol, music: null, ...extra };
   const m = a.music;
   if (!isObj(m) || typeof m.mediaId !== "string" || !/^[0-9a-f]{24}$/.test(m.mediaId)) throw new ExportInvalid("Invalid music");
   if (m.duck != null && typeof m.duck !== "boolean") throw new ExportInvalid("Invalid music");
-  return { vol, music: { mediaId: m.mediaId, vol: m.vol == null ? 0.6 : num(m.vol, 0, 1, "The music volume"), duck: m.duck !== false } };
+  return { vol, music: { mediaId: m.mediaId, vol: m.vol == null ? 0.6 : num(m.vol, 0, 1, "The music volume"), duck: m.duck !== false }, ...extra };
 }
-const defaultAudio = (a: ExportAudio | undefined) => !a || (a.vol === 1 && !a.music);
+/** The look filters an export accepts (look.js FILTERS keys) */
+export const FX_FILTERS = ["none", "natural", "portrait", "cinematic", "warm", "bw", "vintage"];
+const defaultAudio = (a: ExportAudio | undefined) => !a || (a.vol === 1 && !a.music && !a.denoise && !a.pauses);
 
 /** Bump whenever the encode changes its output for the same request (filters, timing, codec settings): old exports are not reused */
 export const EXPORT_PIPELINE_VERSION = 2;
 
 /**
  * SHA-1 of what the MP4 depends on: src, look, captions, out size, the grade cube's digest (a re-matched grade is not
- * served stale), the audio (only when it is not the default, so earlier exports keep their hash) and the pipeline version.
+ * served stale), the audio (only when it is not the default, so earlier exports keep their hash), the transcript's digest
+ * when pauses are removed (a re-transcribed video cuts elsewhere) and the pipeline version.
  * Line ids are left out: they do not change a pixel.
  */
-export function exportHash(r: ExportRequest, cubeDigest: string | null, version: number = EXPORT_PIPELINE_VERSION): string {
+export function exportHash(r: ExportRequest, cubeDigest: string | null, version: number = EXPORT_PIPELINE_VERSION, wordsDigest: string | null = null, denoiser: string | null = null): string {
   const out = { w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitMs: r.limitMs } : {}) };
   const captions = { style: r.captions.style, lines: r.captions.lines.map(({ start, end, words }) => ({ start, end, words })) };
   const audio = defaultAudio(r.audio) ? {} : { audio: r.audio };
-  return createHash("sha1").update(JSON.stringify({ v: version, src: r.src, look: r.look, captions, out, cube: cubeDigest, ...audio })).digest("hex");
+  const words = { ...(r.audio?.pauses ? { words: wordsDigest } : {}), ...(r.audio?.denoise ? { denoiser } : {}) };
+  return createHash("sha1").update(JSON.stringify({ v: version, src: r.src, look: r.look, captions, out, cube: cubeDigest, ...audio, ...words })).digest("hex");
 }
 
 /**
@@ -303,7 +329,10 @@ export class ExportService implements OnModuleDestroy {
     const lutPath = this.lutFile(r.look.lut);
     const cubeText = lutPath ? await fs.readFile(lutPath, "utf8").catch(() => null) : null;
     if (lutPath && cubeText == null) throw new ExportInvalid(r.look.lut!.startsWith("looks/") ? "This brand look no longer exists" : "No colour grade yet");
-    const hash = exportHash(r, cubeText == null ? null : createHash("sha1").update(cubeText).digest("hex"));
+    const wordsText = r.audio?.pauses ? await fs.readFile(this.store.file(r.src, "words.json"), "utf8").catch(() => null) : null;
+    // the noise reduction used (the voice model's file, or the filter) is part of what the MP4 sounds like
+    const voiceStat = r.audio?.denoise ? await fs.stat(this.store.file(r.src, "voice.wav")).catch(() => null) : null;
+    const hash = exportHash(r, cubeText == null ? null : createHash("sha1").update(cubeText).digest("hex"), EXPORT_PIPELINE_VERSION, wordsText == null ? null : createHash("sha1").update(wordsText).digest("hex"), voiceStat ? `voice:${voiceStat.size}:${voiceStat.mtimeMs}` : "filter");
     // same request: the job in progress, or the finished file
     for (const j of this.jobs.values()) if (j.hash === hash && j.footageId === r.src && j.state !== "failed" && (j.state !== "done" || existsSync(this.out(j)))) return { jobId: j.id, state: j.state };
     for (const [id, e] of Object.entries((rec.exports ?? {}) as Record<string, any>)) {
@@ -375,7 +404,7 @@ export class ExportService implements OnModuleDestroy {
       if (base.size !== 33) base = resample(LOOK, base, 33);
       let hlg = null;
       if (meta.hdr === "hlg") { await this.pipeline.ensureCube(); hlg = LOOK.parseCube(await fs.readFile(this.pipeline.cube, "utf8")); }
-      const baked = LOOK.bakeExport({ look: base, hlg, strength: r.look.lut ? r.look.strength : 0, tweaks: { exposure: r.look.exposure, temp: r.look.temp, sat: r.look.sat } });
+      const baked = LOOK.bakeExport({ look: base, hlg, strength: r.look.lut ? r.look.strength : 0, tweaks: { exposure: r.look.exposure, temp: r.look.temp, sat: r.look.sat }, fx: r.look.fx ?? null });
       const cube = join(work, "export.cube");
       await fs.writeFile(cube, LOOK.writeCube(baked, "export"));
       // 2. the overlay: one PNG per change, a shared blank one where no subtitle shows
@@ -412,9 +441,20 @@ export class ExportService implements OnModuleDestroy {
         await fs.writeFile(path, m.data);
         music = { path, vol: audio.music.vol, duck: audio.music.duck };
       }
-      // 4. the encode, under the global ffmpeg lock
-      const args = buildExportArgs({ src: await this.sourcePath(job.footageId), probe: meta, cube, concat, out: tmp, w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitSec: durMs / 1000 } : {}), vol: audio.vol, music });
-      const onLine = (line: string) => { const p = parseProgress(line, durMs); if (p !== null) progress(0.3 + 0.7 * p); };
+      // 4. Remove pauses: the frames kept, from the transcript's words by the preview's own rule (no words: nothing is cut)
+      let keep: ExportKeep = null, outMs = durMs;
+      if (audio.pauses) {
+        const { pauses: PZ } = await loadShared();
+        const text = await fs.readFile(this.store.file(job.footageId, "words.json"), "utf8").catch(() => "[]");
+        let words: any[] = []; try { const v = JSON.parse(text); if (Array.isArray(v)) words = v; } catch { /* unreadable: no cuts */ }
+        const cuts = PZ.pauseCuts(words, Math.round(meta.dur * 1000), audio.pauses.min);
+        if (cuts.length) { keep = PZ.keepFrames(cuts, Math.round(meta.dur * 1000), r.fps); outMs = Math.min(durMs, Math.round((PZ.keptFrames(keep) * 1000) / r.fps)); }
+      }
+      // 5. the encode, under the global ffmpeg lock
+      // Reduce background noise: the voice the model isolated (the clean step's voice.wav), else the ffmpeg filter
+      const voicePath = this.store.file(job.footageId, "voice.wav"), voice = audio.denoise && existsSync(voicePath) ? voicePath : null;
+      const args = buildExportArgs({ src: await this.sourcePath(job.footageId), probe: meta, cube, concat, out: tmp, w: r.w, h: r.h, fps: r.fps, ...(r.limitMs ? { limitSec: outMs / 1000 } : {}), vol: audio.vol, music, denoise: !!audio.denoise, voice, keep, grain: r.look.fx?.grain ?? 0, vignette: r.look.fx?.vignette ?? 0 });
+      const onLine = (line: string) => { const p = parseProgress(line, outMs); if (p !== null) progress(0.3 + 0.7 * p); };
       await this.pipeline.withFfmpeg(() => this.runner("ffmpeg", args, { onLine, timeoutMs: STEP_TIMEOUT.media(durMs / 1000) }));
       await fs.rename(tmp, final);
       job.state = "done"; job.progress = 1;
