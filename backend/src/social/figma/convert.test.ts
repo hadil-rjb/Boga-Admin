@@ -173,4 +173,20 @@ describe("Figma import: styles", () => {
     expect(byName(out, "Glass")).toMatchObject({ type: "rect", bbl: 15 });
     expect(out.warnings).toContain("Noise and texture effects were left out");
   });
+
+  it("places a turned, blended background bigger than the frame at its full size (not squeezed into the frame)", () => {
+    // Figma's render bounds stop at the frame; its render of the node doesn't
+    const out = convert({
+      id: "0:1", type: "FRAME", name: "Post", ...at(0, 0, 1080, 1350), fills: [solid(0, 0, 1)], children: [
+        {
+          id: "1:1", type: "INSTANCE", name: "BG 7", blendMode: "SCREEN", clipsContent: true, ...at(-178, -740, 2304, 2304, 30),
+          absoluteBoundingBox: { x: -178, y: -740, width: 3147, height: 3147 }, absoluteRenderBounds: { x: 0, y: 0, width: 1080, height: 1350 },
+          fills: [solid(0, 0, 0)], children: [{ id: "1:2", type: "RECTANGLE", name: "Photo", ...at(0, 0, 2304, 2304), fills: [{ type: "IMAGE", imageRef: "abc", scaleMode: "FILL" }] }],
+        },
+      ],
+    });
+    expect(byName(out, "BG 7")).toMatchObject({ type: "image", x: -178, y: -740, w: 3147, h: 3147, blend: "screen" });
+    expect(out.rasters).toEqual([{ id: "1:1", w: 3147, h: 3147 }]);
+    expect(out.warnings.some((w) => w.includes("blend mode"))).toBe(false); // one picture blends like the group
+  });
 });

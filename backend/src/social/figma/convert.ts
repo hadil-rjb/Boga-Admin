@@ -335,9 +335,21 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
   };
   const nameOf = (n: any, def: string) => String(n.name || def).slice(0, 60);
 
+  /**
+   * Box of a node's Figma render. Figma renders the whole node (its own clip, shadows and blurs included), but its
+   * absoluteRenderBounds are cut by the frames around it: a background bigger than the frame (or turned) would be
+   * squeezed into the visible part. The render covers both boxes, so the picture keeps its size and place.
+   */
+  const renderBoxOf = (n: any) => {
+    const a = n.absoluteRenderBounds, b = n.absoluteBoundingBox;
+    if (!a || !b) return boxOf(n);
+    const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x + a.width, b.x + b.width), y1 = Math.max(a.y + a.height, b.y + b.height);
+    return { x: r1((x0 - fbb.x) * k + offX), y: r1((y0 - fbb.y) * k + offY), w: r1((x1 - x0) * k), h: r1((y1 - y0) * k) };
+  };
+
   /** A node rendered by Figma, placed as an image (the frames around it clip it in the studio, like in Figma) */
   const raster = (n: any, pid?: string) => {
-    const b = boxOf(n);
+    const b = renderBoxOf(n);
     if (!b || b.w < 0.5 || b.h < 0.5) return;
     rasters.push({ id: n.id, w: b.w, h: b.h });
     layers.push({ id: uid(), type: "image", name: nameOf(n, "Image"), ...b, rot: 0, op: 1, ...blendOf(n), fill: `url({{raster:${n.id}}}) center/100% 100% no-repeat`, r: 0, ...(pid ? { pid } : {}) });
@@ -698,9 +710,10 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     const gb = isCont && kids.length && BLEND[n.blendMode];
     if (gb) {
       emitContent(n, m, mm, par, clip, kids, isCont);
-      const own = layers[from];
-      layers.slice(from).forEach((l) => { if (l.type !== "group" && !l.mask && !l.blend && true) l.blend = gb; });
-      warn.add(`The blend mode of “${nameOf(n, "Group")}” is applied to each of its layers`);
+      const drawn = layers.slice(from).filter((l) => l.type !== "group" && !l.mask);
+      drawn.forEach((l) => { if (!l.blend) l.blend = gb; });
+      // one picture (the group rendered by Figma) blends exactly like the group: nothing to say
+      if (drawn.length > 1) warn.add(`The blend mode of “${nameOf(n, "Group")}” is applied to each of its layers`);
       return;
     }
     emitContent(n, m, mm, par, clip, kids, isCont);
