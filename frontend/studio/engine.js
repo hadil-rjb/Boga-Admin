@@ -697,13 +697,17 @@ function agoOf(d) {
 const DC_AT = new Map(); // design id -> slide shown on its card
 const dcDots = (n, i) => n > 8 ? `<b>${i + 1} / ${n}</b>` : Array.from({ length: n }, (_, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
 /** A card's artwork: the slide shown in front and, for a carousel, its other slides stacked behind it in order (the next one first).
-    At most DC_BACK slides are drawn behind, so a long carousel stays light. */
-const DC_BACK = 7;
+    At most DC_BACK slides are drawn behind (the next two: enough to read as a carousel, and the front one stays large). */
+const DC_BACK = 2;
 function dcArt(d, i) {
-  const n = d.pages.length, m = Math.min(n - 1, DC_BACK), step = m ? Math.min(12, 30 / m) : 0;
+  const n = d.pages.length, m = Math.min(n - 1, DC_BACK), step = m ? 10 : 0;
   const back = Array.from({ length: m }, (_, k) => `<span class="dc-back" style="--k:${k + 1}" aria-hidden="true">${thumb(d.pages[(i + k + 1) % n], d.ratio, 190, 215)}</span>`).reverse().join('');
-  return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}</span>`;
+  // a slide with nothing on it yet (no layers, or only its plain background) says so, instead of a white sheet
+  const blank = pageBlank(d.pages[i]) ? `<span class="dc-blank" aria-hidden="true">${ic('layout', 18)}<b>Empty slide</b></span>` : '';
+  return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}${blank}</span>`;
 }
+/** Nothing drawn on a page yet: no layers, or only locked plain backgrounds (no picture, no gradient) */
+const pageBlank = (pg) => !!pg && !pg.poster && (pg.layers || []).every((l) => l && !l.hidden && l.locked && l.type === 'rect' && !/url\(|gradient\(/i.test(String(l.fill || '')));
 /* Versions of a design (another language, size or theme: d.vOf names the original) live in the editor's Versions bar:
    the design lists show the original only. A version whose original is gone shows again, so it is never lost. */
 const isVersion = (d) => !!(d && d.vOf && d.vOf !== d.id && S.designs.some((x) => x.id === d.vOf));
@@ -2541,7 +2545,7 @@ function openFigma({ into = false, pickDefault = false } = {}) {
               <button type="button" class="btn secondary sm" id="fgChange">${ic('layers', 14)}Change file</button></div>
             ${into ? '' : `<div class="seg" style="align-self:flex-start;min-width:260px"><button class="${st.mode === 'designs' ? 'on' : ''}" data-m="designs">Separate designs</button><button class="${st.mode === 'slides' ? 'on' : ''}" data-m="slides">One carousel</button></div>`}
             <div class="fg9-bar"><label class="fg9-q">${ic('search', 16)}<input class="field" id="fgQ" type="search" placeholder="Search frames by name, page or size" value="${esc(st.q || '')}" autocomplete="off"></label><span class="fg9-n" id="fgN"></span><button type="button" class="btn ghost sm" id="fgAll">Select all</button><button type="button" class="btn ghost sm" id="fgNone">Clear</button></div>
-            <div class="fg9-list" id="fgList">${pages.map((pg) => `<section class="fg9-pg" data-pg="${esc(pg)}">${pages.length > 1 ? `<h4>${esc(pg || 'Frames')}</h4>` : ''}<div class="frames">${fr.filter((x) => (x.page || '') === pg).map(card).join('')}</div></section>`).join('')}<p class="fg9-empty sm-t muted" id="fgEmpty" hidden>No frame matches your search.</p></div>
+            <div class="fg9-list" id="fgList">${pages.map((pg) => `<section class="fg9-pg" data-pg="${esc(pg)}">${pages.length > 1 ? `<h4><span>${esc(pg || 'Frames')}</span><span class="fg9-n">${fr.filter((x) => (x.page || '') === pg).length}</span></h4>` : ''}<div class="frames">${fr.filter((x) => (x.page || '') === pg).map(card).join('')}</div></section>`).join('')}<p class="fg9-empty sm-t muted" id="fgEmpty" hidden>No frame matches your search.</p></div>
             <div id="fgNote"></div>
             ${errNote()}
             <p class="xs-t muted">Tip: <span class="kbd">Shift</span> + click selects a range.</p>
@@ -2570,7 +2574,7 @@ function openFigma({ into = false, pickDefault = false } = {}) {
       const filterFrames = () => {
         const words = String(st.q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
         $$('#fgList .frame', bg).forEach((c) => { c.hidden = !words.every((w) => c.dataset.q.includes(w)); });
-        $$('#fgList .fg9-pg', bg).forEach((p) => { p.hidden = !p.querySelector('.frame:not([hidden])'); });
+        $$('#fgList .fg9-pg', bg).forEach((p) => { const n = p.querySelectorAll('.frame:not([hidden])').length, c = p.querySelector('.fg9-n'); p.hidden = !n; if (c) c.textContent = n; });
         const e = $('#fgEmpty', bg); if (e) e.hidden = !!visibleCards().length;
         const all = $('#fgAll', bg); if (all) all.textContent = words.length ? `Select ${visibleCards().length} shown` : 'Select all';
       };

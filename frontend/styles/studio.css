@@ -3969,3 +3969,20 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .dc-fmt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dc-sub time{flex:none;white-space:nowrap;color:var(--text-3)}
 @media (prefers-reduced-motion:reduce){.dc-tags{transition:none}}
+
+/* ============ Figma frame picker: page headers that cover what scrolls under them ============ */
+/* full width (over the list's side padding), flush with the top (over its top padding), opaque, a line under it */
+.fg9-list{padding-top:0}
+.fg9-pg h4{top:0;z-index:3;display:flex;align-items:center;gap:8px;margin:0 -4px 10px;padding:10px 4px 8px;background:var(--surface);box-shadow:0 1px 0 var(--border);font-size:11px;line-height:1.2}
+.fg9-pg+.fg9-pg{margin-top:18px}
+.fg9-n{min-width:20px;height:18px;padding:0 6px;border-radius:999px;background:var(--pill);color:var(--text-2);font-size:10.5px;font-weight:600;letter-spacing:0;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
+
+/* ============ Design cards: empty slides and the slides stacked behind ============ */
+/* an empty slide: the page as it is (its own background), with a quiet note in the middle */
+.dc-blank{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;pointer-events:none;color:var(--text-3)}
+.dc-blank b{font-size:12px;font-weight:500;color:var(--text-3)}
+.dc-blank .ic{width:18px;height:18px;opacity:.7}
+/* slides behind: the real slides, no veil (they read as the same design, not grey sheets); a soft edge keeps them apart */
+.dc-back::after{content:none}
+.dc-back .thumb,.dc-art>.thumb{box-shadow:0 0 0 1px rgba(15,23,42,.08),0 2px 8px rgba(15,23,42,.10)}
+[data-ws="social"][data-theme="dark"] .dc-back .thumb,[data-ws="social"][data-theme="dark"] .dc-art>.thumb{box-shadow:0 0 0 1px rgba(255,255,255,.08),0 2px 8px rgba(0,0,0,.35)}
