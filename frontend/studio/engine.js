@@ -668,7 +668,7 @@ function route() {
   $$('#nav a[data-k]').forEach((a) => a.classList.toggle('on', a.dataset.k === (PAGES[page] ? page : 'overview')));
   closeDrawer();
   $('#top').innerHTML = `<button class="btn secondary icon" data-act="menu" title="Menu" style="display:${innerWidth > 1024 ? 'none' : 'inline-flex'}">${ic('menu')}</button>
-    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="${esc(brand().name)}: your brands" aria-label="Your brands">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
+    ${p.noHead ? `<div class="grow top-nohead"><h1 class="top-vh">${p.t}</h1></div>` : `<div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div>`}<button class="bpill" data-act="manageBrands" title="${esc(brand().name)}: your brands" aria-label="Your brands">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
     <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>${p.themeFirst && p.actions ? p.actions() : ''}`;
   $('#view').innerHTML = `<div class="page">${p.view()}</div>`; scrollTo(0, 0);
   sbUsageLoad();
@@ -1027,7 +1027,8 @@ function ovSchedule() {
 }
 
 PAGES.overview = {
-  t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.', themeFirst: true,
+  // no visible title: the page speaks for itself (the title stays for screen readers)
+  t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.', themeFirst: true, noHead: true,
   actions: () => `${importBtn()}<a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
   view: () => {
     if (!OV.day) { OV.day = iso(new Date()); OV.start = iso(addD(new Date(), -2)); }
