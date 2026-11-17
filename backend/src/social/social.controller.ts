@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query } from "@nestjs/common";
 import { Roles } from "../common/roles.decorator";
 import { BrandsService } from "./brands.service";
-import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, UpdateTemplateDto } from "./dto/resource.dto";
+import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, TemplateVersionDto, UpdateTemplateDto } from "./dto/resource.dto";
 import { WorkspaceDeltaDto, WorkspaceDto } from "./dto/workspace.dto";
 import { WorkspaceService } from "./workspace.service";
 
@@ -68,6 +68,8 @@ export class SocialBrandsController {
   @Roles(...EDIT) @Post(":brandId/templates") createTemplate(@Param("brandId") brandId: string, @Body() dto: CreateTemplateDto) { return this.svc.createTemplate(brandId, dto); }
   @Roles(...EDIT) @Patch(":brandId/templates/:id") updateTemplate(@Param("brandId") brandId: string, @Param("id") id: string, @Body() dto: UpdateTemplateDto) { return this.svc.updateTemplate(brandId, id, dto); }
   @Roles(...EDIT) @Delete(":brandId/templates/:id") @HttpCode(200) deleteTemplate(@Param("brandId") brandId: string, @Param("id") id: string) { return this.svc.deleteTemplate(brandId, id); }
+  @Roles(...EDIT) @Post(":brandId/templates/:id/versions") addTemplateVersion(@Param("brandId") brandId: string, @Param("id") id: string, @Body() dto: TemplateVersionDto) { return this.svc.addTemplateVersion(brandId, id, dto); }
+  @Roles(...EDIT) @Delete(":brandId/templates/:id/versions/:vid") @HttpCode(200) deleteTemplateVersion(@Param("brandId") brandId: string, @Param("id") id: string, @Param("vid") vid: string) { return this.svc.deleteTemplateVersion(brandId, id, vid); }
 
   @Get(":brandId/posts")
   posts(@Param("brandId") brandId: string, @Query("from") from?: string, @Query("to") to?: string, @Query("status") status?: string) {

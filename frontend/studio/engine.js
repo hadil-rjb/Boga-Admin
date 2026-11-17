@@ -43,7 +43,7 @@ import { chatTitle, archiveChat, restoreChat, dropChat, addRefs, refsNote, refsS
 import { agentCopy, agentMode, allowed, videoStep, animPatch, fitAnims, scenePatch, animOut, videoCtx, frameTime, starterFor, sec, MAX_SCENES } from './agent-motion.js';
 import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from './caption-panels.js';
 import { installCaptionInspector } from './caption-inspector.js';
-import { SIZES as V_SIZES, resizePage as vResize, swapTheme as vTheme, themeOf as vThemeOf, langOf as vLangOf, textsToTranslate as vTexts, swapLanguage as vLanguage, versionName as vName, lumOf as vLum } from './variants.js';
+import { SIZES as V_SIZES, resizePage as vResize, swapTheme as vTheme, themeOf as vThemeOf, langOf as vLangOf, textsToTranslate as vTexts, swapLanguage as vLanguage, versionName as vName, lumOf as vLum, mergeLook as vMergeLook } from './variants.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
 
 let mounted = null; // destroy() of the running instance
@@ -388,6 +388,27 @@ function busy(btn, on, label) {
 }
 /** A brand template's preview; dynamic (live data) templates carry a Live badge */
 const btThumb = (t, bw, bh) => { const h = thumb({ bg: t.bg || '#0b1220', layers: t.layers }, t.ratio, bw, bh); return t.live ? h.replace(/<\/div>$/, `<span class="tpl-live">${ic('chart', 11)}Live</span></div>`) : h; };
+/**
+ * A template's versions, the original first: { id, name, ratio, bg, layers, live }. They are the editor's design versions
+ * (another language, size or theme, or any other look): saving a design brings its versions, using the template makes them again.
+ */
+const tplVers = (t) => [{ id: '', name: 'Original', ratio: t.ratio, bg: t.bg, layers: t.layers, live: t.live }, ...(t.versions || []).map((v) => ({ ...v, ratio: v.ratio || t.ratio }))];
+/** What a template version is, like the versions bar says it: { lang, theme, size } */
+const tplSpec = (v, t) => { const pg = [{ bg: v.bg, layers: v.layers || [] }]; return { lang: vLangOf(pg), theme: vThemeOf(pg), size: v.ratio || t.ratio }; };
+const tplSpecTxt = (v, t) => { const sp = tplSpec(v, t); return [sp.lang === 'ar' ? 'Arabic' : 'English', (V_SIZES.find((z) => z.key === sp.size) || { name: String(sp.size).replace('x', '×') }).name, sp.theme === 'dark' ? 'Dark' : 'Light'].join(' · '); };
+/** One version of a template (the original when the id is empty or gone) */
+const tplVer = (t, vid) => { const v = vid && (t.versions || []).find((x) => x.id === vid); return v ? { ...v, ratio: v.ratio || t.ratio } : t; };
+/** A design and its versions (the editor's Versions), the original first */
+const tplFamily = (d) => { const r = d.vOf || d.id; return S.designs.filter((x) => x.id === r || x.vOf === r).sort((a, b) => (a.id === r ? -1 : b.id === r ? 1 : (a.vAt || 0) - (b.vAt || 0))); };
+/** The same page of each of the design's other versions, as template versions (each keeps its size) */
+const famVersions = (d, pi) => tplFamily(d).filter((x) => x.id !== d.id).map((x) => getD(x.id) || x).filter((x) => x.pages && x.pages.length && !x.pages.some((pg) => pg.poster)).map((x) => {
+  const pg = x.pages[Math.min(pi, x.pages.length - 1)], src = reIdPage(JSON.parse(JSON.stringify({ layers: pg.layers, live: liveForTemplate(pg.live) })));
+  const v = { id: 'v' + uid(), ratio: x.ratio, bg: pg.bg, layers: src.layers, ...(src.live ? { live: src.live } : {}), at: new Date().toISOString() };
+  return { ...v, name: tplSpecTxt(v, v) };
+});
+/** "3 versions" badge on a template's preview */
+const verBadge = (t) => (t.versions || []).length ? `<span class="tpl-vers">${ic('layers', 11)}${t.versions.length + 1} versions</span>` : '';
+const btThumbV = (t, bw, bh) => { const h = btThumb(t, bw, bh), b = verBadge(t); return b ? h.replace(/<\/div>$/, b + '</div>') : h; };
 function aiCaption(d) {
   const b = brand(), tags = b.hashtags ? '\n\n' + b.hashtags : '';
   if (d.tpl === 'calendar') return CAPS[Math.floor(Math.random() * CAPS.length)] + tags;
@@ -567,6 +588,8 @@ function save() { persist.save({ brands: S.brands, data: S.data, active: S.activ
 /* Brands linked to the Blog Admin list its latest live articles in "From your blog" */
 if (blogArticles) S.brands.forEach((b) => { if (b.linkBlog && S.data[b.id]) S.data[b.id].articles = blogArticles; });
 addEventListener('pagehide', save); document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+/* versions left without their original (it was deleted before this was handled): one of them becomes the original */
+if (S.brands.reduce((n, b) => n + (S.data[b.id] ? adoptOrphans(S.data[b.id].designs || [], b.lang) : 0), 0) && !persist.readOnly) save();
 addEventListener('hashchange', save);
 
 /* ============================================================
@@ -711,6 +734,25 @@ const pageBlank = (pg) => !!pg && !pg.poster && (pg.layers || []).every((l) => l
 /* Versions of a design (another language, size or theme: d.vOf names the original) live in the editor's Versions bar:
    the design lists show the original only. A version whose original is gone shows again, so it is never lost. */
 const isVersion = (d) => !!(d && d.vOf && d.vOf !== d.id && S.designs.some((x) => x.id === d.vOf));
+/**
+ * Versions whose original was deleted: one of them becomes the original (the one in the brand's language, then the one
+ * with the fewest changes, then the oldest) and the others become its versions, so the lists show one design again.
+ * Returns how many families were repaired.
+ */
+function adoptOrphans(designs, lang = 'English') {
+  const ids = new Set(designs.map((x) => x.id)), fams = new Map();
+  designs.forEach((x) => { if (x.vOf && x.vOf !== x.id && !ids.has(x.vOf)) { if (!fams.has(x.vOf)) fams.set(x.vOf, []); fams.get(x.vOf).push(x); } });
+  const want = /arab/i.test(lang) ? 'ar' : 'en';
+  fams.forEach((vs) => {
+    const rank = (x) => [x.vChange && x.vChange.lang && x.vChange.lang !== want ? 1 : 0, Object.keys(x.vChange || {}).length, x.vAt || 0];
+    const [root, ...rest] = [...vs].sort((a, b) => { const A = rank(a), B = rank(b); return A[0] - B[0] || A[1] - B[1] || A[2] - B[2]; });
+    ['vOf', 'vAt', 'vChange', 'vSync', 'vTr'].forEach((k) => delete root[k]);
+    root.name = String(root.name || '').replace(/ · (English|Arabic|Square|Portrait|Story|Landscape|Light|Dark)$/g, '') || root.name;
+    rest.forEach((x) => { x.vOf = root.id; x.vSync = false; }); // they keep their own look; re-link from the ⋯ menu
+    root.upd = 'Just now'; root.at = Date.now();
+  });
+  return fams.size;
+}
 /** The designs the lists show: originals and designs on their own */
 const listedDesigns = () => S.designs.filter((d) => !isVersion(d));
 /** How many versions an original has */
@@ -837,14 +879,14 @@ Object.assign(ACT, {
   },
   dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now', d.at = Date.now(); save(); synced('Marked as ' + d.status); },
   dDel: (a) => {
-    const d = getD(a.dataset.id); if (!d || !canEdit()) return;
+    const d = getD(a.dataset.id); if (!d || !canEdit()) return; const nv = versionCount(d);
     const n = S.posts.filter((p) => p.d === d.id).length;
     modal(`<div class="mh"><h2>Delete “${esc(d.name)}”?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 80, 100)}<div class="grow"><p class="sm-t">The design is removed from ${esc(brand().name)} for everyone.</p>${n ? `<div class="note warn" style="margin-top:10px">${ic('alert', 16)}<span>${n} planned post${n > 1 ? 's use' : ' uses'} it and will be removed from the planner too.</span></div>` : ''}</div></div></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="ddGo">${ic('trash', 16)}Delete design</button></div>`, {
       onMount: (bg, close) => $('#ddGo', bg).addEventListener('click', () => {
         S.designs = S.designs.filter((x) => x.id !== d.id); S.posts = S.posts.filter((p) => p.d !== d.id);
-        save(); close(); synced('Design deleted');
+        adoptOrphans(S.designs, brand().lang); save(); close(); synced(nv ? 'Design deleted. Its versions stay: one of them is now the original' : 'Design deleted');
       }),
     });
   },
@@ -1124,7 +1166,7 @@ PAGES.studio = {
     const ds = listedDesigns().filter((d) => hit(d.name)), ts = tpls.filter((x) => hit(x.t.name)); // versions: in the editor's Versions bar
     const none = (icon, title, text, cta) => `<div class="lib-empty">${ic(icon, 24)}<b>${title}</b><p>${text}</p>${cta || ''}</div>`;
     const miss = () => none('search', 'No results', `Nothing matches “${esc(ST.q.trim())}”.`, `<button class="btn secondary sm" data-act="stClear">Clear search</button>`);
-    const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="fromBTpl" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumb(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
+    const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="${(t.versions || []).length ? 'tplVers' : 'fromBTpl'}" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumbV(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${(t.versions || []).length ? ' · ' + (t.versions.length + 1) + ' versions' : ''}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
     // one page of the active library, with a pager under it
     const list = ST.tab === 1 ? ts : ds, pages = Math.max(1, Math.ceil(list.length / ST_PER));
     ST.page = Math.min(Math.max(0, ST.page), pages - 1);
@@ -1204,7 +1246,7 @@ const BKP = {
   tpl: () => {
     const b = brand();
     return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Open in Studio</a></div>
-      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save page as brand template”.</p></div>`}`;
+      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="${(t.versions || []).length ? 'tplVers' : 'fromBTpl'}" data-id="${t.id}" style="border:0">${btThumbV(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}${(t.versions || []).length ? ' · ' + (t.versions.length + 1) + ' versions' : ''}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="${(t.versions || []).length ? 'tplVers' : 'fromBTpl'}" data-id="${t.id}">Use</button><button class="btn ghost icon sm" data-act="tplVers" data-id="${t.id}" title="Versions" aria-label="Versions of ${esc(t.name)}">${ic('layers', 16)}</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save page as brand template”.</p></div>`}`;
   },
   set: () => {
     const b = brand(), connected = Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]);
@@ -2029,8 +2071,21 @@ Object.assign(ACT, {
   },
   fromBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
-    const d = createDesign({ name: t.name, tpl: 'blank', ratio: t.ratio, mutate: (d) => { d.pages = [{ id: uid(), ...pageFromTemplate(t) }]; } });
-    toast('Design created from “' + t.name + '”'); location.hash = '#/editor/' + d.id;
+    if (a.dataset.family) {
+      // the original becomes a design, each version a design version of it: they stay together above the canvas
+      const [og, ...rest] = tplVers(t), rs = tplSpec(og, t), at = Date.now();
+      const root = createDesign({ name: t.name, tpl: 'blank', ratio: og.ratio, mutate: (d) => { d.pages = [{ id: uid(), ...pageFromTemplate(og) }]; d.fromTpl = t.id; } });
+      rest.forEach((v, i) => {
+        const sp = tplSpec(v, t), ch = { ...(sp.lang !== rs.lang ? { lang: sp.lang } : {}), ...(sp.theme !== rs.theme ? { theme: sp.theme } : {}), ...(sp.size !== rs.size ? { size: sp.size } : {}) };
+        // its own look (colours, words) is kept: it doesn't follow the original until it is re-linked
+        createDesign({ name: t.name + ' · ' + v.name, tpl: 'blank', ratio: ensureRatio(v.ratio), mutate: (d) => { d.pages = [{ id: uid(), ...pageFromTemplate(v) }]; d.fromTpl = t.id; d.vOf = root.id; d.vAt = at + i + 1; d.vChange = ch; d.vSync = false; } });
+      });
+      save(); toast('Design created from “' + t.name + '” with ' + rest.length + ' version' + (rest.length > 1 ? 's' : '') + ': switch between them above the canvas');
+      location.hash = '#/editor/' + root.id; return;
+    }
+    const vs = a.dataset.all ? tplVers(t) : [tplVer(t, a.dataset.v)], r0 = ensureRatio(vs[0].ratio);
+    const d = createDesign({ name: t.name, tpl: 'blank', ratio: r0, mutate: (d) => { d.fromTpl = t.id; d.pages = vs.map((v) => { const pg = pageFromTemplate(v); return { id: uid(), ...pg, layers: v.ratio === r0 ? pg.layers : fitLayers(pg.layers, v.ratio, r0) }; }); } });
+    toast('Design created from “' + t.name + '”' + (vs.length > 1 ? ' · ' + vs.length + ' pages' : '')); location.hash = '#/editor/' + d.id;
   },
   dupBrand: () => {
     const src = brand(), od = S.data[src.id], nb = JSON.parse(JSON.stringify(src)), map = {};
@@ -2040,7 +2095,7 @@ Object.assign(ACT, {
     S.brands.push(nb); S.data[nb.id] = { designs, posts, platforms: { ...od.platforms }, ideas: JSON.parse(JSON.stringify(od.ideas)), articles: JSON.parse(JSON.stringify(od.articles)) };
     S.active = nb.id; save(); renderSide(); route(); toast('Brand duplicated. You are now in “' + nb.name + '”.');
     // templates have their own API: copy them once the new brand exists on the server (oldest first keeps the order)
-    if (!persist.readOnly && nb.templates.length) persist.flush().then(async () => { for (const t of [...nb.templates].reverse()) await tplApi(nb, '', { method: 'POST', body: { id: t.id, name: t.name, ratio: t.ratio, bg: t.bg, layers: t.layers } }); })
+    if (!persist.readOnly && nb.templates.length) persist.flush().then(async () => { for (const t of [...nb.templates].reverse()) await tplApi(nb, '', { method: 'POST', body: { id: t.id, name: t.name, ratio: t.ratio, bg: t.bg, layers: t.layers, ...(t.live ? { live: t.live } : {}), ...((t.versions || []).length ? { versions: t.versions } : {}) } }); })
       .catch((e) => toast('Some templates were not copied: ' + e.message));
   },
   delBrand: (a) => {
@@ -2070,31 +2125,86 @@ Object.assign(ACT, {
   },
   edBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
-    const same = t.ratio === ED.d.ratio, pg = pageFromTemplate(t), live = (same || (pg.live && pg.live.kind)) && pg.live; // market templates follow their layers at any size
+    const v = tplVer(t, a.dataset.v), same = v.ratio === ED.d.ratio, pg = pageFromTemplate(v), live = (same || (pg.live && pg.live.kind)) && pg.live; // market templates follow their layers at any size
     mutate(() => {
-      const cur = curP(); cur.layers = same ? pg.layers : fitLayers(pg.layers, t.ratio, ED.d.ratio);
+      const cur = curP(); cur.layers = same ? pg.layers : fitLayers(pg.layers, v.ratio, ED.d.ratio);
       if (live) cur.live = live; else delete cur.live; // the old mapping named the replaced layers
       ED.sel = null;
     });
     if (live) { LIVE && LIVE.refresh(ED.d, { force: true }); toast('Template applied: its live data is updating'); }
-    else toast(t.live ? 'Template applied. Re-analyze it in Live data to make it live at this size' : 'Template applied');
+    else toast(v.live ? 'Template applied. Re-analyze it in Live data to make it live at this size' : 'Template applied');
+  },
+  /** A template's versions: use one (new design, or this page in the editor), use them all as pages, or delete one */
+  tplVers: (a) => {
+    const b = brand(), t = b.templates.find((x) => x.id === a.dataset.id); if (!t) return;
+    const inEd = a.dataset.mode === 'apply' && ED.d && $('.ed'), ro = persist.readOnly;
+    const card = (v) => `<div class="tv-i"><button class="tv-pv" data-v="${esc(v.id)}" title="${inEd ? 'Apply to this page' : 'New design from this version'}">${btThumb(v, 120, 150)}</button>
+      <div class="tv-m"><span><b>${esc(v.name)}</b><small>${esc(tplSpecTxt(v, t))}</small></span>${v.id && !ro ? `<button class="btn ghost icon sm" data-del="${esc(v.id)}" title="Delete version" aria-label="Delete ${esc(v.name)}">${ic('trash', 14)}</button>` : ''}</div></div>`;
+    const body = () => `<div class="tv-grid">${tplVers(t).map(card).join('')}</div>${(t.versions || []).length ? '' : `<p class="xs-t muted" style="margin-top:10px">Only the original so far. Make versions in the editor (Versions, above the canvas) and save the design as a template, or choose “Save page as brand template”, then “New version of ${esc(t.name)}”.</p>`}`;
+    modal(`<div class="mh"><h2>${esc(t.name)} · versions</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb" id="tvB">${body()}</div>
+    <div class="mf"><button class="btn secondary" data-close>Close</button>${inEd ? `<button class="btn primary" id="tvAll" ${(t.versions || []).length ? '' : 'disabled'}>${ic('layers', 16)}Add all as pages</button>`
+      : `<button class="btn secondary" id="tvAll" ${(t.versions || []).length ? '' : 'disabled'}>${ic('layers', 16)}All as pages</button><button class="btn primary" id="tvFam" ${(t.versions || []).length ? '' : 'disabled'}>${ic('copy', 16)}New design with its versions</button>`}</div>`, {
+      wide: true,
+      onMount: (bg, close) => {
+        $('#tvB', bg).addEventListener('click', async (e) => {
+          const pick = e.target.closest('[data-v]'), del = e.target.closest('[data-del]');
+          if (pick) { close(); return inEd ? ACT.edBTpl({ dataset: { id: t.id, v: pick.dataset.v } }) : ACT.fromBTpl({ dataset: { id: t.id, v: pick.dataset.v } }); }
+          if (del && canEdit()) {
+            const v = (t.versions || []).find((x) => x.id === del.dataset.del); if (!v || !confirm(`Delete the version “${v.name}”?`)) return;
+            del.disabled = true;
+            try { const r = await tplApi(b, `/${encodeURIComponent(t.id)}/versions/${encodeURIComponent(v.id)}`, { method: 'DELETE' }); t.versions = (r && r.versions) || t.versions.filter((x) => x.id !== v.id); }
+            catch (err) { del.disabled = false; return toast('Could not delete the version: ' + err.message); }
+            $('#tvB', bg).innerHTML = body(); bg.querySelectorAll('#tvAll,#tvFam').forEach((x) => { x.disabled = !t.versions.length; }); rerender(); if (ED.d && $('.ed')) edPanel(); toast('Version deleted');
+          }
+        });
+        const fam = $('#tvFam', bg); if (fam) fam.addEventListener('click', () => { close(); ACT.fromBTpl({ dataset: { id: t.id, family: '1' } }); });
+        $('#tvAll', bg).addEventListener('click', () => {
+          close();
+          if (!inEd) return ACT.fromBTpl({ dataset: { id: t.id, all: '1' } });
+          const vs = tplVers(t);
+          mutate(() => { vs.forEach((v) => { const pg = pageFromTemplate(v); ED.d.pages.push({ id: uid(), ...pg, layers: v.ratio === ED.d.ratio ? pg.layers : fitLayers(pg.layers, v.ratio, ED.d.ratio) }); }); ED.pi = ED.d.pages.length - vs.length; ED.sel = null; });
+          toast(vs.length + ' pages added from “' + t.name + '”');
+        });
+      },
+    });
   },
   edSaveTpl: () => {
     modal(`<div class="mh"><h2>Save as brand template</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(curP(), ED.d.ratio, 100, 130)}<div class="grow"><label class="lab">Template name<input class="field" id="tpN" value="${esc(ED.d.name)}" maxlength="50"></label><p class="xs-t muted" style="margin-top:8px">Saved to ${esc(brand().name)} only. Text and shapes stay editable when you reuse it.${curP().live && curP().live.map ? ' <b>Live data is kept</b>: the template stays a live calendar.' : ''}</p></div></div></div>
+    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(curP(), ED.d.ratio, 100, 130)}<div class="grow">${brand().templates.length ? `<label class="lab">Save as<select class="field" id="tpAs"><option value="">New template</option>${brand().templates.map((x) => `<option value="${x.id}">New version of “${esc(x.name)}”</option>`).join('')}</select></label>` : ''}<label class="lab" style="margin-top:8px"><span id="tpL">Template name</span><input class="field" id="tpN" value="${esc(ED.d.name)}" maxlength="50"></label>${(() => { const n = tplFamily(ED.d).length - 1; return n > 0 ? `<label class="row tp-fam" style="gap:8px;margin-top:10px;align-items:center"><input type="checkbox" id="tpFam" checked><span class="sm-t">Include its ${n} version${n > 1 ? 's' : ''} <small class="muted">(language, size, theme: this page of each)</small></span></label>` : ''; })()}<p class="xs-t muted" style="margin-top:8px">Saved to ${esc(brand().name)} only. Text and shapes stay editable when you reuse it.${curP().live && curP().live.map ? ' <b>Live data is kept</b>: the template stays a live calendar.' : ''}</p></div></div></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="tpGo">Save template</button></div>`, {
       onMount: (bg, close) => {
-        const g = $('#tpGo', bg), i = $('#tpN', bg);
+        const g = $('#tpGo', bg), i = $('#tpN', bg), as = $('#tpAs', bg);
+        if (as) as.addEventListener('change', () => {
+          const t = brand().templates.find((x) => x.id === as.value);
+          $('#tpL', bg).textContent = t ? 'Version name' : 'Template name';
+          const fm = $('.tp-fam', bg); if (fm) fm.hidden = !!t;
+          i.value = t ? 'Version ' + ((t.versions || []).length + 2) : ED.d.name;
+          g.textContent = t ? 'Save version' : 'Save template'; i.focus(); i.select();
+        });
         const go = async () => {
           if (g.disabled || !canEdit()) return;
           const b = brand(), n = i.value.trim() || 'Untitled template';
           const src = reIdPage(JSON.parse(JSON.stringify({ layers: curP().layers, live: liveForTemplate(curP().live) })));
-          const tpl = { id: 't' + uid(), name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: src.layers, ...(src.live ? { live: src.live } : {}) };
+          const into = as && b.templates.find((x) => x.id === as.value);
+          if (into) {
+            busy(g, true, 'Saving…');
+            try {
+              const r = await tplApi(b, `/${encodeURIComponent(into.id)}/versions`, { method: 'POST', body: { name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: src.layers, ...(src.live ? { live: src.live } : {}) } });
+              into.versions = (r && r.versions) || into.versions || [];
+              if (!ED.d.fromTpl) { ED.d.fromTpl = into.id; save(); }
+              close(); edPanel(); toast('Saved as a version of “' + into.name + '”');
+            } catch (e) { busy(g, false); toast('Could not save the version: ' + e.message); }
+            return;
+          }
+          const fv = $('#tpFam', bg) && $('#tpFam', bg).checked ? famVersions(ED.d, ED.pi) : [];
+          const tpl = { id: 't' + uid(), name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: src.layers, ...(src.live ? { live: src.live } : {}), ...(fv.length ? { versions: fv } : {}) };
           busy(g, true, 'Saving…');
           try {
             await persist.flush(); // a brand created a moment ago must exist on the server first
             const saved = await tplApi(b, '', { method: 'POST', body: tpl });
             b.templates = [saved || tpl, ...b.templates.filter((x) => x.id !== tpl.id)];
+            const og = tplFamily(ED.d)[0]; ED.d.fromTpl = tpl.id; if (og && !og.fromTpl) og.fromTpl = tpl.id; save(); // its Versions dialog shows this template's versions
             close(); edPanel(); toast('Saved to ' + b.name + ' templates');
           } catch (e) { busy(g, false); toast('Could not save the template: ' + e.message); }
         };
@@ -2869,7 +2979,7 @@ function edPanel() {
     const bt = brand().templates;
     h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save page as brand template</button>
     <span class="label" style="margin-top:6px">${esc(brand().name)} templates</span>
-    ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="edBTpl" data-id="${x.id}">${btThumb(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}`;
+    ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="${(x.versions || []).length ? 'tplVers' : 'edBTpl'}" data-id="${x.id}" data-mode="apply">${btThumbV(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}`;
   }
   if (t === 'elements') h = `<h3>Elements</h3><div class="g3f">${Object.keys(SHAPES).map((x) => `<button class="shapebtn" data-act="edShape" data-k="${x}" title="${SHAPES[x]}"><i style="${shapeIcon[x]}"></i></button>`).join('')}</div>
     <span class="label" style="margin-top:6px">Brand colors</span><div class="chips">${k.colors.map((c) => `<button class="chip" style="padding:0;width:30px;height:30px;background:${c}" data-act="edColor" data-c="${c}" title="${c}"></button>`).join('')}</div>`;
@@ -5410,6 +5520,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** The page that holds a layer (the open design first, then every design: covers and cards draw closed designs) */
   const pageOf = (l) => {
     const has = (pg) => pg && (pg.layers || []).includes(l);
+    const drawn = layerPages().get(l); if (has(drawn)) return drawn; // also pages that aren't in a design (previews)
     if (ED.d) { const pg = (ED.d.pages || []).find(has); if (pg) return pg; }
     for (const id of Object.keys(S.data || {})) for (const d of S.data[id].designs || []) { const pg = (d.pages || []).find(has); if (pg) return pg; }
     return null;
@@ -10149,7 +10260,12 @@ function treeOf(pg) {
   (pg && pg.layers || []).forEach((l) => { byId.set(l.id, l); const k = l.pid || ''; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(l); });
   return { byId, kids };
 }
-function withTree(pg, fn) { RT.applyStyles(pg); const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } } // styles: v33
+function withTree(pg, fn) { RT.applyStyles(pg); layerPages(pg); const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } } // styles: v33
+/**
+ * Layer → the page it was last drawn with. A page drawn outside every design (the Versions dialog's preview, a template's
+ * picture) can still be found when a layer is drawn again later (an adjusted picture arriving keeps its mask).
+ */
+function layerPages(pg) { const m = layerPages.m || (layerPages.m = new WeakMap()); if (pg && pg.layers) pg.layers.forEach((l) => { if (l && typeof l === 'object') m.set(l, pg); }); return m; }
 /** Containers above a layer, nearest first */
 function ancestorsT(T, l) { const out = []; for (let p = l && l.pid && T.byId.get(l.pid), n = 0; p && n < 64; p = p.pid && T.byId.get(p.pid), n++) out.push(p); return out; }
 function descendantsT(T, id) { const out = []; const walk = (k) => (T.kids.get(k) || []).forEach((c) => { out.push(c); if (isContainer(c)) walk(c.id); }); walk(id); return out; }
@@ -12689,6 +12805,7 @@ installCardPreview({ getD, reel: (...a) => RT.moCardPlay(...a), videoUrl: (d) =>
         <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="sel39Go">${ic('trash', 16)}Delete ${n} design${n > 1 ? 's' : ''}</button></div>`, {
         onMount: (bg, close) => $('#sel39Go', bg).addEventListener('click', () => {
           ids.forEach((id) => { const D = ownerData(id); if (!D) return; D.designs = D.designs.filter((x) => x.id !== id); D.posts = (D.posts || []).filter((p) => p.d !== id); });
+          S.brands.forEach((b) => { if (S.data[b.id]) adoptOrphans(S.data[b.id].designs || [], b.lang); });
           exit(); save(); close(); synced(`${n} design${n > 1 ? 's' : ''} deleted`);
         }),
       });
@@ -12876,50 +12993,107 @@ document.addEventListener('pointerdown', (e) => {
     if (!d || !d.pages || !d.pages.length) return;
     if (d.pages.some((pg) => pg.poster)) return toast('Versions work on designs, not on videos');
     const cur = specOf(d);
-    const st = { lang: cur.lang, theme: cur.theme, size: cur.size, tr: 'idle', job: null };
-    const changes = () => ({ ...(st.lang !== cur.lang ? { lang: st.lang } : {}), ...(st.theme !== cur.theme ? { theme: st.theme } : {}), ...(st.size !== cur.size ? { size: st.size } : {}) });
+    const st = { lang: cur.lang, theme: cur.theme, size: cur.size, tr: 'idle', job: null, tpl: null };
+    /* ---- 4 · a version saved in the brand's templates: the page you are on takes its look ---- */
+    const pi = ED.d === d ? Math.min(ED.pi || 0, d.pages.length - 1) : 0;
+    /**
+     * Only the versions of THIS design's template: the one it was made from or saved as (it, its original or another of
+     * its versions remembers it in fromTpl), else the template whose layout matches it. Other templates stay one click away.
+     */
+    const all = () => (brand().templates || []).filter((t) => !t.live);
+    const linked = (() => {
+      // the design's own link, else its original's (a version that only borrowed a template's look doesn't count)
+      const og = getD(rootId(d)), ids = [d.fromTpl, og && og.fromTpl].filter(Boolean), ts = all();
+      for (const id of ids) { const t = ts.find((x) => x.id === id); if (t) return { t, how: 'saved' }; }
+      // no link: the template whose layers look like this page's (same kinds of layers, same names)
+      const sig = (ls) => { const m = new Map(); (ls || []).forEach((l) => { const k = l.type + ':' + String(l.name || '').toLowerCase().replace(/[\d\s_-]+/g, ''); m.set(k, (m.get(k) || 0) + 1); }); return m; };
+      const sim = (a, b) => { let i = 0, u = 0; new Set([...a.keys(), ...b.keys()]).forEach((k) => { const x = a.get(k) || 0, y = b.get(k) || 0; i += Math.min(x, y); u += Math.max(x, y); }); return u ? i / u : 0; };
+      const me = sig(d.pages[pi].layers); let best = null, bs = 0;
+      ts.forEach((t) => tplVers(t).forEach((v) => { const sc = sim(me, sig(v.layers)); if (sc > bs) { bs = sc; best = t; } }));
+      return bs >= 0.6 ? { t: best, how: 'match' } : null;
+    })();
+    st.view = linked ? linked.t.id : '';
+    const tpls = () => { const t = all().find((x) => x.id === st.view); return t ? [t] : []; };
+    const tplPick = () => { if (!st.tpl) return null; const t = (brand().templates || []).find((x) => x.id === st.tpl.tid); return t ? { t, v: st.tpl.vid ? tplVer(t, st.tpl.vid) : tplVers(t)[0] } : null; };
+    /**
+     * The design as the version starts from. A design made from the template keeps its content (words, photos it swapped,
+     * sizes) and takes the chosen version's look; any other design takes the version's page as it is.
+     */
+    const fitted = (v) => { const pg = pageFromTemplate(v); return { ...pg, layers: v.ratio === d.ratio ? pg.layers : fitLayers(pg.layers, v.ratio, d.ratio) }; };
+    let lookMemo = null;
+    const base = () => {
+      const p = tplPick(); if (!p) return d;
+      const key = st.tpl.tid + '|' + st.tpl.vid;
+      if (!lookMemo || lookMemo.key !== key) {
+        const cur = d.pages[pi], v = fitted(p.v), m = vMergeLook(cur, fitted(tplVers(p.t)[0]), v, uid);
+        lookMemo = { key, page: m.score >= 0.6 ? { ...m.page, id: cur.id } : { ...v, id: cur.id }, kept: m.score >= 0.6 };
+      }
+      return { ...d, pages: d.pages.map((x, i) => (i === pi ? lookMemo.page : x)) };
+    };
+    const tplLabel = () => { const p = tplPick(); return p ? p.t.name + (p.v.id ? ' · ' + p.v.name : '') : ''; };
+    const changes = () => ({ ...(st.lang !== cur.lang ? { lang: st.lang } : {}), ...(st.theme !== cur.theme ? { theme: st.theme } : {}), ...(st.size !== cur.size ? { size: st.size } : {}), ...(st.tpl ? { tpl: st.tpl } : {}) });
     /** The family member that already is the chosen language, size and theme (no duplicates: it opens instead) */
-    const existing = () => { const want = { lang: st.lang, theme: st.theme, size: st.size }; return family(d).find((x) => x.id !== d.id && sameSpec(specOf(x), want)); };
+    const existing = () => {
+      if (st.tpl || (st.lang === cur.lang && st.theme === cur.theme && st.size === cur.size)) return null; // nothing picked: no "existing version" either
+      // a version that took a template's look is its own design, not a copy in this language, size and theme
+      const borrowed = (x) => x.tplLook || (x.fromTpl && x.fromTpl !== d.fromTpl && x.vOf);
+      const want = { lang: st.lang, theme: st.theme, size: st.size }; return family(d).find((x) => x.id !== d.id && !borrowed(x) && sameSpec(specOf(x), want));
+    };
     const opt = (key, v, label, glyph, sub) => {
       const on = st[key] === v, now = cur[key] === v;
-      return `<button type="button" class="vr-opt${on ? ' on' : ''}" data-vr="${key}" data-v="${esc(v)}" aria-pressed="${on}"><span class="vr-ico">${glyph}</span><span class="vr-l">${label}</span>${now ? '<small>This design</small>' : sub ? `<small>${sub}</small>` : ''}</button>`;
+      return `<button type="button" class="vr-opt${on ? ' on' : ''}" data-vr="${key}" data-v="${esc(v)}" aria-pressed="${on}"><span class="vr-ico">${glyph}</span><span class="vr-l">${label}</span>${now ? '<small>Current</small>' : sub ? `<small>${sub}</small>` : ''}</button>`;
     };
     const group = (n, title, icon, body) => `<section class="vr-g"><div class="vr-gh"><span class="vr-n">${n}</span>${ic(icon, 16)}<b>${title}</b></div><div class="vr-row">${body}</div></section>`;
     const options = () => group(1, 'Language', 'globe', opt('lang', 'en', 'English', '<span class="vr-glyph">EN</span>', 'Left to right') + opt('lang', 'ar', 'العربية', '<span class="vr-glyph ar">ع</span>', 'Right to left'))
-      + group(2, 'Size', 'frame', V_SIZES.map((z) => opt('size', z.key, z.name, ratioIcon(z.w, z.h), z.key.replace('x', '×'))).join(''))
-      + group(3, 'Theme', 'palette', opt('theme', 'light', 'Light', ic('sun', 20), 'Light colours') + opt('theme', 'dark', 'Dark', ic('moon', 20), 'Dark colours'));
+      + group(2, 'Size', 'frame', V_SIZES.map((z) => opt('size', z.key, z.name, ratioIcon(z.w, z.h), z.key === '1920x1080' ? '16:9' : z.key.replace('x', '×'))).join(''))
+      + group(3, 'Theme', 'palette', opt('theme', 'light', 'Light', ic('sun', 20), 'Light colours') + opt('theme', 'dark', 'Dark', ic('moon', 20), 'Dark colours'))
+      + tplGroup();
+    /** Section 4: every saved template version, the template this design came from first */
+    const tplGroup = () => {
+      const ts = tpls(), others = all();
+      if (!others.length) return '';
+      const isLinked = linked && st.view === linked.t.id;
+      const picker = `<label class="vr-tsel">${ic('layout', 14)}<select id="vrTplSel" aria-label="Template"><option value="">${ts.length ? 'Another template…' : 'Use a look from a template…'}</option>${others.filter((t) => t.id !== st.view).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}${(t.versions || []).length ? ` · ${t.versions.length + 1} versions` : ''}</option>`).join('')}</select></label>`;
+      if (!ts.length) return `<section class="vr-g"><div class="vr-gh"><span class="vr-n">4</span>${ic('layout', 16)}<b>Template versions</b></div>
+        <div class="vr-tnone">${picker}</div></section>`;
+      const t0 = ts[0], back = linked && !isLinked ? `<button type="button" class="vr-tback" data-vback>${ic('chevL', 13)}Back to ${esc(linked.t.name)}</button>` : '';
+      const tile = (t, v) => {
+        const on = !!st.tpl && st.tpl.tid === t.id && (st.tpl.vid || '') === (v.id || '');
+        return `<button type="button" class="vr-opt vr-tpl${on ? ' on' : ''}" data-vt="${esc(t.id)}" data-vv="${esc(v.id || '')}" aria-pressed="${on}" title="${esc(t.name + ' · ' + v.name)}">${btThumb(v, 64, 80)}<span class="vr-l">${esc(v.id ? v.name : 'Original')}</span><small>${esc(v.id ? tplSpecTxt(v, t) : 'Original')}</small></button>`;
+      };
+      return `<section class="vr-g"><div class="vr-gh"><span class="vr-n">4</span>${ic('layout', 16)}<b>Versions of “${esc(t0.name)}”</b><small class="vr-gs">${isLinked ? (linked.how === 'saved' ? `${ic('link', 12)}This design’s template` : `${ic('check', 12)}Matches this design`) : 'Another template'}</small></div>
+        <div class="vr-row vr-tpls">${tplVers(t0).map((v) => tile(t0, v)).join('')}</div>
+        <div class="vr-tfoot">${back}${picker}</div>
+</section>`;
+    };
     /** Where the preview stands: translating, a problem, or nothing to do yet */
     const note = () => {
       const o = changes(), ex = existing();
-      if (!Object.keys(o).length) return `${ic('alert', 14)}Pick a language, size or theme to change.`;
+      if (!Object.keys(o).length) return ''; // the preview says it
       if (ex) return `${ic('check', 14)}This version already exists: open it to edit it.`;
       if (o.lang && st.tr === 'busy') return '<i class="spin"></i>Translating the texts…';
       if (o.lang && st.tr === 'none') return `${ic('alert', 14)}Add a Claude key in Settings → AI to translate the texts. The layout already reads ${o.lang === 'ar' ? 'right to left' : 'left to right'}.`;
       if (o.lang && st.tr === 'error') return `${ic('alert', 14)}The translation didn’t answer: the texts stay as they are. Pick the language again to retry.`;
       return '';
     };
-    /** What the new version gets, one line each */
-    const summary = () => {
-      const o = changes(); if (!Object.keys(o).length || existing()) return '';
-      const n = d.pages.length, live = d.pages.some((pg) => pg.live && pg.live.kind), follows = d.id === rootId(d) || isSynced(d);
-      const row = (icon, b, t) => `<li>${ic(icon, 15)}<span><b>${b}</b>${t ? ` <small>${t}</small>` : ''}</span></li>`;
-      return `<ul class="vr-sum">
-        ${o.lang ? row('globe', `Texts in ${LANG[o.lang] || o.lang}`, o.lang === 'ar' ? 'translated, read right to left' : 'translated, read left to right') : ''}
-        ${o.size ? row('frame', `${sizeName(o.size)} size`, 'the content keeps its proportions') : ''}
-        ${o.theme ? row(o.theme === 'dark' ? 'moon' : 'sun', `${THEME[o.theme]} theme`, 'brand colours and photos kept') : ''}
-        ${live ? row('chart', 'Live data stays live', o.lang ? `the same stories, in ${LANG[o.lang] || o.lang}` : 'it updates by itself') : ''}
-        ${follows ? row('link', 'Follows this design', 'your edits here show in the version') : ''}
-        ${row('copy', n > 1 ? `All ${n} pages, as a new version` : 'A new version', 'this design stays as it is')}
-      </ul>`;
-    };
+    /**
+     * One large preview (the page you are on): the new version, or this design with Before. Under it, what the version is,
+     * as chips; what changes is highlighted. With nothing picked yet, this design waits, dimmed, with a hint.
+     */
     const preview = () => {
-      const o = changes(), ex = existing(), v = ex ? { ratio: getD(ex.id).ratio, pages: getD(ex.id).pages } : build(d, o), [w, h] = RATIOS[v.ratio], [ow, oh] = RATIOS[d.ratio];
-      // the two thumbnails share the preview's width (the arrow between them), shorter on a narrow dialog
-      const pw = (root && root.querySelector('#vrPv') && root.querySelector('#vrPv').clientWidth) || 268, short = pw > 300 || pw < 240; // stacked above the choices, or tight: shorter
-      const bw = Math.max(60, Math.min(118, (pw - 24 - 40) / 2)), bh = short ? 150 : 190, box = (W, H) => Math.min(bw / W, bh / H);
-      return `<div class="vr-pvs"><div class="vr-pvb">${thumb(d.pages[0], d.ratio, ow * box(ow, oh), oh * box(ow, oh))}<span>This design</span><em>${specHtml(cur)}</em></div>
-        <span class="vr-arrow">${ic('chevR', 18)}</span>
-        <div class="vr-pvb on">${thumb(v.pages[0], v.ratio, w * box(w, h), h * box(w, h))}<span>${ex ? 'Existing version' : 'New version'}</span><em>${specHtml({ lang: st.lang, theme: st.theme, size: st.size }, cur)}</em></div></div>`;
+      const o = changes(), has = Object.keys(o).length > 0, ex = existing();
+      const after = ex ? { ratio: getD(ex.id).ratio, pages: getD(ex.id).pages } : has ? build(base(), o) : d;
+      const before = has && st.pv === 'before', P = before ? d : after, pg = P.pages[Math.min(pi, P.pages.length - 1)] || P.pages[0];
+      const mb = root && root.querySelector('.mb'), el = root && root.querySelector('#vrPv'), narrow = mb && mb.clientWidth <= 680; // above the choices: a small picture beside its chips
+      const [w, h] = RATIOS[P.ratio], k = narrow ? Math.min(130 / w, 150 / h) : Math.min(Math.max(180, ((el && el.clientWidth) || 300) - 32) / w, 320 / h);
+      const sp = before ? cur : { lang: st.lang, theme: st.theme, size: st.size }, diff = (key) => !before && has && sp[key] !== cur[key];
+      const chip = (glyph, t, on) => `<span class="vr-chip${on ? ' on' : ''}">${glyph}${esc(t)}</span>`;
+      const [zw, zh] = RATIOS[ensureRatio(sp.size)] || [1080, 1080];
+      const chips = chip(ic('globe', 13), LANG[sp.lang] || sp.lang, diff('lang')) + chip(ratioIcon(zw, zh), sizeName(sp.size), diff('size'))
+        + chip(ic(sp.theme === 'dark' ? 'moon' : 'sun', 13), THEME[sp.theme] || sp.theme, diff('theme')) + (!before && o.tpl ? chip(ic('layout', 13), tplLabel(), true) : '');
+      const seg = has ? `<div class="vr-seg" role="group" aria-label="Preview"><button type="button" data-pv="before" aria-pressed="${before}" class="${before ? 'on' : ''}">Before</button><button type="button" data-pv="after" aria-pressed="${!before}" class="${before ? '' : 'on'}">After</button></div>` : '';
+      return `<div class="vr-stage">${thumb(pg, P.ratio, Math.round(w * k), Math.round(h * k))}${seg}</div>
+        <div class="vr-chips">${chips}</div>`;
     };
     /** "English · Story · Dark", what differs from `base` in bold */
     const specHtml = (sp, base) => [['lang', LANG[sp.lang] || sp.lang], ['size', sizeName(sp.size)], ['theme', THEME[sp.theme] || sp.theme]].map(([k, t]) => (base && base[k] !== sp[k] ? `<b>${esc(t)}</b>` : esc(t))).join(' · ');
@@ -12929,27 +13103,40 @@ document.addEventListener('pointerdown', (e) => {
       root.querySelector('#vrOpts').innerHTML = options();
       root.querySelector('#vrPv').innerHTML = preview();
       const nt = note(), nEl = root.querySelector('#vrNote'); nEl.innerHTML = nt; nEl.hidden = !nt;
-      root.querySelector('#vrSum').innerHTML = summary();
       const b = root.querySelector('#vrGo'); b.disabled = !go;
       b.innerHTML = ex ? `${ic('ext', 16)}Open this version` : `${ic('plus', 16)}${Object.keys(o).length ? '<span>Create <span class="vr-what">' + esc(vName('x', o).split(' · ').slice(1).join(' · ')) + ' </span>version</span>' : 'Create version'}`;
     };
     const fetchLang = (to) => {
       if (st.lang === cur.lang) return;
-      st.tr = 'busy'; const job = st.job = translate(d, to, true).then((e) => { if (st.job === job) st.tr = e; }).catch(() => { if (st.job === job) st.tr = 'error'; }).finally(() => { if (st.job === job) paint(); });
+      st.tr = 'busy'; const job = st.job = translate(base(), to, true).then((e) => { if (st.job === job) st.tr = e; }).catch(() => { if (st.job === job) st.tr = 'error'; }).finally(() => { if (st.job === job) paint(); });
     };
-    modal(`<div class="mh"><span class="vr-hic">${ic('copy', 20)}</span><div class="grow"><h2>New version of “${esc(String(d.name || 'this design').slice(0, 60))}”</h2><p class="xs-t muted">Pick what changes. The versions stay together above the canvas.</p></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
-      <div class="mb"><div class="vr-grid"><div class="vr-opts" id="vrOpts"></div><div class="vr-pv"><div id="vrPv"></div><p class="vr-note" id="vrNote" aria-live="polite"></p><div id="vrSum"></div></div></div></div>
+    modal(`<div class="mh"><span class="vr-hic">${ic('copy', 20)}</span><div class="grow"><h2>New version of “${esc(String(d.name || 'this design').slice(0, 60))}”</h2></div><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><div class="vr-grid"><div class="vr-opts" id="vrOpts"></div><div class="vr-pv"><div id="vrPv"></div><p class="vr-note" id="vrNote" aria-live="polite"></p></div></div></div>
       <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="vrGo" disabled>${ic('plus', 16)}Create version</button></div>`, {
       wide: true,
       onMount: (bg, close) => {
-        root = bg; paint();
+        bg.querySelector('.modal').classList.add('vr-modal'); root = bg; paint();
+        bg.addEventListener('change', (e) => {
+          if (e.target.id !== 'vrTplSel' || !e.target.value) return;
+          st.view = e.target.value; if (st.tpl && st.tpl.tid !== st.view) st.tpl = null; paint();
+        });
         // the thumbnails follow the dialog's width
         let pvW = 0; const ro = new ResizeObserver(() => { const pv = bg.querySelector('#vrPv'), w = pv ? pv.clientWidth : 0; if (w && Math.abs(w - pvW) > 8) { pvW = w; pv.innerHTML = preview(); } }); ro.observe(bg.querySelector('.vr-grid'));
         bg.addEventListener('click', async (e) => {
+          const pvb = e.target.closest('[data-pv]');
+          if (pvb) { st.pv = pvb.dataset.pv; bg.querySelector('#vrPv').innerHTML = preview(); return; }
+          if (e.target.closest('[data-vback]')) { st.view = linked.t.id; if (st.tpl && st.tpl.tid !== st.view) st.tpl = null; return paint(); }
+          const vt = e.target.closest('[data-vt]');
+          if (vt) {
+            const same = st.tpl && st.tpl.tid === vt.dataset.vt && (st.tpl.vid || '') === vt.dataset.vv;
+            st.tpl = same ? null : { tid: vt.dataset.vt, vid: vt.dataset.vv }; st.pv = 'after';
+            if (st.lang !== cur.lang) fetchLang(st.lang);
+            return paint();
+          }
           const b = e.target.closest('[data-vr]');
           if (b) {
             const k = b.dataset.vr, v = b.dataset.v;
-            st[k] = st[k] === v && v !== cur[k] ? cur[k] : v; // a second click on a choice goes back to this design's
+            st[k] = st[k] === v && v !== cur[k] ? cur[k] : v; st.pv = 'after'; // a second click on a choice goes back to this design's
             if (k === 'lang') { if (st.lang !== cur.lang && !existing()) fetchLang(st.lang); else if (st.lang === cur.lang) { st.tr = 'idle'; st.job = null; } }
             return paint();
           }
@@ -12957,12 +13144,12 @@ document.addEventListener('pointerdown', (e) => {
             const ex = existing(); if (ex) { close(); location.hash = '#/editor/' + ex.id; return; }
             const o = changes(); if (!Object.keys(o).length) return;
             if (o.lang && st.job) await st.job.catch(() => {});
-            const v = build(d, o), r = rootId(d);
+            const v = build(base(), o), r = rootId(d), tl = tplLabel();
             const rootD = getD(r) || d, want = { lang: st.lang, theme: st.theme, size: st.size }, rs = specOf(rootD);
             // what it changes from the original (versions follow the original, whichever design it was made from)
             const vChange = { ...(want.lang !== rs.lang ? { lang: want.lang } : {}), ...(want.theme !== rs.theme ? { theme: want.theme } : {}), ...(want.size !== rs.size ? { size: want.size } : {}) };
             const follows = d.id === r || isSynced(d);
-            const nd = createDesign({ name: vName(d.name, o), tpl: d.tpl || 'blank', ratio: v.ratio, source: d.source === 'Figma' ? 'Template' : d.source || 'Template', mutate: (x) => { x.pages = v.pages; x.vOf = r; x.vAt = Date.now(); x.vChange = vChange; x.vSync = follows; if (vChange.lang) x.vTr = trFor(d, vChange.lang); } });
+            const nd = createDesign({ name: (vName(d.name, o) + (tl ? ' · ' + (tplPick().v.id ? tplPick().v.name : tplPick().t.name) : '')).slice(0, 120), tpl: d.tpl || 'blank', ratio: v.ratio, source: d.source === 'Figma' ? 'Template' : d.source || 'Template', mutate: (x) => { x.pages = v.pages; x.vOf = r; x.vAt = Date.now(); x.vChange = vChange; x.vSync = st.tpl ? false : follows; if (st.tpl) x.tplLook = st.tpl.tid; if (vChange.lang) x.vTr = trFor(base(), vChange.lang); } });
             save(); close(); toast('Version created. Switch between versions above the canvas.'); location.hash = '#/editor/' + nd.id;
           }
         });

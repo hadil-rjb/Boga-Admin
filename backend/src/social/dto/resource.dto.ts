@@ -43,6 +43,17 @@ export class CreateDesignDto {
   @IsOptional() @IsArray() pages?: Record<string, unknown>[];
 }
 
+/** One version of a brand template: the same layout with other colors, pictures or words */
+export class TemplateVersionDto {
+  @IsOptional() @IsString() id?: string;
+  @IsString() @IsNotEmpty() @MaxLength(80) name!: string;
+  /** Its own size (a Story version of a Portrait template); the template's when missing */
+  @IsOptional() @Matches(RATIO_RE) ratio?: string;
+  @IsOptional() @IsString() bg?: string;
+  @IsArray() layers!: Record<string, unknown>[];
+  @IsOptional() @IsObject() live?: Record<string, unknown>;
+}
+
 export class CreateTemplateDto {
   @IsOptional() @IsString() id?: string;
   @IsString() @IsNotEmpty() @MaxLength(80) name!: string;
@@ -51,6 +62,8 @@ export class CreateTemplateDto {
   @IsArray() layers!: Record<string, unknown>[];
   /** Live data settings of a dynamic slide (mapping, filters, language): the template stays live when reused */
   @IsOptional() @IsObject() live?: Record<string, unknown>;
+  /** Other versions of the template (copied with a brand) */
+  @IsOptional() @IsArray() versions?: Record<string, unknown>[];
 }
 
 export class UpdateTemplateDto {
@@ -58,6 +71,7 @@ export class UpdateTemplateDto {
   @IsOptional() @IsString() bg?: string;
   @IsOptional() @IsArray() layers?: Record<string, unknown>[];
   @IsOptional() @IsObject() live?: Record<string, unknown>;
+  @IsOptional() @IsArray() versions?: Record<string, unknown>[];
 }
 
 export class CreatePostDto {

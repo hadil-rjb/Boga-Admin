@@ -1,7 +1,7 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model } from "mongoose";
-import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, UpdateTemplateDto } from "./dto/resource.dto";
+import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, TemplateVersionDto, UpdateTemplateDto } from "./dto/resource.dto";
 import { SocialBrand } from "./schemas/brand.schema";
 import { SocialDesign } from "./schemas/design.schema";
 import { SocialPost } from "./schemas/post.schema";
@@ -13,6 +13,8 @@ import { PublisherService } from "./publishing/publisher.service";
 import { VersionsService } from "./versions.service";
 import { CommentsService } from "./comments.service";
 
+/** Versions one brand template can hold (they share its MongoDB document) */
+const MAX_VERSIONS = 24;
 /** Fields a client may not overwrite through PATCH */
 const LOCKED = ["_id", "id", "brandId", "order", "hash", "rev", "wid", "createdAt", "updatedAt", "publish", "media"];
 /** Darken/lighten a hex color, same as the studio's shade() */
@@ -190,6 +192,25 @@ export class BrandsService implements OnModuleInit {
     const $set: Record<string, unknown> = { ...editable(dto as Record<string, unknown>), hash: "" };
     if (typeof dto.name === "string") $set.name = dto.name.trim();
     const t = await this.templates.findOneAndUpdate({ brandId, id }, { $set }, { new: true }).lean();
+    if (!t) throw new NotFoundException(`Template "${id}" not found`);
+    return strip(t);
+  }
+
+  /** Adds a version (oldest first). Versions live in the template's document, so a template keeps at most MAX_VERSIONS. */
+  async addTemplateVersion(brandId: string, id: string, dto: TemplateVersionDto) {
+    const v = { ...dto, name: dto.name.trim(), id: dto.id || "v" + newId(), at: new Date().toISOString() };
+    const t = await this.templates.findOneAndUpdate(
+      { brandId, id, [`versions.${MAX_VERSIONS - 1}`]: { $exists: false } },
+      { $push: { versions: v }, $set: { hash: "" } },
+      { new: true },
+    ).lean();
+    if (t) return strip(t);
+    if (await this.templates.exists({ brandId, id })) throw new BadRequestException(`A template keeps at most ${MAX_VERSIONS} versions: delete one first`);
+    throw new NotFoundException(`Template "${id}" not found`);
+  }
+
+  async deleteTemplateVersion(brandId: string, id: string, vid: string) {
+    const t = await this.templates.findOneAndUpdate({ brandId, id }, { $pull: { versions: { id: vid } }, $set: { hash: "" } }, { new: true }).lean();
     if (!t) throw new NotFoundException(`Template "${id}" not found`);
     return strip(t);
   }
