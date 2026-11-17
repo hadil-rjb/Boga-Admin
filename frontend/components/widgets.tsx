@@ -103,7 +103,8 @@ export function SearchConsole() {
     return [["Desktop", get("DESKTOP"), "desktop"], ["Mobile", get("MOBILE"), "mobile"], ["Tablet", get("TABLET"), "tablet"]] as const;
   }, [p]);
   const wrap = "min-[821px]:max-[1200px]:col-span-full min-[1201px]:row-span-2";
-  const short = `${wrap} min-[1201px]:self-start`; // carte sans données : hauteur naturelle, pas de vide
+  // carte sans données aussi : toute la hauteur de la colonne (le message se centre, les conseils restent en bas)
+  const short = wrap;
   const head = (right?: ReactNode) => <Head icon="search" title="Search Console" right={right} />;
 
   if (!gsc.connected) return (

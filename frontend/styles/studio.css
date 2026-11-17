@@ -3986,3 +3986,7 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .dc-back::after{content:none}
 .dc-back .thumb,.dc-art>.thumb{box-shadow:0 0 0 1px rgba(15,23,42,.08),0 2px 8px rgba(15,23,42,.10)}
 [data-ws="social"][data-theme="dark"] .dc-back .thumb,[data-ws="social"][data-theme="dark"] .dc-art>.thumb{box-shadow:0 0 0 1px rgba(255,255,255,.08),0 2px 8px rgba(0,0,0,.35)}
+
+/* ============ Top bar of a page without a visible title (Overview) ============ */
+.top-vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+@media (max-width:700px){.top .top-nohead{order:0;flex:1 1 auto}}

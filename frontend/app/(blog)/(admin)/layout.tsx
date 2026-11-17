@@ -56,18 +56,19 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen max-w-[100vw]">
       <Sidebar open={open} onClose={() => setOpen(false)} user={user} />
       <div className="w-full max-w-full flex-1 lg:ml-[272px]">
-        <div className="flex items-center gap-3 px-8 py-5 max-sm:px-4">
+        {/* under lg (sidebar hidden): menu and actions on one row, the title below on its own full row */}
+        <div className="flex flex-wrap items-center gap-3 px-8 py-5 max-[1024px]:px-5 max-sm:gap-2 max-sm:px-4 max-sm:py-4">
           <IconBtn title="Menu" onClick={() => setOpen(true)} className="lg:hidden"><Icon k="menu" /></IconBtn>
-          <div className="min-w-0 flex-1">
-            <p className="font-jakarta text-xl font-semibold">{h}</p>
+          <div className="min-w-0 flex-1 max-lg:order-last max-lg:basis-full">
+            <p className="font-jakarta text-xl font-semibold max-sm:text-lg">{h}</p>
             <p className="text-sm text-text-2">{sub}</p>
           </div>
-          <div className="flex -space-x-2 max-sm:hidden">{others.slice(0, 4).map((v) => <span key={v.id} title={`${v.name} · online now`}><Pa name={v.name} id={v.id} online size={32} /></span>)}{others.length > 4 && <span className="flex size-8 items-center justify-center rounded-full bg-pill text-xs">+{others.length - 4}</span>}</div>
-          {!link && <IconBtn title="Version history" onClick={() => setHist(true)}><Icon k="history" /></IconBtn>}
+          <div className="flex -space-x-2 max-lg:ml-auto max-sm:hidden">{others.slice(0, 4).map((v) => <span key={v.id} title={`${v.name} · online now`}><Pa name={v.name} id={v.id} online size={32} /></span>)}{others.length > 4 && <span className="flex size-8 items-center justify-center rounded-full bg-pill text-xs">+{others.length - 4}</span>}</div>
+          {!link && <IconBtn title="Version history" onClick={() => setHist(true)} className="max-sm:ml-auto"><Icon k="history" /></IconBtn>}
           {!link && <button onClick={() => setShare(true)} className={btn("secondary")}><Icon k="users" /><span className="max-sm:hidden">Share</span></button>}
           <IconBtn title="Toggle theme" onClick={toggleTheme}><Icon k="sun" className="hidden dark:block" /><Icon k="moon" className="dark:hidden" /></IconBtn>
           {!link && <NotificationBell />}
-          {can && !inBot && <button onClick={() => openNewArticle()} className={btn("primary")}><Icon k="plus" />New Article</button>}
+          {can && !inBot && <button onClick={() => openNewArticle()} className={btn("primary")} aria-label="New Article"><Icon k="plus" /><span className="max-sm:hidden">New Article</span></button>}
         </div>
         <Suspense><OAuthResult /></Suspense>
         {share && <ShareDialog onClose={() => setShare(false)} />}
