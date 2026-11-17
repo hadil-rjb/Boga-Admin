@@ -173,7 +173,10 @@ export function swapTheme(pg, to, W, H, pal) {
   });
   // a picture or a colourful gradient behind everything keeps its colours: a veil of the new theme goes over it
   const byId = new Map(L.map((l) => [l.id, l])), tops = L.filter((l) => !l.pid || !byId.get(l.pid));
-  const full = tops.filter((l) => fillsCanvas(l, W, H)), last = full[full.length - 1];
+  // the background: the layers filling the canvas at the bottom of the list, up to the first piece of content. A glow
+  // or texture over the whole canvas higher up stays above the veil (it would otherwise veil the photo and the texts)
+  const full = []; for (const l of tops) { if (l.hidden) continue; if (!fillsCanvas(l, W, H)) break; full.push(l); }
+  const last = full[full.length - 1];
   const colourful = (v) => /url\(/.test(String(v || '')) || (String(v || '').match(COLOR_RE) || []).some((c) => { const p = parseColor(c); return p && satOf(p) >= 0.3; });
   if (last && full.some((l) => l.type === 'image' || colourful(l.fill)) && !L.some((l) => l.name === 'Theme veil')) {
     // after the last full-canvas layer and everything inside it
@@ -231,4 +234,55 @@ export function versionName(name, o) {
   parts.forEach((p, i) => { if (i === 0 || !KNOWN.has(p.trim())) base.push(p); });
   const add = [o.lang && WORDS.lang[o.lang], o.size && (SIZES.find((z) => z.key === o.size) || { name: String(o.size).replace('x', '×') }).name, o.theme && WORDS.theme[o.theme]].filter(Boolean);
   return [...base, ...add].join(' · ').slice(0, 120);
+}
+
+/* ---------- a template version's look on a design ---------- */
+/**
+ * Layers matched across pages by what they are, not their ids: "type|name#n" (the n-th of that kind). Texts match by
+ * their order among texts only, since their name often follows their words (and the words are what the user changes).
+ */
+function layerKeys(L) {
+  const n = {};
+  return (L || []).map((l) => { const k = l.type === 'text' ? 'text' : l.type + '|' + String(l.name || '').trim().toLowerCase(); n[k] = (n[k] || 0) + 1; return k + '#' + n[k]; });
+}
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const copy = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+const NOT_LOOK = new Set(['id', 'pid']);
+/**
+ * The design's page with a template version's look. base: the template's original, theirs: the chosen version (both
+ * at the design's size). Three-way, setting by setting: what the user changed from the original (their words, a photo
+ * they swapped, a size) stays; the rest takes the version's value. Layers the version adds come in at their place;
+ * layers it drops go; the user's own layers stay. score: how much of the original the design still has (0…1): below
+ * about 0.6 the design isn't this template and the caller should use the version's page instead.
+ */
+export function mergeLook(page, base, theirs, newId = () => 'l' + Math.random().toString(36).slice(2, 10)) {
+  const out = copy(page), PL = out.layers || (out.layers = []);
+  const pk = layerKeys(PL), bk = layerKeys(base.layers), tk = layerKeys(theirs.layers);
+  const B = new Map(bk.map((k, i) => [k, base.layers[i]])), T = new Map(tk.map((k, i) => [k, theirs.layers[i]]));
+  const P = new Map(pk.map((k, i) => [k, PL[i]]));
+  const score = bk.length ? bk.filter((k) => P.has(k)).length / bk.length : 0;
+  if (same(page.bg, base.bg) && theirs.bg !== undefined) out.bg = copy(theirs.bg); // a background the user changed stays
+  // matched layers: setting by setting
+  const drop = new Set();
+  pk.forEach((k, i) => {
+    const l = PL[i], b = B.get(k), t = T.get(k); if (!b) return; // the user's own layer
+    if (!t) { drop.add(l); return; } // the version doesn't have it
+    new Set([...Object.keys(b), ...Object.keys(t)]).forEach((f) => {
+      if (NOT_LOOK.has(f) || !same(l[f], b[f])) return; // the user changed it: theirs stays
+      if (t[f] === undefined) delete l[f]; else l[f] = copy(t[f]);
+    });
+  });
+  let L = PL.filter((l) => !drop.has(l));
+  // what the version adds: after the layer before it in the version (its container follows by key)
+  const idOf = new Map(); layerKeys(L).forEach((k, i) => idOf.set(k, L[i].id));
+  const tid = new Map(theirs.layers.map((l, i) => [l.id, tk[i]]));
+  tk.forEach((k, i) => {
+    if (B.has(k) || idOf.has(k)) return;
+    const t = theirs.layers[i], l = { ...copy(t), id: newId() };
+    if (t.pid) { const pid = idOf.get(tid.get(t.pid)); if (pid) l.pid = pid; else delete l.pid; }
+    let at = 0; for (let j = i - 1; j >= 0; j--) { const id = idOf.get(tk[j]); if (id) { at = L.findIndex((x) => x.id === id) + 1; break; } }
+    L.splice(at, 0, l); idOf.set(k, l.id);
+  });
+  out.layers = L;
+  return { page: out, score };
 }

@@ -3990,3 +3990,97 @@ textarea.ds-sum{min-height:84px;max-width:none}
 /* ============ Top bar of a page without a visible title (Overview) ============ */
 .top-vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 @media (max-width:700px){.top .top-nohead{order:0;flex:1 1 auto}}
+
+/* Brand template versions */
+.tpl-vers{position:absolute;right:6px;bottom:6px;z-index:1;display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:99px;background:rgb(15 23 42 / .78);color:#fff;font:600 10px/1.4 var(--sans)}
+.tv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:14px}
+.tv-i{display:flex;flex-direction:column;gap:6px;min-width:0}
+.tv-pv{border:0;padding:0;background:none;cursor:pointer;display:flex;justify-content:center;border-radius:10px;outline-offset:2px}
+.tv-pv:hover{opacity:.9}
+.tv-m{display:flex;align-items:center;justify-content:space-between;gap:4px;font-size:12px;color:var(--text-2);min-height:28px}
+.tv-m span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tv-m span{display:flex;flex-direction:column;min-width:0}
+.tv-m span b{font-weight:600;color:var(--text-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tv-m span small{font-size:11px;line-height:1.35;color:var(--text-3,var(--text-2))}
+/* New version dialog · 4 · From your templates */
+.vr-tpls{flex-wrap:wrap}
+.vr-opt.vr-tpl{min-width:96px;max-width:96px;min-height:0;padding:8px 6px 8px;gap:4px;scroll-snap-align:start}
+.vr-opt.vr-tpl .vr-l{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vr-opt.vr-tpl small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vr-gs{margin-left:auto;font-size:11px;color:var(--text-3)}
+.vr-gs{display:inline-flex;align-items:center;gap:4px}
+.vr-tfoot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vr-tsel{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text-2);font-size:12.5px}
+.vr-tsel select{border:0;background:transparent;color:var(--text-1);font:inherit;max-width:240px;cursor:pointer;outline:none}
+.vr-tback{display:inline-flex;align-items:center;gap:4px;height:32px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--text-2);font-size:12.5px;cursor:pointer}
+.vr-tback:hover{background:var(--surface-2,rgba(0,0,0,.04));color:var(--text-1)}
+.vr-tnone{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:12px;border:1px dashed var(--border);border-radius:12px}
+
+/* ---------- New version dialog, v2: compact choices, one large preview ---------- */
+.vr-grid{grid-template-columns:minmax(0,1fr) 340px;gap:24px}
+.vr-opts{gap:20px}
+.vr-gh{font-size:12px;letter-spacing:.01em}
+/* choices: one row each (icon, then name over its detail) */
+.vr-row{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.vr-opt{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;column-gap:10px;row-gap:1px;align-items:center;justify-items:start;min-width:0;min-height:0;padding:10px 12px;border-width:1px;border-radius:10px;text-align:left}
+.vr-opt .vr-ico{grid-row:1/3;width:30px;height:30px;border-radius:8px;background:var(--pill)}
+.vr-opt.on .vr-ico{background:rgba(253,14,53,.1)}
+.vr-opt .vr-l{font-size:13px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.vr-opt small{text-align:left;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.vr-opt.on{box-shadow:inset 0 0 0 1px var(--accent)}
+.vr-opt .vr-glyph{min-width:22px;height:18px;font-size:10px;border-width:1.5px;border-radius:4px}.vr-opt .vr-glyph.ar{font-size:13px;padding-bottom:3px}
+.vr-opt .vr-ratio{border-width:1.5px;transform:scale(.72)}
+/* template versions keep their pictures */
+.vr-row.vr-tpls{display:flex;flex-wrap:wrap}
+.vr-opt.vr-tpl{display:flex;flex-direction:column;align-items:center;width:104px;max-width:104px;padding:8px 6px;row-gap:4px;text-align:center}
+.vr-opt.vr-tpl .vr-l,.vr-opt.vr-tpl small{text-align:center}
+/* the preview */
+.vr-pv{position:sticky;top:0;display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:16px;border:1px solid var(--border);border-radius:16px;background:var(--pill)}
+#vrPv{display:flex;flex-direction:column;gap:12px}
+.vr-pvh{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px;font-size:12px;font-weight:600;color:var(--text-2)}
+.vr-seg{display:inline-flex;padding:2px;border-radius:8px;background:var(--surface);border:1px solid var(--border)}
+.vr-seg button{height:24px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--text-3);font:600 12px var(--sans);cursor:pointer}
+.vr-seg button.on{background:var(--text-1);color:var(--surface)}
+.vr-stage{position:relative;display:grid;place-items:center;padding:14px;border-radius:12px;background:var(--surface);background-image:radial-gradient(var(--border) 1px,transparent 1px);background-size:14px 14px}
+.vr-stage .thumb{border-radius:8px;box-shadow:0 10px 30px rgba(15,23,42,.22);transition:opacity .2s,filter .2s}
+.vr-stage.idle .thumb{opacity:.45;filter:grayscale(.4)}
+.vr-hint{position:absolute;display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:99px;background:var(--surface);box-shadow:0 4px 14px rgba(15,23,42,.14);font-size:12.5px;font-weight:600;color:var(--text-1)}
+.vr-chips{display:flex;flex-wrap:wrap;gap:6px}
+.vr-chip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:99px;background:var(--surface);border:1px solid var(--border);font-size:12px;color:var(--text-2);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.vr-chip.on{border-color:var(--accent);color:var(--accent);background:rgba(253,14,53,.06);font-weight:600}
+.vr-chip .vr-ratio{border-width:1.5px;transform:scale(.5);margin:-6px -4px}
+.vr-empty{margin:0;font-size:12px;line-height:1.45;color:var(--text-3)}
+.vr-note{justify-content:flex-start}
+.vr-sum li:last-child{margin-top:0;padding-top:7px;border-top:0;border-radius:8px}
+.vr-sum li:last-child>.ic{color:var(--accent)}
+/* footer: what happens on Create */
+.vr-modal .mf{align-items:center}
+.vr-foot{flex:1;min-width:0;display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-3)}
+.vr-foot span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.vr-foot b{color:var(--text-1);font-weight:600}
+@container (max-width:680px){
+  .vr-grid{grid-template-columns:minmax(0,1fr)}
+  #vrPv{padding:12px;border:1px solid var(--border)}
+}
+@container (max-width:480px){
+  .vr-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .vr-opt{min-height:0;padding:9px 10px}
+}
+@media (max-width:560px){.vr-foot{display:none}}
+.vr-row:not(.vr-tpls){grid-template-columns:repeat(auto-fit,minmax(118px,1fr))}
+@container (max-width:680px){
+  .vr-pv{order:-1;position:static;padding:12px}
+  #vrPv{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"stage head" "stage chips" "stage empty";column-gap:14px;row-gap:8px;align-items:start;padding:0;border:0;background:none}
+  .vr-pvh{grid-area:head;flex-wrap:wrap}.vr-stage{grid-area:stage;padding:8px}.vr-chips{grid-area:chips}.vr-empty{grid-area:empty}
+  .vr-hint{padding:5px 9px;font-size:11.5px}
+}
+@container (max-width:480px){.vr-row:not(.vr-tpls){grid-template-columns:repeat(2,minmax(0,1fr))}}
+.vr-opt{padding:10px;column-gap:8px}.vr-opt .vr-ico{width:28px;height:28px}
+@container (max-width:680px){.vr-hint{display:none}}
+@container (max-width:680px){#vrSum{display:none}}
+@media (max-width:760px){.vr-foot{display:none}}
+.modal.wide.vr-modal{width:min(980px,100%);max-width:100%;min-width:0}
+/* New version dialog, v3: the picture and its chips, nothing else */
+.vr-pv{gap:12px;padding:14px}
+.vr-stage{background:var(--surface);background-image:none;padding:16px}
+.vr-stage .vr-seg{position:absolute;top:10px;right:10px;box-shadow:0 2px 8px rgba(15,23,42,.12)}
+.vr-tnone{padding:0;border:0}

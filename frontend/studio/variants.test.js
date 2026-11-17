@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SIZES, lumOf, parseColor, swapColor, langOf, themeOf, resizePage, swapTheme, textsToTranslate, swapLanguage, versionName } from './variants.js';
+import { SIZES, lumOf, parseColor, swapColor, langOf, themeOf, resizePage, swapTheme, textsToTranslate, swapLanguage, versionName, mergeLook } from './variants.js';
 
 const PAL = { dark: '#0B1220', light: '#F8FAFC' };
 /** A dark news story: background photo, a glass card with a picture and two texts in it, a white logo, a footer */
@@ -76,6 +76,17 @@ describe('swapTheme', () => {
     expect(veil).toMatchObject({ fill: '#F8FAFC', w: 1080, h: 1920 });
     expect(pg.layers.indexOf(veil)).toBe(pg.layers.findIndex((l) => l.id === 'photo') + 1); // over the photo, under the content
   });
+  it('puts the veil over the background only, even with a glow over the whole canvas above the content', () => {
+    const pg = story();
+    // a masked light glow that covers the canvas, high in the list (above the photo card and the texts)
+    pg.layers.push({ id: 'g', type: 'group', name: 'Mask group', x: -2245, y: -1624, w: 3404, h: 3700 },
+      { id: 'gm', type: 'rect', pid: 'g', mask: true, x: -466, y: -460, w: 1308, h: 1023, fill: 'radial-gradient(#D9D9D9 0%, rgba(1,1,1,0) 100%)' },
+      { id: 'gi', type: 'image', pid: 'g', x: -1929, y: -1121, w: 2773, h: 2080, fill: 'url(data:image/png;base64,CC) center/cover', op: 0.5 });
+    swapTheme(pg, 'light', 1080, 1920, PAL);
+    const at = pg.layers.findIndex((l) => l.name === 'Theme veil');
+    expect(at).toBe(pg.layers.findIndex((l) => l.id === 'photo') + 1); // not over the texts and the card
+    expect(at).toBeLessThan(pg.layers.findIndex((l) => l.id === 'title'));
+  });
 });
 
 describe('language', () => {
@@ -97,5 +108,44 @@ describe('versionName', () => {
     expect(versionName('News', { lang: 'ar', size: '1:1' })).toBe('News · Arabic · Square');
     expect(versionName('News · Arabic · Square', { lang: 'en', theme: 'light' })).toBe('News · English · Light');
     expect(SIZES.map((z) => z.key)).toContain('9:16');
+  });
+});
+
+describe('mergeLook (a template version on a design made from the template)', () => {
+  const tpl = () => ({ bg: '#1B55EC', layers: [
+    { id: 'b1', type: 'rect', name: 'Background', x: 0, y: 0, w: 1080, h: 1350, fill: 'linear-gradient(#1B55EC, #163891)' },
+    { id: 'b2', type: 'group', name: 'Card', x: 100, y: 400, w: 880, h: 400 },
+    { id: 'b3', type: 'rect', pid: 'b2', name: 'Pill', x: 300, y: 400, w: 400, h: 60, fill: '#1B55EC' },
+    { id: 'b4', type: 'text', pid: 'b2', name: 'When to Take Profits', x: 150, y: 500, w: 780, h: 120, text: 'When to Take Profits?', color: '#FFFFFF', size: 60 },
+    { id: 'b5', type: 'text', name: 'Add your opinion', x: 150, y: 900, w: 780, h: 40, text: 'Add your opinion', color: '#F7633B', size: 30 },
+  ] });
+  const orange = () => { const t = tpl(); t.bg = '#F7633B'; t.layers[0].fill = 'linear-gradient(#F7633B, #E14A1E)'; t.layers[4].color = '#FFFFFF';
+    t.layers.forEach((l) => { l.id = 'o' + l.id; if (l.pid) l.pid = 'o' + l.pid; });
+    t.layers.splice(1, 0, { id: 'ov', type: 'image', name: 'Glow', x: 0, y: 0, w: 1080, h: 1350, fill: 'url(glow.png)' }); return t; };
+  const design = () => { const t = tpl(); t.layers.forEach((l) => { l.id = 'd' + l.id; if (l.pid) l.pid = 'd' + l.pid; });
+    t.layers[3].text = 'hhh'; t.layers[3].name = 'hhh'; t.layers[3].size = 72; // the user's own words and size
+    t.layers.push({ id: 'mine', type: 'rect', name: 'Sticker', x: 10, y: 10, w: 50, h: 50, fill: '#00FF00' }); return t; };
+  const by = (pg, id) => pg.layers.find((l) => l.id === id);
+
+  it('takes the version\'s colours and keeps the design\'s words, sizes and own layers', () => {
+    const { page, score } = mergeLook(design(), tpl(), orange());
+    expect(score).toBe(1);
+    expect(page.bg).toBe('#F7633B');
+    expect(by(page, 'db1').fill).toBe('linear-gradient(#F7633B, #E14A1E)');
+    expect(by(page, 'db4')).toMatchObject({ text: 'hhh', size: 72, color: '#FFFFFF' });
+    expect(by(page, 'db5').color).toBe('#FFFFFF');
+    expect(by(page, 'mine')).toBeTruthy();
+  });
+  it('adds what the version adds, in its place, and keeps ids and containers', () => {
+    const { page } = mergeLook(design(), tpl(), orange());
+    const i = page.layers.findIndex((l) => l.name === 'Glow');
+    expect(i).toBe(1); // right after the background, like in the version
+    expect(by(page, 'db3').pid).toBe('db2');
+    expect(new Set(page.layers.map((l) => l.id)).size).toBe(page.layers.length);
+  });
+  it('leaves the design alone when the version is the original, and says when the design is not the template', () => {
+    expect(mergeLook(design(), tpl(), tpl()).page).toEqual(design());
+    const other = { bg: '#000', layers: [{ id: 'x', type: 'image', name: 'Photo', x: 0, y: 0, w: 10, h: 10 }] };
+    expect(mergeLook(other, tpl(), orange()).score).toBe(0);
   });
 });

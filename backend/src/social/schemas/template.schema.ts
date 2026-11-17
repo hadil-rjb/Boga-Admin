@@ -22,6 +22,11 @@ export class SocialTemplate {
   @Prop({ type: [MongooseSchema.Types.Mixed], default: [] }) layers!: Record<string, unknown>[];
   /** Live data settings when the slide was a dynamic (live calendar) slide */
   @Prop({ type: MongooseSchema.Types.Mixed }) live?: Record<string, unknown>;
+  /**
+   * Other versions of the same layout (e.g. a blue, an orange and a dark one), saved from the editor with
+   * "Save as a version of…". Each is { id, name, bg, layers, live?, at }; the template's own fields are the original.
+   */
+  @Prop({ type: [MongooseSchema.Types.Mixed], default: [] }) versions!: Record<string, unknown>[];
 }
 export type SocialTemplateDocument = HydratedDocument<SocialTemplate>;
 export const SocialTemplateSchema = SchemaFactory.createForClass(SocialTemplate);
