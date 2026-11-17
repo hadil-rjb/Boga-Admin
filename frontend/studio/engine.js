@@ -4799,6 +4799,21 @@ persist.watch(() => ({ brands: S.brands, data: S.data, active: S.active, set: S.
    AUTO_LIVE keeps the design as the last automatic refresh left it: while this tab's version is still exactly that,
    the saved version simply replaces it (no copy). */
 const AUTO_LIVE = new Map();
+/**
+ * Every refresh rewrites a live design (its time, feed and list, and the texts when the data moved), in every open tab.
+ * Before one: is the design untouched by the user, as the last refresh left it or as this tab last synced it? Then, after
+ * it, AUTO_LIVE keeps it as the refresh left it, so a conflict on it is only automatic data and takes the saved version
+ * (no "(conflicted copy)", which was itself live and refreshed into more copies). Open in the editor too, as long as
+ * nothing was edited while the data loaded.
+ */
+const liveStart = (d) => {
+  const s = JSON.stringify(d), b = Object.keys(S.data).find((id) => (S.data[id].designs || []).includes(d));
+  return { clean: AUTO_LIVE.get(d.id) === s || (!!b && !!persist.isSynced && persist.isSynced(b, d)), undo: ED.d === d ? ED.undo.length : -1 };
+};
+const liveEnd = (d, st) => {
+  const edited = ED.d === d && (ED.editing || ED.undo.length !== st.undo);
+  if (st.clean && !edited) AUTO_LIVE.set(d.id, JSON.stringify(d)); else AUTO_LIVE.delete(d.id);
+};
 persist.onConflict((list) => {
   let open = null;
   list = list.filter(({ brandId, item }) => {
@@ -6789,7 +6804,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   /** Refreshes every live page of a design. `silent`: no toast on failure (background updates). */
   async function refresh(d, { silent = true, force = false } = {}) {
-    let changed = false, err = null;
+    let changed = false, err = null; const lv = liveStart(d);
     for (const pg of livePages(d)) {
       const cfg = pg.live; if (cfg.paused && !force) continue;
       try {
@@ -6800,7 +6815,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    liveEnd(d, lv); // the feed's time and list changed either way
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7797,7 +7813,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   const busyPages = new WeakSet();
   async function refresh(d, { silent = true, force = false } = {}) {
-    let changed = false, err = null, ran = 0;
+    let changed = false, err = null, ran = 0; const lv = liveStart(d);
     for (const pg of feedPages(d)) {
       const cfg = pg.live; if ((cfg.paused && !force) || busyPages.has(cfg)) continue;
       busyPages.add(cfg); ran++;
@@ -7809,7 +7825,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    liveEnd(d, lv); // the feed's time and list changed either way
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;

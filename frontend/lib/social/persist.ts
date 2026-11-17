@@ -507,6 +507,11 @@ function createPersist() {
       return readOnly;
     },
 
+    /** True when this design is exactly what this tab last synced: no change of its own waits to be saved */
+    isSynced(brandId: string, design: any) {
+      return !!base && !!design?.id && base.items.get(`d|${brandId}|${design.id}`) === hash(stable(design));
+    },
+
     async load(): Promise<Workspace | null> {
       // Back in the workspace during this session: resume from memory (edits were pushed on leave)
       if (latest && !resetting) return JSON.parse(latest) as Workspace;

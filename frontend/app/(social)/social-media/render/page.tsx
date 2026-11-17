@@ -62,6 +62,7 @@ const persist = {
   init() {},
   load: async () => null,
   onConflict() {},
+  isSynced: () => false,
   save() {},
   watch() {},
   flush: async () => true,
