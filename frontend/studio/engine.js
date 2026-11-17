@@ -717,9 +717,19 @@ function designCard(d, extra = '') {
   // an animated design is one video, not a carousel: its first scene alone, no stack, arrows or dots
   const video = !!dd.motion, n = video ? 1 : dd.pages.length, i = Math.min(DC_AT.get(d.id) || 0, n - 1);
   const nav = n > 1 ? `<button type="button" class="dc-nav prev" data-act="dcSlide" data-n="-1" aria-label="Previous slide"${i ? '' : ' disabled'}>${ic('chevL', 16)}</button><button type="button" class="dc-nav next" data-act="dcSlide" data-n="1" aria-label="Next slide"${i < n - 1 ? '' : ' disabled'}>${ic('chevR', 16)}</button><span class="dc-dots" aria-hidden="true">${dcDots(n, i)}</span>` : '';
+  /* The preview carries what the design is: tags top left (video length, Figma, versions), moving aside for the select
+     box; the status top right, only once it is past Draft (every design starts as one, so it says nothing).
+     Below: the name (two lines kept, so names line up across a row), then format and size, the time on the right. */
+  const k = versionCount(d);
+  const tags = [
+    d.source === 'Figma' ? `<span class="dc-tag" title="Imported from Figma">${ic('figma', 12)}Figma</span>` : '',
+    k ? `<span class="dc-tag dc-vn" title="${k + 1} versions: open the design to see them">${ic('copy', 12)}${k + 1}</span>` : '',
+  ].join('');
+  const st = d.status && d.status !== 'Draft' ? `<span class="st">${badge(d.status)}</span>` : '';
+  const when = `<time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time>`;
   return `<div class="card dc" data-id="${d.id}">
-    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(video ? { ...dd, pages: dd.pages.slice(0, 1) } : dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time>${(() => { const k = versionCount(d); return k ? ` · <span class="dc-vn" title="Open the design to see its versions">${ic('copy', 12)}${k + 1} versions</span>` : ''; })()}</small>${extra}</div></div>`;
+    <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(video ? { ...dd, pages: dd.pages.slice(0, 1) } : dd, i)}<span class="dc-tags">${tags}</span>${st}</button>${nav}</div>
+    <div class="meta"><div class="dc-h"><b title="${esc(d.name)}">${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small class="dc-sub"><span class="dc-fmt">${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h}</span>${when}</small>${extra}</div></div>`;
 }
 /** Shows another slide on a carousel's card, in place */
 function dcShow(card, step) {
@@ -11381,7 +11391,7 @@ function clipCss(l, frames) {
   designCard = function (d) {
     const html = _dc37.apply(this, arguments), dd = getD(d.id);
     if (!isMo(dd)) return html;
-    return html.replace('<span class="st">', `<span class="badge b-mo37">${ic('play37', 10)}${MO.fmtTime(MO.timeline(dd.pages).total, false)}</span><span class="st">`);
+    return html.replace('<span class="dc-tags">', `<span class="dc-tags"><span class="dc-tag b-mo37">${ic('play37', 10)}${MO.fmtTime(MO.timeline(dd.pages).total, false)}</span>`);
   };
 
   /* ---------- playback on the canvas ---------- */
@@ -12592,8 +12602,8 @@ const FOOTAGE = installFootage({ ED, S, ACT, api, modal, toast, ic, IC, esc, mut
     let html = _dcFt.apply(this, arguments); const dd = getD(d.id);
     if (!dd || !dd.footage) return html;
     const dur = dd.footage.dur;
-    html = html.replace('<span class="st">', `<span class="badge b-mo37">${ic('play37', 10)}${dur ? fmtDur(dur) : 'Video'}</span><span class="st">`)
-      .replace(/<small>[^·<]*·/, '<small>Video ·');
+    html = html.replace('<span class="dc-tags">', `<span class="dc-tags"><span class="dc-tag b-mo37">${ic('play37', 10)}${dur ? fmtDur(dur) : 'Video'}</span>`)
+      .replace(/(<span class="dc-fmt">)[^·<]*·/, '$1Video ·');
     if (FOOTAGE.needsPoster(dd)) setTimeout(() => FOOTAGE.ensurePoster(dd).then((ok) => { if (ok) document.querySelectorAll(`.card.dc[data-id="${CSS.escape(dd.id)}"]`).forEach((c) => { c.outerHTML = designCard(dd); }); }));
     return html;
   };
