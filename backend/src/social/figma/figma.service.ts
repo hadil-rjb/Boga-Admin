@@ -17,8 +17,19 @@ const FRAME_TYPES = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
 /** A group with frames inside is browsed; any other group is imported like a frame */
 const holdsFrames = (n: any): boolean => (n.children || []).some((c: any) => FRAME_TYPES.has(c.type) || (c.type === "GROUP" && holdsFrames(c)));
 const MAX_FRAMES = 60, MAX_RECENT = 12;
+/**
+ * Memory, for a small server (Render's free plan: 512 MB, the API itself taking about 200): decoding one 4000 px picture
+ * and resizing it costs about 60 MB with one libvips thread at 2160 px, 140 MB with eight threads at 3200 px. Several at
+ * once ran the server out of memory mid-import; it restarted and the browser saw "Failed to fetch" (no CORS headers).
+ * So: pictures one at a time, one libvips thread (a fraction of a CPU there anyway), and 2160 px at most.
+ * FIGMA_EMBED_AT_ONCE and SHARP_THREADS raise them on a bigger server.
+ */
 /** Longest side of an embedded picture (px) */
-const MAX_EMBED = 3200;
+const MAX_EMBED = 2160;
+/** Pictures downloaded and processed at the same time during an import */
+const EMBED_AT_ONCE = Math.max(1, Number(process.env.FIGMA_EMBED_AT_ONCE) || 1);
+sharp.concurrency(Math.max(1, Number(process.env.SHARP_THREADS) || 1));
+sharp.cache(false); // decoded pictures are not kept for reuse: an import goes through each one once
 /** Scopes asked by default (enough to import, re-sync and pick files). Add folders:read in FIGMA_SCOPES to browse teams. */
 const DEFAULT_SCOPES = "current_user:read file_content:read file_metadata:read";
 const b64url = (b: Buffer) => b.toString("base64url");
@@ -404,7 +415,7 @@ export class FigmaService {
       if (!url) return;
       try {
         const { buf } = await download(url, { timeoutMs: 60_000 }).catch(() => download(url, { timeoutMs: 90_000 })); // one retry
-        const img = sharp(buf, { limitInputPixels: 1e8 }).rotate();
+        const img = sharp(buf, { limitInputPixels: 1e8, sequentialRead: true }).rotate();
         const meta = await img.metadata();
         // 2× the size the picture takes on the canvas, up to MAX_EMBED (a background larger than the frame keeps its detail)
         const target = Math.max(64, Math.min(MAX_EMBED, Math.round(maxPx * 2)));
@@ -419,10 +430,13 @@ export class FigmaService {
         data.set(key, `data:image/${kind};base64,${b.toString("base64")}`);
       } catch {}
     };
-    await Promise.all([
-      ...[...allRasters].map(([id, w]) => embed(`raster:${id}`, rasterUrls[id], w)),
-      ...[...allImages].map(([ref, w]) => embed(`image:${ref}`, imageUrls[ref], w)),
-    ]);
+    // EMBED_AT_ONCE pictures at a time (see MAX_EMBED): each one is downloaded and decoded whole
+    const jobs = [
+      ...[...allRasters].map(([id, w]) => () => embed(`raster:${id}`, rasterUrls[id], w)),
+      ...[...allImages].map(([ref, w]) => () => embed(`image:${ref}`, imageUrls[ref], w)),
+    ];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(EMBED_AT_ONCE, jobs.length) }, async () => { while (next < jobs.length) await jobs[next++](); }));
 
     for (const conv of converted) {
       if ("error" in conv) { out.push({ id: conv.id, error: conv.error }); continue; }

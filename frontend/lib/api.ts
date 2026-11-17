@@ -13,7 +13,11 @@ export async function api<T = any>(path: string, o: { method?: string; body?: un
   if (t) headers.Authorization = "Bearer " + t;
   else if (getShare()) headers["x-share-token"] = getShare()!;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const r = await fetch(`${API}${normalizedPath}`, { method: o.method || "GET", headers, body: o.raw ? (o.body as BodyInit) : o.body ? JSON.stringify(o.body) : undefined, signal: o.signal });
+  // no answer at all (server restarting or asleep, network down): the browser only says "Failed to fetch"
+  const r = await fetch(`${API}${normalizedPath}`, { method: o.method || "GET", headers, body: o.raw ? (o.body as BodyInit) : o.body ? JSON.stringify(o.body) : undefined, signal: o.signal }).catch((e) => {
+    if (e?.name === "AbortError") throw e;
+    throw Object.assign(new Error("The server didn't answer (it may be restarting). Try again in a minute."), { status: 0, cause: e });
+  });
   const txt = o.text ? await r.text().catch(() => "") : null;
   const j = txt != null ? (r.ok ? {} : (() => { try { return JSON.parse(txt); } catch { return {}; } })()) : await r.json().catch(() => ({}));
   if (r.status === 401 && ["Unauthorized", "Session expirée"].includes(j.message)) {
