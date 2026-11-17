@@ -4799,6 +4799,21 @@ persist.watch(() => ({ brands: S.brands, data: S.data, active: S.active, set: S.
    AUTO_LIVE keeps the design as the last automatic refresh left it: while this tab's version is still exactly that,
    the saved version simply replaces it (no copy). */
 const AUTO_LIVE = new Map();
+/**
+ * Every refresh rewrites a live design (its time, feed and list, and the texts when the data moved), in every open tab.
+ * Before one: is the design untouched by the user, as the last refresh left it or as this tab last synced it? Then, after
+ * it, AUTO_LIVE keeps it as the refresh left it, so a conflict on it is only automatic data and takes the saved version
+ * (no "(conflicted copy)", which was itself live and refreshed into more copies). Open in the editor too, as long as
+ * nothing was edited while the data loaded.
+ */
+const liveStart = (d) => {
+  const s = JSON.stringify(d), b = Object.keys(S.data).find((id) => (S.data[id].designs || []).includes(d));
+  return { clean: AUTO_LIVE.get(d.id) === s || (!!b && !!persist.isSynced && persist.isSynced(b, d)), undo: ED.d === d ? ED.undo.length : -1 };
+};
+const liveEnd = (d, st) => {
+  const edited = ED.d === d && (ED.editing || ED.undo.length !== st.undo);
+  if (st.clean && !edited) AUTO_LIVE.set(d.id, JSON.stringify(d)); else AUTO_LIVE.delete(d.id);
+};
 persist.onConflict((list) => {
   let open = null;
   list = list.filter(({ brandId, item }) => {
@@ -5377,7 +5392,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   // cache: "<layer id>|<values>" → { src, out, full }; the last result per layer shows while the next one renders
   const FXC = new Map(), FXLAST = new Map(), FXP = new Map(), FXR = new Set(), FXL = new Map(), FXT = new Map();
   const put = (key, v) => { FXC.delete(key); FXC.set(key, v); while (FXC.size > 40) FXC.delete(FXC.keys().next().value); };
-  function fxPaint(id) { const l = FXL.get(id); if (!l) return; document.querySelectorAll(`.ly[data-id="${id}"]`).forEach((el) => { el.style.cssText = lstyle(l); }); }
+  /** The page that holds a layer (the open design first, then every design: covers and cards draw closed designs) */
+  const pageOf = (l) => {
+    const has = (pg) => pg && (pg.layers || []).includes(l);
+    if (ED.d) { const pg = (ED.d.pages || []).find(has); if (pg) return pg; }
+    for (const id of Object.keys(S.data || {})) for (const d of S.data[id].designs || []) { const pg = (d.pages || []).find(has); if (pg) return pg; }
+    return null;
+  };
+  // drawn with its page's tree, like the first time: masks, frame clips and hidden groups still apply (a card's cover
+  // outside the editor lost the photo's mask when the adjusted picture arrived)
+  function fxPaint(id) {
+    const l = FXL.get(id); if (!l) return;
+    const els = document.querySelectorAll(`.ly[data-id="${id}"]`); if (!els.length) return;
+    const pg = pageOf(l), css = pg ? withTree(pg, () => lstyle(l)) : lstyle(l);
+    els.forEach((el) => { el.style.cssText = css; });
+  }
   function fxQueue(id, src, fx, full) { FXP.set(id, { src, fx: { ...fx }, sig: fxSig(fx), full }); if (!FXR.has(id)) fxLoop(id); }
   async function fxLoop(id) {
     FXR.add(id);
@@ -5798,7 +5827,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   lstyle = function (l) {
     if (l && l.type === 'text' && l.font && !BUILTIN.has(l.font)) loadFont(l.font, l.weight);
     let st = _ls19(l);
-    if (l && l.bbl > 0 && l.type !== 'text') st += `backdrop-filter:blur(${l.bbl}px);-webkit-backdrop-filter:blur(${l.bbl}px);`; // background blur (frosted glass)
+    if (l && l.bbl > 0 && l.type !== 'text') {
+      st += `backdrop-filter:blur(${l.bbl}px);-webkit-backdrop-filter:blur(${l.bbl}px);`; // background blur (frosted glass)
+      // a vector's glass: the blur shows inside its outline, not its whole box (unless a frame already clips the layer)
+      if (l.type === 'path' && !/clip-path:/.test(st)) { const d = PATH.toD(pathSegs(l)); if (d) st += `clip-path:path(${l.fr === 'evenodd' ? 'evenodd,' : ''}'${d}');`; }
+    }
     return st;
   };
 
@@ -6785,7 +6818,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   /** Refreshes every live page of a design. `silent`: no toast on failure (background updates). */
   async function refresh(d, { silent = true, force = false } = {}) {
-    let changed = false, err = null;
+    let changed = false, err = null; const lv = liveStart(d);
     for (const pg of livePages(d)) {
       const cfg = pg.live; if (cfg.paused && !force) continue;
       try {
@@ -6796,7 +6829,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    liveEnd(d, lv); // the feed's time and list changed either way
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7793,7 +7827,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   const busyPages = new WeakSet();
   async function refresh(d, { silent = true, force = false } = {}) {
-    let changed = false, err = null, ran = 0;
+    let changed = false, err = null, ran = 0; const lv = liveStart(d);
     for (const pg of feedPages(d)) {
       const cfg = pg.live; if ((cfg.paused && !force) || busyPages.has(cfg)) continue;
       busyPages.add(cfg); ran++;
@@ -7805,7 +7839,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); if (!force && ED.d !== d) AUTO_LIVE.set(d.id, JSON.stringify(d)); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
+    liveEnd(d, lv); // the feed's time and list changed either way
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -11810,7 +11845,12 @@ function clipCss(l, frames) {
   function shapePath(ctx, l, ls, s) {
     const cx = (l.x + l.w / 2 + ls.tx) * s, cy = (l.y + l.h / 2 + ls.ty) * s, w = l.w * s, h = l.h * s, r = Math.min(Math.max(0, +l.r || 0) * s, w / 2, h / 2);
     ctx.translate(cx, cy); ctx.rotate((((l.rot || 0) + ls.r) * Math.PI) / 180); ctx.scale(ls.s, ls.s);
+    if (l.type === 'path') { // a vector: its outline (layer px, scaled to the export)
+      const d = PATH.toD(pathSegs(l));
+      if (d && typeof Path2D === 'function') { ctx.translate(-w / 2, -h / 2); ctx.scale(s, s); return new Path2D(d); }
+    }
     const rs = radiiOf(l); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-w / 2, -h / 2, w, h, rs ? rs.map((v) => Math.min(v * s, w / 2, h / 2)) : r) : ctx.rect(-w / 2, -h / 2, w, h);
+    return null;
   }
   /** Canvases reused from frame to frame: one per scene drawn, and one for the background-blur snapshot */
   const PAD = new Map();
@@ -11825,7 +11865,7 @@ function clipCss(l, frames) {
       const l = it.l, cx = (l.x + l.w / 2) * s, cy = (l.y + l.h / 2) * s;
       if (it.bbl) { // frosted glass: what is under the layer, blurred, inside its shape
         const snap = pad('snap', cw, ch), sg = snap.getContext('2d'); sg.clearRect(0, 0, cw, ch); sg.drawImage(c, 0, 0);
-        g.save(); g.globalAlpha = ls.o; shapePath(g, l, ls, s); g.clip(); g.setTransform(1, 0, 0, 1, 0, 0);
+        g.save(); g.globalAlpha = ls.o; const sp = shapePath(g, l, ls, s); if (sp) g.clip(sp, l.fr === 'evenodd' ? 'evenodd' : 'nonzero'); else g.clip(); g.setTransform(1, 0, 0, 1, 0, 0);
         g.filter = `blur(${(it.bbl * s).toFixed(1)}px)`; g.drawImage(snap, 0, 0); g.restore();
       }
       g.save(); g.globalAlpha = ls.o; g.globalCompositeOperation = it.blend;

@@ -17,6 +17,8 @@ const FRAME_TYPES = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
 /** A group with frames inside is browsed; any other group is imported like a frame */
 const holdsFrames = (n: any): boolean => (n.children || []).some((c: any) => FRAME_TYPES.has(c.type) || (c.type === "GROUP" && holdsFrames(c)));
 const MAX_FRAMES = 60, MAX_RECENT = 12;
+/** Longest side of an embedded picture (px) */
+const MAX_EMBED = 3200;
 /** Scopes asked by default (enough to import, re-sync and pick files). Add folders:read in FIGMA_SCOPES to browse teams. */
 const DEFAULT_SCOPES = "current_user:read file_content:read file_metadata:read";
 const b64url = (b: Buffer) => b.toString("base64url");
@@ -318,6 +320,29 @@ export class FigmaService {
     return { fileKey, file: f.name, version: f.version, lastModified: f.lastModified };
   }
 
+  /** Families Google Fonts serves (true) or doesn't (false), checked once per family */
+  private googleFonts = new Map<string, boolean>();
+  /** Checks the font families used in these nodes against Google Fonts (a few seconds at most; unknown counts as missing). */
+  private async checkFonts(nodes: any[]) {
+    const fams = new Set<string>();
+    const scan = (n: any) => {
+      if (!n || n.visible === false) return;
+      if (n.type === "TEXT") {
+        if (n.style?.fontFamily) fams.add(String(n.style.fontFamily));
+        Object.values(n.styleOverrideTable || {}).forEach((s: any) => s?.fontFamily && fams.add(String(s.fontFamily)));
+      }
+      (n.children || []).forEach(scan);
+    };
+    nodes.forEach(scan);
+    const todo = [...fams].filter((f) => !STUDIO_FONTS.includes(f) && !this.googleFonts.has(f) && /^[\w .'-]{1,80}$/.test(f)).slice(0, 20);
+    await Promise.all(todo.map(async (f) => {
+      try {
+        const r = await fetch(`https://fonts.googleapis.com/css2?family=${encodeURIComponent(f).replace(/%20/g, "+")}`, { signal: AbortSignal.timeout(4000) });
+        this.googleFonts.set(f, r.ok);
+      } catch {} // offline: not cached, the font is swapped this time
+    }));
+  }
+
   /** Converts frames into studio pages. Images are downloaded, resized and embedded (designs export as PNG). */
   async import(fileKey: string, ids: string[], opts: { fonts?: { heading?: string; body?: string }; keepFonts?: boolean } = {}) {
     if (!ids?.length) throw new BadRequestException("Choose at least one frame");
@@ -325,30 +350,35 @@ export class FigmaService {
     const uid = () => newId();
     // Missing families: keep the name, or use the brand's fonts (heading for large text, body for the rest)
     const fontFor = (family: string, size: number) => {
-      if (opts.keepFonts || STUDIO_FONTS.includes(family)) return family;
+      if (opts.keepFonts || STUDIO_FONTS.includes(family) || this.googleFonts.get(family)) return family;
       const pick = size >= 28 ? opts.fonts?.heading : opts.fonts?.body;
       return pick && STUDIO_FONTS.includes(pick) ? pick : defaultFont(family, size);
     };
     const out = [];
     const allRasters = new Map<string, number>(), allImages = new Map<string, number>();
     type Conv = { id: string; error: string } | { id: string; node: any; c: ReturnType<typeof convertFrame> };
+    // fonts Google Fonts serves are kept even when missing fonts are swapped: the studio loads them from there
+    await this.checkFonts(ids.map((id) => res.nodes?.[id]?.document).filter(Boolean));
     const converted: Conv[] = ids.map((id): Conv => {
       const node = res.nodes?.[id]?.document;
       if (!node) return { id, error: "Frame not found (deleted or moved in Figma)" };
       const c = convertFrame(node, uid, fontFor);
-      c.rasters.forEach((r) => allRasters.set(r.id, Math.max(allRasters.get(r.id) || 0, r.w)));
+      c.rasters.forEach((r) => allRasters.set(r.id, Math.max(allRasters.get(r.id) || 0, r.w, r.h)));
       c.images.forEach((r) => allImages.set(r.ref, Math.max(allImages.get(r.ref) || 0, r.w, r.h)));
       return { id, node, c };
     });
 
-    // rendered nodes: one Figma render per scale (2× the size they take on the studio canvas)
+    // rendered nodes: one Figma render per scale (2× the size they take on the studio canvas), lower for the big ones
+    // (a background larger than the frame): Figma renders 32 megapixels at most, and they are embedded at MAX_EMBED
     const rasterUrls: Record<string, string> = {};
     const byScale = new Map<number, string[]>();
     for (const conv of converted) {
       if ("error" in conv) continue;
       for (const r of conv.c.rasters) {
-        const s = Math.min(4, Math.max(0.1, Math.round(conv.c.scale * 2 * 100) / 100));
-        byScale.set(s, [...(byScale.get(s) || []), r.id]);
+        const side = Math.max(r.w, r.h, 1) / (conv.c.scale || 1); // in Figma pixels
+        const s = Math.min(4, conv.c.scale * 2, (MAX_EMBED * 1.25) / side);
+        const sr = Math.max(0.01, Math.round(s * 100) / 100);
+        byScale.set(sr, [...(byScale.get(sr) || []), r.id]);
       }
     }
     // Figma sometimes returns no render for a heavy node (null URL or a timeout): ask again for the missing ones
@@ -376,11 +406,17 @@ export class FigmaService {
         const { buf } = await download(url, { timeoutMs: 60_000 }).catch(() => download(url, { timeoutMs: 90_000 })); // one retry
         const img = sharp(buf, { limitInputPixels: 1e8 }).rotate();
         const meta = await img.metadata();
-        const target = Math.max(64, Math.min(2160, Math.round(maxPx * 2)));
+        // 2× the size the picture takes on the canvas, up to MAX_EMBED (a background larger than the frame keeps its detail)
+        const target = Math.max(64, Math.min(MAX_EMBED, Math.round(maxPx * 2)));
         const resized = img.resize({ width: target, height: target, fit: "inside", withoutEnlargement: true });
-        const png = meta.hasAlpha;
-        const b = png ? await resized.png({ compressionLevel: 9, palette: true }).toBuffer() : await resized.jpeg({ quality: 86, mozjpeg: true }).toBuffer();
-        data.set(key, `data:image/${png ? "png" : "jpeg"};base64,${b.toString("base64")}`);
+        // transparent pictures: small ones (icons, logos) as palette PNG; large ones (photos, glows, gradients) as WebP,
+        // which keeps every color (a 256-color palette bands their gradients)
+        const outW = Math.min(target, meta.width || target), outH = Math.min(target, meta.height || target);
+        const kind = !meta.hasAlpha ? "jpeg" : Math.max(outW, outH) > 512 ? "webp" : "png";
+        const b = kind === "png" ? await resized.png({ compressionLevel: 9, palette: true }).toBuffer()
+          : kind === "webp" ? await resized.webp({ quality: 90, alphaQuality: 100 }).toBuffer()
+          : await resized.jpeg({ quality: 86, mozjpeg: true }).toBuffer();
+        data.set(key, `data:image/${kind};base64,${b.toString("base64")}`);
       } catch {}
     };
     await Promise.all([

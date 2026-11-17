@@ -173,4 +173,41 @@ describe("Figma import: styles", () => {
     expect(byName(out, "Glass")).toMatchObject({ type: "rect", bbl: 15 });
     expect(out.warnings).toContain("Noise and texture effects were left out");
   });
+
+  it("keeps a linear gradient between its handles, glass vectors editable, and a glass mask opaque", () => {
+    const white = (a: number) => ({ r: 1, g: 1, b: 1, a });
+    const grad = (a: any, b: any, stops: any[]) => ({ type: "GRADIENT_LINEAR", gradientHandlePositions: [a, b, { x: 0, y: 0 }], gradientStops: stops });
+    const blur = [{ type: "BACKGROUND_BLUR", visible: true, radius: 10 }];
+    const square = { fillGeometry: [{ path: "M0 0L100 0L100 100L0 100Z", windingRule: "NONZERO" }] };
+    const out = convert({
+      id: "0:1", type: "FRAME", name: "Post", ...at(0, 0, 1000, 1000), fills: [], children: [
+        { id: "1:1", type: "RECTANGLE", name: "Half", ...at(0, 0, 1000, 100), fills: [grad({ x: 0, y: 0.5 }, { x: 0.5, y: 0.5 }, [{ color: white(0), position: 0 }, { color: white(1), position: 1 }])] },
+        { id: "1:2", type: "VECTOR", name: "Glass", ...at(0, 200, 100, 100), ...square, fills: [solid(1, 1, 1, 0.2)], effects: blur },
+        { id: "1:3", type: "GROUP", name: "Photo", ...at(0, 400, 100, 100), children: [
+          { id: "2:1", type: "VECTOR", name: "Shape", isMask: true, maskType: "ALPHA", ...at(0, 400, 100, 100), ...square, fills: [solid(0, 0, 1, 0.1)], effects: blur },
+          { id: "2:2", type: "RECTANGLE", name: "Pic", ...at(0, 400, 100, 100), fills: [{ type: "IMAGE", imageRef: "x", scaleMode: "FILL" }] },
+        ] },
+      ],
+    });
+    expect(byName(out, "Half").fill).toBe("linear-gradient(90deg, rgba(255,255,255,0) 0%, #FFFFFF 50%)");
+    expect(byName(out, "Glass")).toMatchObject({ type: "path", bbl: 5 });
+    expect(byName(out, "Shape")).toMatchObject({ mask: true, mt: "vec", fill: "#FFFFFF" });
+    expect(out.rasters).toEqual([]);
+  });
+
+  it("places a turned, blended background bigger than the frame at its full size (not squeezed into the frame)", () => {
+    // Figma's render bounds stop at the frame; its render of the node doesn't
+    const out = convert({
+      id: "0:1", type: "FRAME", name: "Post", ...at(0, 0, 1080, 1350), fills: [solid(0, 0, 1)], children: [
+        {
+          id: "1:1", type: "INSTANCE", name: "BG 7", blendMode: "SCREEN", clipsContent: true, ...at(-178, -740, 2304, 2304, 30),
+          absoluteBoundingBox: { x: -178, y: -740, width: 3147, height: 3147 }, absoluteRenderBounds: { x: 0, y: 0, width: 1080, height: 1350 },
+          fills: [solid(0, 0, 0)], children: [{ id: "1:2", type: "RECTANGLE", name: "Photo", ...at(0, 0, 2304, 2304), fills: [{ type: "IMAGE", imageRef: "abc", scaleMode: "FILL" }] }],
+        },
+      ],
+    });
+    expect(byName(out, "BG 7")).toMatchObject({ type: "image", x: -178, y: -740, w: 3147, h: 3147, blend: "screen" });
+    expect(out.rasters).toEqual([{ id: "1:1", w: 3147, h: 3147 }]);
+    expect(out.warnings.some((w) => w.includes("blend mode"))).toBe(false); // one picture blends like the group
+  });
 });
