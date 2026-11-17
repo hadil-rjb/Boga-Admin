@@ -5392,7 +5392,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   // cache: "<layer id>|<values>" → { src, out, full }; the last result per layer shows while the next one renders
   const FXC = new Map(), FXLAST = new Map(), FXP = new Map(), FXR = new Set(), FXL = new Map(), FXT = new Map();
   const put = (key, v) => { FXC.delete(key); FXC.set(key, v); while (FXC.size > 40) FXC.delete(FXC.keys().next().value); };
-  function fxPaint(id) { const l = FXL.get(id); if (!l) return; document.querySelectorAll(`.ly[data-id="${id}"]`).forEach((el) => { el.style.cssText = lstyle(l); }); }
+  /** The page that holds a layer (the open design first, then every design: covers and cards draw closed designs) */
+  const pageOf = (l) => {
+    const has = (pg) => pg && (pg.layers || []).includes(l);
+    if (ED.d) { const pg = (ED.d.pages || []).find(has); if (pg) return pg; }
+    for (const id of Object.keys(S.data || {})) for (const d of S.data[id].designs || []) { const pg = (d.pages || []).find(has); if (pg) return pg; }
+    return null;
+  };
+  // drawn with its page's tree, like the first time: masks, frame clips and hidden groups still apply (a card's cover
+  // outside the editor lost the photo's mask when the adjusted picture arrived)
+  function fxPaint(id) {
+    const l = FXL.get(id); if (!l) return;
+    const els = document.querySelectorAll(`.ly[data-id="${id}"]`); if (!els.length) return;
+    const pg = pageOf(l), css = pg ? withTree(pg, () => lstyle(l)) : lstyle(l);
+    els.forEach((el) => { el.style.cssText = css; });
+  }
   function fxQueue(id, src, fx, full) { FXP.set(id, { src, fx: { ...fx }, sig: fxSig(fx), full }); if (!FXR.has(id)) fxLoop(id); }
   async function fxLoop(id) {
     FXR.add(id);
