@@ -31,6 +31,7 @@ import { voiceoverLines, scenesToVoice, voiceInput, musicInput, soundCtx } from 
 import { capsOf as capsOfD, styleOf as styleOfD } from './caption-store.js';
 import { group as groupWords } from './captions.js';
 import { PRESETS } from './caption-presets.js';
+import { merge3 } from './merge.js';
 import { buildPalette, gifWriter, gifSize, gifEstimate, GIF_FPS, GIF_SIZES, GIF_LONG_MS } from './gif.js';
 import { installCardPreview, loopTime } from './card-preview.js';
 import { installVideoStudio } from './video-studio.js';
@@ -703,6 +704,14 @@ function dcArt(d, i) {
   const back = Array.from({ length: m }, (_, k) => `<span class="dc-back" style="--k:${k + 1}" aria-hidden="true">${thumb(d.pages[(i + k + 1) % n], d.ratio, 190, 215)}</span>`).reverse().join('');
   return `<span class="dc-art" style="--s:${step}px;--m:${m}">${back}${thumb(d.pages[i], d.ratio, 190, 215)}</span>`;
 }
+/* Versions of a design (another language, size or theme: d.vOf names the original) live in the editor's Versions bar:
+   the design lists show the original only. A version whose original is gone shows again, so it is never lost. */
+const isVersion = (d) => !!(d && d.vOf && d.vOf !== d.id && S.designs.some((x) => x.id === d.vOf));
+/** The designs the lists show: originals and designs on their own */
+const listedDesigns = () => S.designs.filter((d) => !isVersion(d));
+/** How many versions an original has */
+const versionCount = (d) => S.designs.filter((x) => x.vOf === d.id && x.id !== d.id).length;
+
 function designCard(d, extra = '') {
   const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
   // an animated design is one video, not a carousel: its first scene alone, no stack, arrows or dots
@@ -710,7 +719,7 @@ function designCard(d, extra = '') {
   const nav = n > 1 ? `<button type="button" class="dc-nav prev" data-act="dcSlide" data-n="-1" aria-label="Previous slide"${i ? '' : ' disabled'}>${ic('chevL', 16)}</button><button type="button" class="dc-nav next" data-act="dcSlide" data-n="1" aria-label="Next slide"${i < n - 1 ? '' : ' disabled'}>${ic('chevR', 16)}</button><span class="dc-dots" aria-hidden="true">${dcDots(n, i)}</span>` : '';
   return `<div class="card dc" data-id="${d.id}">
     <div class="dc-pv${n > 1 ? ' multi' : ''}"><button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}${n > 1 ? `, carousel, slide ${i + 1} of ${n}` : ''}">${dcArt(video ? { ...dd, pages: dd.pages.slice(0, 1) } : dd, i)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>${nav}</div>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${video ? 'Video' : ratioLabel(d.ratio)} · ${n > 1 ? n + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time>${(() => { const k = versionCount(d); return k ? ` · <span class="dc-vn" title="Open the design to see its versions">${ic('copy', 12)}${k + 1} versions</span>` : ''; })()}</small>${extra}</div></div>`;
 }
 /** Shows another slide on a carousel's card, in place */
 function dcShow(card, step) {
@@ -1017,7 +1026,7 @@ PAGES.overview = {
       </div>
       <aside class="widget ov-sched" id="ovSched" aria-label="Schedule">${ovSchedule()}</aside>
       <section class="widget ov-designs"><div class="ov-wh"><h2 class="wtitle">${ic('layout', 24)}Continue designing</h2><a class="btn ghost sm" href="#/studio">All designs</a></div>
-        ${S.designs.length ? `<div class="cards">${S.designs.slice(0, 4).map((d) => designCard(d)).join('')}</div>` : ovEmpty(`No designs for ${who} yet.`, 'Start from a template or a blank canvas.', `<a class="btn primary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}Create the first one</a>`)}</section>
+        ${S.designs.length ? `<div class="cards">${listedDesigns().slice(0, 4).map((d) => designCard(d)).join('')}</div>` : ovEmpty(`No designs for ${who} yet.`, 'Start from a template or a blank canvas.', `<a class="btn primary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}Create the first one</a>`)}</section>
     </div></div>`;
   },
 };
@@ -1097,7 +1106,7 @@ PAGES.studio = {
     // two libraries: the brand's designs and the templates saved from them (in All brands, every brand's)
     const q = ST.q.trim().toLowerCase(), hit = (n) => !q || String(n || '').toLowerCase().includes(q);
     const tpls = (allOn() ? S.brands : [brand()]).flatMap((b) => (b.templates || []).map((t) => ({ t, b })));
-    const ds = S.designs.filter((d) => hit(d.name)), ts = tpls.filter((x) => hit(x.t.name));
+    const ds = listedDesigns().filter((d) => hit(d.name)), ts = tpls.filter((x) => hit(x.t.name)); // versions: in the editor's Versions bar
     const none = (icon, title, text, cta) => `<div class="lib-empty">${ic(icon, 24)}<b>${title}</b><p>${text}</p>${cta || ''}</div>`;
     const miss = () => none('search', 'No results', `Nothing matches “${esc(ST.q.trim())}”.`, `<button class="btn secondary sm" data-act="stClear">Clear search</button>`);
     const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="fromBTpl" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumb(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
@@ -1116,7 +1125,7 @@ PAGES.studio = {
       : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
     return `<div class="tiles">${tile('1:1', 'Square post', '1080 × 1080', 26, 26)}${tile('4:5', 'Portrait post', '1080 × 1350', 22, 28)}${tile('9:16', 'Story / Reel', '1080 × 1920', 18, 32)}${tile('4:5', 'Carousel', '3 slides · 4:5', 22, 28, 3)}</div>
-    <div class="lib-bar"><div class="tabs lib-tabs" role="tablist">${tab(0, 'Designs', S.designs.length)}${tab(1, 'Templates', tpls.length)}</div>
+    <div class="lib-bar"><div class="tabs lib-tabs" role="tablist">${tab(0, 'Designs', listedDesigns().length)}${tab(1, 'Templates', tpls.length)}</div>
       <label class="lib-q">${ic('search', 16)}<input id="stq" type="search" placeholder="Search ${ST.tab === 1 ? 'templates' : 'designs'}" value="${esc(ST.q)}" aria-label="Search ${ST.tab === 1 ? 'templates' : 'designs'}"></label></div>${body}`;
   },
 };
@@ -4509,8 +4518,10 @@ Object.assign(IC, {
     };
     return `<div class="pvgrid" style="width:${w}px">${[...Array(k)].map((_, i) => cell(i)).join('')}</div>`;
   }
+  /** The account name a preview shows: the brand's handle (without @), else its name exactly as written (Boğa, Café, عربي) */
+  const handleOf = (b) => String(b.handle || '').replace(/^@/, '').trim() || String(b.name || '').normalize('NFC').trim();
   function postPreview(d, net, cap, pi, link, o = {}) {
-    const b = brand(), nm = esc(b.name), hd = esc(String(b.handle || '@' + b.name.toLowerCase().replace(/[^a-z0-9]/g, '')).replace('@', '')), av = brandAv(b, 'sm'), W = 300, n = d.pages.length;
+    const b = brand(), nm = esc(b.name), hd = esc(handleOf(b)), av = brandAv(b, 'sm'), W = 300, n = d.pages.length;
     const lk = link ? `<div class="pvlk">${esc(link.replace(/^https?:\/\//, '').slice(0, 46))}</div>` : '', fc = o.fc ? `<div class="pvfc"><b>${hd}</b> ${hl(o.fc)}</div>` : '';
     const globe = `<span class="pvg">Now · ${ic('globe', 11)}</span>`;
     if (net === 'ig' && d.ratio === '9:16') return `<div class="pv7 n-story">${pvCar(d, pi, 200, 2, true)}<span class="bar">${[...Array(n)].map((_, i) => `<i class="${i <= pi ? 'on' : ''}"></i>`).join('')}</span><span class="who">${av}${hd}</span></div>`;
@@ -4800,6 +4811,24 @@ persist.onConflict((list) => {
     Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved); AUTO_LIVE.delete(mine.id);
     return false;
   });
+  /* Saved in two places at once, on different parts (here the captions, elsewhere the colour grade): one design with
+     both changes, no copy. merge.js compares each side with the version this tab last synced; only a part both sides
+     changed differently still makes "… (conflicted copy)". The merged design is saved again on the next sync. */
+  const merged = [];
+  list = list.filter(({ brandId, item, base }) => {
+    const D = S.data[brandId], mine = D && D.designs.find((x) => x.id === item.id);
+    if (!mine || !base) return true;
+    const r = merge3(base, JSON.parse(JSON.stringify(mine)), item);
+    if (!r.ok) return true;
+    const v = r.value; ensureRatio(v.ratio); (v.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
+    Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, v);
+    if (r.theirs) merged.push(mine);
+    return false;
+  });
+  if (merged.length && document.body.classList.contains('in-editor') && merged.includes(ED.d)) {
+    edApi.all();
+    toast('Changes saved elsewhere to this design were added to yours.');
+  }
   if (!list.length) { if (!document.body.classList.contains('in-editor')) route(); save(); return; }
   list.forEach(({ brandId, item }) => {
     const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
@@ -12507,7 +12536,7 @@ const edApi = { all: () => edAll(), stage: () => edStage(), panel: () => edPanel
 /* the shell (video-studio.js) takes videos over: rail, transport, timeline and inspector; the footage editor is its `video` source */
 const VS = installVideoStudio({ ED, ACT, IC, ic, esc, wrapEd, ed: edApi, editable: () => !persist.readOnly });
 /* the shared caption panels (Captions, for videos and reels) */
-installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi }, VS);
+installCaptionPanels({ ED, ACT, ic, esc, mutate, save, canEdit, toast, brand, modal, api, ed: edApi }, VS); // api: Paste script times the lines to the speech (/footage/:id/words)
 /* the caption style tabs on the right (a caption line selected, or Captions / Styles open), for videos and reels */
 installCaptionInspector({ ED, ACT, IC, ic, esc, mutate, save, canEdit, toast, brand, modal, ed: edApi, api }, VS);
 /* reels: the motion editor (v37 / v38) is the shell's `reel` source */
@@ -12541,7 +12570,7 @@ installCardPreview({ getD, reel: (...a) => RT.moCardPlay(...a), videoUrl: (d) =>
   Object.assign(IC, { chk39: '<path d="M20 6 9 17l-5-5"/>', sel39: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>' });
   const SEL = { on: false, ids: new Set(), last: null };
   const q = () => ST.q.trim().toLowerCase();
-  const matching = () => S.designs.filter((d) => !q() || String(d.name || '').toLowerCase().includes(q())); // the order the cards are shown in
+  const matching = () => listedDesigns().filter((d) => !q() || String(d.name || '').toLowerCase().includes(q())); // the order the cards are shown in
   const exit = () => { SEL.on = false; SEL.ids.clear(); SEL.last = null; };
   const ownerData = (id) => { for (const b of S.brands) { const D = S.data[b.id]; if (D && (D.designs || []).some((x) => x.id === id)) return D; } return null; };
 
@@ -12992,6 +13021,8 @@ document.addEventListener('pointerdown', (e) => {
   };
   // the top bar's "Versions" button, next to Preview
   const addBtn = () => {
+    // an uploaded video has no versions (they are made of a design's pages): no button
+    if (ED.d && ED.d.footage) { const b = $('[data-act=vrOpen].btn'); if (b) b.remove(); return; }
     const pv = $('[data-act=edPreview]'), sch = $('[data-act=edSchedule]'), at = pv || sch;
     if (at && !$('[data-act=vrOpen].btn')) at.insertAdjacentHTML('beforebegin', `<button class="btn secondary sm" data-act="vrOpen" title="The same design in another language, size or theme">${ic('copy', 16)}<span class="hide-sm">Versions</span></button>`);
   };

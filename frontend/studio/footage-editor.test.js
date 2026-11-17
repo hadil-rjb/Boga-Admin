@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { coverCrop, fitBox, canvasSize, fmtMs } from './footage-player.js';
 import { useMatchedGrade, peakBuckets, fitPeaks, rangeLabel, lineText, analysis, analysisPatch, applyPatch, firstFailed, lookPath, shouldRefreshProxy, stepInfo, urlExpiry,
   gradeToSlider, sliderToGrade, gradePatch, GRADE_RESET, maxWordsOf, thumbTime, thumbSize, lookRecord, applyLookTo, exportSizes, exportPayload, exportName, canExport,
-  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR, scenesPane, gradeStatus, rgIconHTML } from './footage-editor.js';
+  canUseMatched, matchedGradePatch, LOOK_DELETED, textCommit, prepareOpen, ftAudioOf, mediaIdOf, musicRecord, speechSpans, duckAt, musicGainAt, musicTimeAt, DUCK_FLOOR, cutsFor, pausesNote, scenesPane, gradeStatus, rgIconHTML } from './footage-editor.js';
 import { CAPTIONS_DEFAULT, styleOf } from './caption-store.js';
 import { DEFAULT_STYLE } from './captions.js';
 
@@ -304,9 +304,9 @@ describe('Media and Look helpers', () => {
 describe('audio (original volume, music bed, ducking)', () => {
   const MID = 'c'.repeat(24), SRC = `https://api.x/api/media/${MID}.mp3`;
   it('ftAudioOf: defaults, clamps, and the music only with a src', () => {
-    expect(ftAudioOf(ft())).toEqual({ vol: 1, music: null });
-    expect(ftAudioOf(ft({ audio: { vol: 3, music: { src: '' } } }))).toEqual({ vol: 1, music: null });
-    expect(ftAudioOf(ft({ audio: { vol: 0.25, music: { src: SRC, name: 'Chill' } } }))).toEqual({ vol: 0.25, music: { src: SRC, mediaId: MID, name: 'Chill', vol: 0.6, duck: true, dur: 0 } });
+    expect(ftAudioOf(ft())).toEqual({ vol: 1, music: null, denoise: false, pauses: { on: false, min: 600 } });
+    expect(ftAudioOf(ft({ audio: { vol: 3, music: { src: '' } } }))).toEqual({ vol: 1, music: null, denoise: false, pauses: { on: false, min: 600 } });
+    expect(ftAudioOf(ft({ audio: { vol: 0.25, music: { src: SRC, name: 'Chill' } } }))).toEqual({ vol: 0.25, music: { src: SRC, mediaId: MID, name: 'Chill', vol: 0.6, duck: true, dur: 0 }, denoise: false, pauses: { on: false, min: 600 } });
     expect(ftAudioOf(ft({ audio: { vol: -1, music: { src: SRC, vol: 0.2, duck: false, dur: 9000 } } })).music).toMatchObject({ vol: 0.2, duck: false, dur: 9000, name: 'Music' });
   });
   it('mediaIdOf reads the hosted file id; musicRecord keeps what the design stores', () => {
@@ -387,5 +387,84 @@ describe('icon slider rows', () => {
   it('a one-sided slider has no sign and no centre mark', () => {
     const s = rgIconHTML('data-ft-g', 'strength', 'Strength', '<svg></svg>', 0, 100, 1, 100, 'disabled');
     expect(s).toContain('<output>100</output>'); expect(s).not.toContain('class="ctr"'); expect(s).toContain('disabled');
+  });
+});
+
+describe('Remove pauses and Reduce noise in the design', () => {
+  const words = [W('a', 2000, 2500), W('b', 5000, 5400)];
+  it('ftAudioOf reads the switches; cutsFor cuts only while on', () => {
+    const a = ftAudioOf(ft({ audio: { denoise: true, pauses: { on: true, min: 800 } } }));
+    expect(a).toMatchObject({ denoise: true, pauses: { on: true, min: 800 } });
+    expect(cutsFor(a, words, 9000)).toEqual([[0, 1880], [2680, 4880], [5580, 9000]]);
+    expect(cutsFor(ftAudioOf(ft()), words, 9000)).toEqual([]);
+    expect(cutsFor(a, words, 0)).toEqual([]);
+  });
+  it('pausesNote says what goes and the new length', () => {
+    expect(pausesNote([[0, 1880], [2680, 4880], [5580, 9000]], 9000)).toBe('Removes 7.5 s in 3 places · new length 0:01.5');
+    expect(pausesNote([], 9000)).toBe('No pauses that long in this video.');
+  });
+  it('the export carries the switches only when on', () => {
+    const d = { id: 'd1', footage: ft({ audio: { denoise: true, pauses: { on: true, min: 700 } } }), captions: cp() };
+    expect(exportPayload(d, { w: 1080, h: 1920 }).footage.audio).toEqual({ vol: 1, music: null, denoise: true, pauses: { min: 700 } });
+    const e = { id: 'd1', footage: ft(), captions: cp() };
+    expect(exportPayload(e, { w: 1080, h: 1920 }).footage.audio).toEqual({ vol: 1, music: null });
+  });
+});
+
+describe('the dialect the captions were heard in', async () => {
+  const { heardAs } = await import('./footage-editor.js');
+  it('names the dialect, else the language, else nothing', () => {
+    expect(heardAs({ lang: 'ar', dialect: 'levantine' })).toBe('Levantine Arabic');
+    expect(heardAs({ lang: 'ar', dialect: null })).toBe('Arabic');
+    expect(heardAs({ lang: 'en' })).toBe('English');
+    expect(heardAs(null)).toBeNull();
+  });
+});
+
+describe('look filters in the editor', async () => {
+  const { fxPatch, swatchOf } = await import('./footage-editor.js');
+  it('fxPatch changes one thing; swatches differ by filter', () => {
+    expect(fxPatch({}, 'filter', 'portrait')).toEqual({ filter: 'portrait', amount: 0.8, shadows: 0.55, highlights: 0.5, grain: 0, vignette: 0 }); // its light balance comes with it
+    expect(fxPatch({ fx: { filter: 'warm' } }, 'grain', '35')).toMatchObject({ filter: 'warm', grain: 0.35 });
+    expect(fxPatch({ fx: { filter: 'warm', shadows: 0.2 } }, 'highlights', '70')).toMatchObject({ shadows: 0.2, highlights: 0.7 });
+    expect(fxPatch({}, 'filter', 'nope').filter).toBe('none');
+    expect(swatchOf('bw')).not.toBe(swatchOf('warm'));
+  });
+});
+
+describe('auto light balance', async () => {
+  const { autoLight, lookPixels } = await import('./footage-editor.js');
+  /** A w × h frame: a near-white border (window) around a skin-coloured middle of brightness `face` 0..255 */
+  const frame = (w, h, face, outer) => { const d = new Uint8ClampedArray(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4, inside = x > w * 0.25 && x < w * 0.75 && y > h * 0.1 && y < h * 0.6; const [r, g, b] = inside ? [face, face * 0.78, face * 0.66] : [outer, outer, outer]; d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255; } return d; };
+  it('a backlit face gets brightened and the window toned down; a well-lit face nothing', () => {
+    const a = autoLight(frame(40, 70, 90, 252), 40, 70);
+    expect(a.shadows).toBeGreaterThan(0.6); expect(a.highlights).toBeGreaterThan(0.5); expect(a.highlights).toBeLessThanOrEqual(0.7);
+    expect(autoLight(frame(40, 70, 190, 160), 40, 70)).toEqual({ shadows: 0, highlights: 0 });
+  });
+  it('a well-lit face in a dark suit against a window: the shadows lifted a little, the window toned down', () => {
+    const w = 40, h = 70, d = frame(w, h, 170, 252);
+    for (let y = Math.floor(h * 0.5); y < h; y++) for (let x = Math.floor(w * 0.2); x < w * 0.8; x++) { const i = (y * w + x) * 4; d[i] = d[i + 1] = d[i + 2] = 20; }
+    const a = autoLight(d, w, h);
+    expect(a.shadows).toBeGreaterThan(0.2); expect(a.shadows).toBeLessThanOrEqual(0.5); expect(a.highlights).toBeGreaterThan(0.5);
+  });
+  it('lookPixels brightens the face and leaves skin out of the highlight pull', () => {
+    const d = frame(10, 10, 90, 252);
+    lookPixels(d, { exposure: 0, temp: 0, sat: 0 }, { filter: 'none', shadows: 1, highlights: 1 });
+    expect(d[(3 * 10 + 5) * 4]).toBeGreaterThan(110); expect(d[0]).toBeLessThan(240);
+    const skin = frame(10, 10, 170, 100); lookPixels(skin, { exposure: 0, temp: 0, sat: 0 }, { filter: 'none', shadows: 0, highlights: 1 });
+    expect(skin[(3 * 10 + 5) * 4]).toBe(170); // a mid-bright face is not darkened
+  });
+});
+
+describe('playing over removed pauses', async () => {
+  const { jumpFor } = await import('./footage-player.js');
+  const cuts = [[28600, 29030]], fr = 1000 / 30;
+  it('a frame inside the cut jumps half a frame past its end', () => {
+    expect(jumpFor(cuts, 28650, fr)).toBeCloseTo(29030 + fr / 2, 6);
+  });
+  it('the frame shown after the jump (it starts just before the end) plays on: no jump loop', () => {
+    expect(jumpFor(cuts, 29000, fr)).toBeNull(); // 30 fps frame 870 covers 29.000-29.033
+    expect(jumpFor(cuts, 29040, fr)).toBeNull();
+    expect(jumpFor(cuts, 28000, fr)).toBeNull();
   });
 });

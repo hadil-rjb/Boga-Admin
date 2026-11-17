@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { pipeline } from "stream/promises";
 
-export type FootageFile = "proxy.mp4" | "look.cube" | "words.json" | "stats.json" | `exports/${string}.mp4`;
+export type FootageFile = "proxy.mp4" | "proxy-clean.mp4" | "voice.wav" | "look.cube" | "words.json" | "stats.json" | `exports/${string}.mp4`;
 
 /** backend folder: the cwd when started from it, else found by walking up from this file (src/ or dist/src/) */
 function backendRoot(): string {
@@ -71,7 +71,7 @@ export class FootageStore {
   }
 
   file(id: string, name: FootageFile): string {
-    if (!/^(proxy\.mp4|look\.cube|words\.json|stats\.json|exports\/[\w-]{1,64}\.mp4)$/.test(name)) throw new Error("Invalid footage file");
+    if (!/^(proxy(-clean)?\.mp4|voice\.wav|look\.cube|words\.json|stats\.json|exports\/[\w-]{1,64}\.mp4)$/.test(name)) throw new Error("Invalid footage file");
     return join(this.dir(id), name);
   }
 }

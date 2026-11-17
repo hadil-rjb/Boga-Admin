@@ -299,7 +299,8 @@ export function installCaptionPanels(ctx, VS) {
   const can = () => !canEdit || canEdit();
   const src = () => VS.source();
   const hooks = () => { const S = src(); return (S && S.captions) || {}; };
-  const now = () => { const S = src(), P = S && S.player; return P && (!P.ready || P.ready()) ? Math.round(P.time()) : 0; };
+  /** The playhead on the video's own clock (the captions' times): a video with Remove pauses shows a shorter, edited clock in the transport */
+  const now = () => { const S = src(), P = S && S.player; return P && (!P.ready || P.ready()) ? Math.round(P.mediaTime ? P.mediaTime() : P.time()) : 0; };
   /** The search, kept while the panel is redrawn (another design starts empty) */
   let q = '', qFor = null, lastRow = null;
 
@@ -356,7 +357,7 @@ export function installCaptionPanels(ctx, VS) {
   }
   function rehilite() { lastRow = undefined; hilite(now(), false); }
   const _tick = VS.tick;
-  VS.tick = (ms, playing) => { _tick(ms, playing); if (src()) hilite(ms, playing); };
+  VS.tick = (ms, playing) => { _tick(ms, playing); if (src()) hilite(now(), playing); };
   /** A caption block was clicked on the timeline: its row comes into view */
   function reveal(id) { const r = document.querySelector(`#edPanel .ft-row[data-id="${CSS.escape(id)}"]`); if (r) { r.hidden = false; r.scrollIntoView({ block: 'nearest' }); } }
 
@@ -413,7 +414,7 @@ export function installCaptionPanels(ctx, VS) {
   }
 
   Object.assign(ACT, {
-    cpSeek: (a) => { const S = src(), P = S && S.player; if (P && (!P.ready || P.ready())) P.seek(+a.dataset.ms); },
+    cpSeek: (a) => { const S = src(), P = S && S.player; if (P && (!P.ready || P.ready())) (P.seekMedia ? P.seekMedia(+a.dataset.ms) : P.seek(+a.dataset.ms)); },
     cpMore: (a) => rowMenu(a),
     cpAdd: () => addAtPlayhead(),
     cpOn: () => setOn(),
@@ -608,7 +609,7 @@ export function installCaptionPanels(ctx, VS) {
     let speech = [], dur = 0, state = 'none';
     if (kindOf(d) === 'reel') { const tl = timeline(d.pages); speech = voiceoverWords(d.pages, tl, LEAD); dur = tl.total; }
     else {
-      dur = P && P.duration ? P.duration() : 0;
+      dur = P && P.mediaDuration ? P.mediaDuration() : P && P.duration ? P.duration() : 0;
       const no = scriptBlocked(d, dur); if (no) { toast(no); return; }
       const id = d.footage && d.footage.src;
       if (id && apiFn) { busy = true; try { const w = await apiFn(`/footage/${id}/words`); if (Array.isArray(w)) speech = w; } catch (e) { speech = []; } busy = false; }

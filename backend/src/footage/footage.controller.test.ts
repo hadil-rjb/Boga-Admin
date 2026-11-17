@@ -210,7 +210,7 @@ describe('pair', () => {
     const o = await mk('original'), r = await mk('reference');
     const rec = await ctl.pair(o, { ref: r, lang: 'ar' });
     expect(model.rows.find((x: any) => x._id === o).pair).toEqual({ ref: r, lang: 'ar' });
-    expect(enqueue.mock.calls).toEqual([[o, 'transcribe'], [o, 'grade']]);
+    expect(enqueue.mock.calls).toEqual([[o, 'clean'], [o, 'transcribe'], [o, 'grade']]); // the voice is cleaned before it is heard
     expect(rec.pair).toEqual({ ref: r, lang: 'ar' });
   });
   it('a brand look without a reference, language left to auto-detect; a ready original goes back to processing', async () => {
@@ -275,7 +275,7 @@ describe('editor data: words, look, retry', () => {
     // the transcribe the pair requested stays persisted queued after the fatal failure, but no runner holds it any more
     const id = await mk('original', { status: 'failed', error: 'boom', pair: { lookId: 'l1' }, jobs: { proxy: { state: 'failed' }, transcribe: { state: 'queued' }, grade: { state: 'done' } } });
     await ctl.retry(id, { step: 'proxy' });
-    expect(enqueue.mock.calls).toEqual([[id, 'proxy'], [id, 'transcribe']]);
+    expect(enqueue.mock.calls).toEqual([[id, 'proxy'], [id, 'clean'], [id, 'transcribe']]);
     expect(model.rows.find((r: any) => r._id === id)).toMatchObject({ status: 'processing', error: null });
   });
   it('a step already queued or running is left alone', async () => {

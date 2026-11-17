@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt, changeTimes, withDefaults } from './captions.js';
+import { DEFAULT_STYLE, FONT_STACKS, group, retext, retime, addLine, split, merge, lineAt, activeWord, layout, draw, animAt, changeTimes, withDefaults, lineRtl, visualOrder } from './captions.js';
 
 const W = (t, s, e) => ({ t, s, e });
 const fakeCtx = new Proxy({ measureText: (s) => ({ width: s.length * 10 }) }, {
@@ -396,5 +396,27 @@ describe('animations', () => {
     const y = (ms) => calls(st('bounce'), ms).filter((x) => x[0] === 'translate')[2][2];
     expect(y(999)).toBe(y(1000 + 3 * D)); // the third word ('c', from 1000 ms) on the baseline before and after its hop
     expect(y(1000 + D)).toBeLessThan(y(999)); // raised while it hops
+  });
+});
+
+describe('right-to-left captions with English words', () => {
+  const W = (t) => ({ t, s: 0, e: 1 });
+  it('lineRtl follows the dominant script, not the first word', () => {
+    expect(lineRtl(['SpaceX', 'تمكن', 'ويطلعوا'].map(W))).toBe(true);
+    expect(lineRtl(['Hello', 'world', 'مرحبا'].map(W))).toBe(false);
+    expect(lineRtl(['12', '!'].map(W))).toBe(false);
+  });
+  it('an Arabic line draws right to left, an English run inside it keeps its order', () => {
+    const ws = ['أمريكا', 'Space', 'X', 'تمكن'].map(W);
+    // left to right on screen: تمكن | Space X | أمريكا
+    expect(visualOrder(ws, true).map((i) => ws[i].t)).toEqual(['تمكن', 'Space', 'X', 'أمريكا']);
+  });
+  it('numbers stay with the English run; punctuation between Arabic words stays Arabic', () => {
+    const ws = ['تحمل', '12', 'راكب', '-', 'فقط'].map(W);
+    expect(visualOrder(ws, true).map((i) => ws[i].t)).toEqual(['فقط', '-', 'راكب', '12', 'تحمل']);
+  });
+  it('an English line keeps an Arabic phrase in its own order', () => {
+    const ws = ['I', 'said', 'صباح', 'الخير', 'today'].map(W);
+    expect(visualOrder(ws, false).map((i) => ws[i].t)).toEqual(['I', 'said', 'الخير', 'صباح', 'today']);
   });
 });

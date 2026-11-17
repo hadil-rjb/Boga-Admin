@@ -6,7 +6,10 @@ export class NoAnthropicKey extends BadRequestException {
 }
 
 /** What the caption-style step needs from AiService (provided to JobsService as FOOTAGE_AI) */
-export type CaptionAi = { captionStyle(images: { media: string; data: string }[], sampled: { text: string | null; highlight: string | null }, actor: { id: string | null; name: string }, band?: [number, number]): Promise<{ style: Record<string, any>; model: string }> };
+export type CaptionAi = {
+  /** Claude's fixes for a transcript part (transcript-fix.ts); optional so older test doubles still fit */
+  transcriptFixes?(user: string): Promise<any>;
+  captionStyle(images: { media: string; data: string }[], sampled: { text: string | null; highlight: string | null }, actor: { id: string | null; name: string }, band?: [number, number]): Promise<{ style: Record<string, any>; model: string }> };
 export const FOOTAGE_AI = "FOOTAGE_AI";
 
 /** Subtitle style of a reference video: what the editor applies to the captions (shape of frontend/studio/captions.js DEFAULT_STYLE) */

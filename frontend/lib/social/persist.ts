@@ -138,7 +138,8 @@ const hash = (str: string) => {
 /* ---------- design revisions ---------- */
 /** "<brandId>|<designId>" → revision on the API */
 type Revs = Map<string, number>;
-type Conflict = { brandId: string; item: any; rev: number };
+/** A refused design: the API's version (`item`, `rev`) and the version this tab last synced (`base`, when known: the engine merges against it) */
+type Conflict = { brandId: string; item: any; rev: number; base?: any };
 /**
  * "<brandId>|<designId>" → writes sent since the revision the API last confirmed: their ids, the content
  * hash of the last one (`h`, a resumed copy claims the ids only when it holds that content) and when (`t`)
@@ -401,11 +402,15 @@ function createPersist() {
   function settle(out: { revs?: Record<string, number>; conflicts?: Conflict[] }, cur: Model) {
     // a confirmed revision includes every earlier write of this browser
     Object.entries(out.revs || {}).forEach(([k, r]) => (revs.set(k, r), forget(k)));
-    const conflicts = (out.conflicts || []).filter((c) => c && c.item && c.item.id);
+    const conflicts = (out.conflicts || []).filter((c) => c && c.item && c.item.id)
+      .map((c) => ({ ...c, base: base?.values.get(`d|${c.brandId}|${c.item.id}`)?.item }));
     conflicts.forEach((c) => {
+      const k = `d|${c.brandId}|${c.item.id}`;
       revs.set(`${c.brandId}|${c.item.id}`, c.rev);
       forget(`${c.brandId}|${c.item.id}`);
-      cur.items.set(`d|${c.brandId}|${c.item.id}`, hash(stable(c.item)));
+      // the API's version is the synced state now (its content too: the next conflict merges against it)
+      cur.items.set(k, hash(stable(c.item)));
+      cur.values.set(k, { brandId: c.brandId, item: c.item });
     });
     if (conflicts.length) onConflict?.(conflicts);
   }
@@ -529,7 +534,8 @@ function createPersist() {
           return local;
         }
         if (isWorkspace(workspace)) {
-          base = toModel(workspace);
+          // its own copy: the studio edits `workspace` in place, and the synced versions must stay as they were (merge base)
+          base = toModel(JSON.parse(JSON.stringify(workspace)));
           revs = serverRevs;
           sent = new Map(); // the API's revisions already include every write this tab made
           ls.set(CACHE, JSON.stringify(workspace));

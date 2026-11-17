@@ -1,5 +1,5 @@
 /** Pure crash-recovery decision over footage records (see JobsService.onModuleInit) */
-export const STEP_ORDER = ['probe', 'proxy', 'frames', 'transcribe', 'grade', 'caption-style'] as const;
+export const STEP_ORDER = ['probe', 'proxy', 'frames', 'clean', 'transcribe', 'grade', 'caption-style'] as const;
 export type Step = (typeof STEP_ORDER)[number];
 export const ASSEMBLING_STALE_MS = 10 * 60_000;
 
