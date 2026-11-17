@@ -5798,7 +5798,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   lstyle = function (l) {
     if (l && l.type === 'text' && l.font && !BUILTIN.has(l.font)) loadFont(l.font, l.weight);
     let st = _ls19(l);
-    if (l && l.bbl > 0 && l.type !== 'text') st += `backdrop-filter:blur(${l.bbl}px);-webkit-backdrop-filter:blur(${l.bbl}px);`; // background blur (frosted glass)
+    if (l && l.bbl > 0 && l.type !== 'text') {
+      st += `backdrop-filter:blur(${l.bbl}px);-webkit-backdrop-filter:blur(${l.bbl}px);`; // background blur (frosted glass)
+      // a vector's glass: the blur shows inside its outline, not its whole box (unless a frame already clips the layer)
+      if (l.type === 'path' && !/clip-path:/.test(st)) { const d = PATH.toD(pathSegs(l)); if (d) st += `clip-path:path(${l.fr === 'evenodd' ? 'evenodd,' : ''}'${d}');`; }
+    }
     return st;
   };
 
@@ -11810,7 +11814,12 @@ function clipCss(l, frames) {
   function shapePath(ctx, l, ls, s) {
     const cx = (l.x + l.w / 2 + ls.tx) * s, cy = (l.y + l.h / 2 + ls.ty) * s, w = l.w * s, h = l.h * s, r = Math.min(Math.max(0, +l.r || 0) * s, w / 2, h / 2);
     ctx.translate(cx, cy); ctx.rotate((((l.rot || 0) + ls.r) * Math.PI) / 180); ctx.scale(ls.s, ls.s);
+    if (l.type === 'path') { // a vector: its outline (layer px, scaled to the export)
+      const d = PATH.toD(pathSegs(l));
+      if (d && typeof Path2D === 'function') { ctx.translate(-w / 2, -h / 2); ctx.scale(s, s); return new Path2D(d); }
+    }
     const rs = radiiOf(l); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-w / 2, -h / 2, w, h, rs ? rs.map((v) => Math.min(v * s, w / 2, h / 2)) : r) : ctx.rect(-w / 2, -h / 2, w, h);
+    return null;
   }
   /** Canvases reused from frame to frame: one per scene drawn, and one for the background-blur snapshot */
   const PAD = new Map();
@@ -11825,7 +11834,7 @@ function clipCss(l, frames) {
       const l = it.l, cx = (l.x + l.w / 2) * s, cy = (l.y + l.h / 2) * s;
       if (it.bbl) { // frosted glass: what is under the layer, blurred, inside its shape
         const snap = pad('snap', cw, ch), sg = snap.getContext('2d'); sg.clearRect(0, 0, cw, ch); sg.drawImage(c, 0, 0);
-        g.save(); g.globalAlpha = ls.o; shapePath(g, l, ls, s); g.clip(); g.setTransform(1, 0, 0, 1, 0, 0);
+        g.save(); g.globalAlpha = ls.o; const sp = shapePath(g, l, ls, s); if (sp) g.clip(sp, l.fr === 'evenodd' ? 'evenodd' : 'nonzero'); else g.clip(); g.setTransform(1, 0, 0, 1, 0, 0);
         g.filter = `blur(${(it.bbl * s).toFixed(1)}px)`; g.drawImage(snap, 0, 0); g.restore();
       }
       g.save(); g.globalAlpha = ls.o; g.globalCompositeOperation = it.blend;

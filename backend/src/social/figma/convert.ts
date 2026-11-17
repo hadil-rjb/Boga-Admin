@@ -79,8 +79,16 @@ function paintCss(p: any, w: number, h: number): string | null {
     case "SOLID": return rgba(p.color, op);
     case "GRADIENT_LINEAR": {
       const [a, b] = p.gradientHandlePositions || [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }];
-      const deg = (Math.atan2((b.y - a.y) * h, (b.x - a.x) * w) * 180) / Math.PI + 90;
-      return `linear-gradient(${r1(deg)}deg, ${stops()})`;
+      const dx = (b.x - a.x) * w, dy = (b.y - a.y) * h, len = Math.hypot(dx, dy);
+      const deg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+      // Figma's gradient runs from handle a to handle b; CSS's runs across the whole box along the angle, through its
+      // center: the stops move to where the handles fall on CSS's line (a gradient between handles stays between them)
+      if (len < 1e-6) return `linear-gradient(${r1(deg)}deg, ${stops()})`;
+      const ux = dx / len, uy = dy / len, L = Math.abs(w * ux) + Math.abs(h * uy) || 1;
+      const at = (q: { x: number; y: number }) => ((q.x - 0.5) * w * ux + (q.y - 0.5) * h * uy) / L + 0.5;
+      const t0 = at(a), t1 = at(b);
+      const list = (p.gradientStops || []).map((s: any) => `${rgba(s.color, op)} ${r1((t0 + s.position * (t1 - t0)) * 100)}%`).join(", ");
+      return `linear-gradient(${r1(deg)}deg, ${list})`;
     }
     case "GRADIENT_RADIAL":
     case "GRADIENT_DIAMOND": {
@@ -266,7 +274,8 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     if (fx.some(grain) && kind === "box" && fx.some((e: any) => e.type === "BACKGROUND_BLUR")) { fx = fx.filter((e: any) => !grain(e)); warn.add("Noise and texture effects were left out"); }
     const blurs = fx.filter((e: any) => e.type === "LAYER_BLUR"), bgs = fx.filter((e: any) => e.type === "BACKGROUND_BLUR");
     const shadows = fx.filter((e: any) => e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW");
-    let ok = blurs.length <= 1 && bgs.length <= (kind === "box" ? 1 : 0) && shadows.length + blurs.length + bgs.length === fx.length;
+    // vectors frost what is behind them inside their outline (the studio clips their blur to the path); text can't
+    let ok = blurs.length <= 1 && bgs.length <= (kind === "text" ? 0 : 1) && shadows.length + blurs.length + bgs.length === fx.length;
     // Figma lists effects bottom first; the studio's lists are top first
     const list = [...shadows].reverse().flatMap((e: any) => {
       const inner = e.type === "INNER_SHADOW";
@@ -282,7 +291,7 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     }
     if (list.length) out.fxs = list.map(({ s, ...e }) => (s ? { ...e, s } : e));
     if (blurs[0]) out.bl = r1(((blurs[0].radius || 0) * k) / 2);
-    if (bgs[0] && kind === "box") out.bbl = r1(((bgs[0].radius || 0) * k) / 2); // frosted glass: blurs what is behind the layer
+    if (bgs[0] && kind !== "text") out.bbl = r1(((bgs[0].radius || 0) * k) / 2); // frosted glass: blurs what is behind the layer
     return { ok, props: out };
   };
 
@@ -666,8 +675,11 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     for (const c of kids) {
       if (!c.isMask) { walk(c, m, par, cclip); continue; }
       if (c.visible === false) continue;
-      // the mask's alpha is its fill (an outline mask: its shape, painted opaque); strokes and effects don't mask
-      const outline = c.maskType === "VECTOR" || !visiblePaints(c.fills).length;
+      // the mask's alpha is its fill (an outline mask: its shape, painted opaque); strokes and effects don't mask.
+      // Figma masks with what the layer paints: a background blur fills the whole shape (the blurred backdrop), so a
+      // see-through glass shape masks like its outline
+      const glass = (c.effects || []).some((e: any) => e.visible !== false && e.type === "BACKGROUND_BLUR" && (e.radius || 0) > 0);
+      const outline = c.maskType === "VECTOR" || !visiblePaints(c.fills).length || (c.maskType !== "LUMINANCE" && glass);
       const node = { ...c, isMask: false, effects: [], strokes: [], ...(outline ? { fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1, a: 1 } }] } : {}) };
       const from = layers.length;
       walk(node, m, par, undefined);
