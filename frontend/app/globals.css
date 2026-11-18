@@ -17,6 +17,7 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "../styles/base.css";
 @import "../styles/studio.css";
+@import "../styles/canvas.css";
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "../styles/tokens.css";
 /* Tailwind's reset, for the Blog Admin only: the studio was designed on browser defaults.

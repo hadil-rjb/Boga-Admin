@@ -45,6 +45,7 @@ import { installCaptionPanels, captionsOn, captionFrame, toggleCaptions } from '
 import { installCaptionInspector } from './caption-inspector.js';
 import { SIZES as V_SIZES, resizePage as vResize, swapTheme as vTheme, themeOf as vThemeOf, langOf as vLangOf, textsToTranslate as vTexts, swapLanguage as vLanguage, versionName as vName, lumOf as vLum, mergeLook as vMergeLook } from './variants.js';
 import { draw as drawCaptionLines, DEFAULT_STYLE as CAPTION_STYLE } from './captions.js';
+import { installCanvas } from './canvas.js';
 
 let mounted = null; // destroy() of the running instance
 
@@ -115,6 +116,7 @@ let LIVE = null;
 let FEEDS = null;
 let IMPORT_FILE = null; // importDesign(file): an image, SVG or HTML file becomes layers of the open design (set by the live-data block), for the top bar's Import menu
 let AGAPI = null; // the Studio Agent's models and loop, for the Overview's prompt box (set by the v25 block)
+let GENERATE = null; // generate({ text, note, ratio, slides, name, layers, post }): a new design built by the Studio Agent (set by the prompt box block, used by the Creative Canvas)
 let PLAN = null; // the planner's helpers (connected networks, best times, next free slot), for the agent's planning tools (set by the planner block)
 let AUTOS = null; // the brand's automations and their dialog, for the agent's planning tools (set by the v26 block)
 /** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
@@ -683,7 +685,19 @@ $('#scrim').addEventListener('click', () => { $('#side').classList.remove('open'
 
 /* ---------- Router ---------- */
 const PAGES = {};
+/** The active brand's main color as CSS variables, for brand-tinted controls (--brand; --brand-d stays visible on the dark theme) */
+function brandVars() {
+  try {
+    const hex = ((brand().colors || [])[0] || {}).hex || '', m = /^#([0-9a-f]{6})$/i.exec(hex), root = document.documentElement;
+    if (!m) { root.style.removeProperty('--brand'); root.style.removeProperty('--brand-d'); return; }
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)), lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const lift = (v) => Math.round(v + (255 - v) * 0.45).toString(16).padStart(2, '0');
+    root.style.setProperty('--brand', hex);
+    root.style.setProperty('--brand-d', lum < 0.35 ? '#' + lift(r) + lift(g) + lift(b) : hex);
+  } catch (e) {}
+}
 function route() {
+  brandVars();
   const [, page = 'overview', arg] = location.hash.slice(1).split('/');
   if (page === 'editor') { document.body.classList.add('in-editor'); $('#editor').hidden = false; return openEditor(arg); }
   document.body.classList.remove('in-editor'); $('#editor').hidden = true; $('#editor').innerHTML = '';
@@ -9037,9 +9051,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       </div>
     </article>`;
   }
+  /** Ready-made automations as cards (compact: the "Add another" row under the list). The last card starts from one of the brand's designs. */
+  const PRE_C = { cal: '#2563eb', doc: '#ea580c', trend: '#d97706', chart: '#16a34a' };
   function presetCards(compact) {
+    const own = `<button class="au-pre au-own" data-act="auNew"><span class="au-pi" style="--pc:var(--text-2)">${ic('layout', 18)}</span><span class="au-pb"><b>From one of my designs</b>${compact ? '' : '<em>Any design you made, on the rhythm you choose.</em>'}</span>${compact ? ic('plus', 16) : `<span class="au-go">Choose a design ${ic('chevR', 14)}</span>`}</button>`;
     return `<div class="au-presets ${compact ? 'compact' : ''}">${PRESETS.map((p) => `<button class="au-pre" data-act="auPreset" data-k="${p.k}">
-      <span class="au-pi">${ic(p.icon, 18)}</span><span class="grow"><b>${esc(p.t)}</b><small>${esc(rhythm(p.cadence))}</small>${compact ? '' : `<em>${esc(p.d)}</em>`}</span>${ic('plus', 16)}</button>`).join('')}</div>`;
+      <span class="au-pi" style="--pc:${PRE_C[p.icon] || 'var(--accent)'}">${ic(p.icon, 18)}</span><span class="au-pb"><b>${esc(p.t)}</b><small class="au-when">${ic('clock', 12)}${esc(rhythm(p.cadence))}</small>${compact ? '' : `<em>${esc(p.d)}</em>`}</span>${compact ? ic('plus', 16) : `<span class="au-go">Set up ${ic('chevR', 14)}</span>`}</button>`).join('')}${own}</div>`;
   }
   function upcoming(list) {
     const rows = list.filter((a) => a.active).flatMap((a) => (a.next || []).map((n) => ({ a, ...n }))).sort((x, y) => x.at.localeCompare(y.at)).slice(0, 6);
@@ -9056,9 +9073,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!list) { load(); return `<div class="au-wrap"><div class="au-list">${[0, 1].map(() => '<div class="skel" style="height:140px;border-radius:16px"></div>').join('')}</div></div>`; }
       const warn = AU.server && AU.server.render === false ? `<div class="note warn">${ic('alert', 16)}<span>This server can’t render posts (SOCIAL_LIVE_RENDER is off), so automations won’t publish. Ask your administrator to turn it on.</span></div>` : '';
       const err = AU.err ? `<div class="note warn">${ic('alert', 16)}<span>Couldn’t load the automations: ${esc(AU.err)}</span></div>` : '';
-      if (!list.length) return `${warn}${err}<div class="au-empty"><span class="au-orb">${ic('refresh', 26)}</span><h2>Put your posting on autopilot</h2>
-        <p>Pick a ready-made automation or start from one of your designs. Each post is filled with fresh data just before it goes out.</p>${presetCards(false)}
-        <button class="btn secondary" data-act="auNew">${ic('layout', 16)}Start from one of my designs</button></div>`;
+      // empty: how it works in three steps, then the ways to start (same layout as the Studio and Canvas pages)
+      const step = (n, t, d) => `<li><span class="au-sn">${n}</span><span><b>${t}</b><small>${d}</small></span></li>`;
+      if (!list.length) return `${warn}${err}<ol class="au-how">${step(1, 'Pick a design', 'A ready-made one below, or your own')}${step(2, 'Choose when', 'Every day, weekdays or chosen days')}${step(3, 'It posts by itself', 'Fresh data just before it goes out')}</ol>
+        <div class="au-sec"><h2 class="au-h2">Start an automation</h2>${presetCards(false)}</div>`;
       const nt = NOTION && NOTION.state(), tip = nt && !NOTION.ready() ? `<div class="au-tip"><span class="nt-logo sm">N</span><span class="grow">Want these in <b>Notion Calendar</b>? Connect Notion and every automation post shows up there too.</span><button class="btn secondary sm" data-act="ntGo">${nt.connected ? 'Choose the database' : 'Connect Notion'}</button></div>` : '';
       return `${warn}${err}${tip}<div class="au-wrap"><div class="au-list">${list.map(card).join('')}
         <div class="au-more"><span>Add another</span>${presetCards(true)}</div></div>${upcoming(list)}</div>`;
@@ -12855,6 +12873,20 @@ installCardPreview({ getD, reel: (...a) => RT.moCardPlay(...a), videoUrl: (d) =>
     HP.pending = { id: d.id, text, note: promptNote(HP.size), refs: HP.refs }; HP.text = ''; HP.open = ''; HP.refs = [];
     location.hash = '#/editor/' + d.id;
   }
+  /* Creative Canvas → "Generate design": a new design (optionally holding the board's photos), opened on the Agent tab with the request */
+  GENERATE = async ({ text, note, ratio, slides = 1, name, layers, post }) => {
+    if (!canEdit()) return false;
+    if (!AGAPI.list()) await AGAPI.load();
+    if (!AGAPI.current()) { toast('Add a Claude or Groq key in Settings → AI to create with AI'); return false; }
+    const d = createDesign({ name: name || promptName(text), ratio: ensureRatio(ratio || brand().defaultRatio || '4:5'), slides,
+      mutate: (x) => { if (layers) x.pages[0].layers.push(...layers); } });
+    d.source = 'Canvas';
+    if (post) S.posts.push({ id: 'p' + uid(), d: d.id, ...post });
+    save();
+    HP.pending = { id: d.id, text, note, refs: [] };
+    location.hash = '#/editor/' + d.id;
+    return d;
+  };
   Object.assign(ACT, {
     hpSend: send,
     hpAttach: () => pickPictures(addPics),
@@ -13282,10 +13314,17 @@ document.addEventListener('pointerdown', (e) => {
   if (ED.d && !ED.d.vOf && !SIG.has(ED.d.id)) SIG.set(ED.d.id, sigOf(ED.d));
 })();
 
+/* ============ Creative Canvas: infinite boards of ideas, turned into designs and drafts (canvas.js) ============ */
+const CANVAS = installCanvas({ S, NAV, PAGES, ACT, api, ic, esc, toast, modal, brand, createDesign, persist, schedTz, nowIn, thumb, user, generate: (o) => GENERATE(o),
+  save: () => save(), route: () => route(), scope: runtime.scope });
+renderSide(); if (/^#\/canvas/.test(location.hash)) route();
+
 /* ============ unmount ============ */
 const destroy = () => {
   if (mounted !== destroy) return;
   mounted = null;
+  document.documentElement.style.removeProperty('--brand'); document.documentElement.style.removeProperty('--brand-d');
+  CANVAS.leave(); // sends a board's last edits
   persist.onConflict(undefined);
   persist.dispose();
   runtime.destroy();

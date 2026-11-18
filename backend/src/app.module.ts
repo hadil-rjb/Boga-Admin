@@ -11,6 +11,7 @@ import { FramerModule } from "./framer/framer.module";
 import { MediaModule } from "./media/media.module";
 import { SocialModule } from "./social/social.module";
 import { FootageModule } from "./footage/footage.module";
+import { CanvasModule } from "./canvas/canvas.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 
 @Module({
@@ -29,6 +30,7 @@ import { JwtAuthGuard } from "./auth/jwt-auth.guard";
     FramerModule,
     SocialModule,
     FootageModule,
+    CanvasModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }], // tout est protégé sauf @Public()
 })
