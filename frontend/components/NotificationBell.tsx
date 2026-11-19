@@ -5,12 +5,16 @@ import Icon, { IconKey } from "./Icon";
 import { IconBtn, btn } from "./ui";
 import { useData } from "@/lib/data";
 import { ago, checks, today } from "@/lib/seo";
+import { api } from "@/lib/api";
 
-type N = { id: string; k: "seo" | "editorial" | "gsc"; t: string; d: string; href: string };
+type N = { id: string; k: "seo" | "editorial" | "gsc" | "gscUp" | "gscDown"; t: string; d: string; href: string };
+type Monitor = { week: { start: string; end: string } | null; alerts: { id: string; tone: "pos" | "neg"; text: string; href: string }[] };
 const KIND: Record<N["k"], { icon: IconKey; cls: string }> = {
   seo: { icon: "alert", cls: "bg-negative-bg text-negative" },
   editorial: { icon: "cal", cls: "bg-accent/[.08] text-accent" },
   gsc: { icon: "search", cls: "bg-pill text-text-2" },
+  gscUp: { icon: "trendUp", cls: "bg-positive-bg text-positive" },
+  gscDown: { icon: "trendDown", cls: "bg-negative-bg text-negative" },
 };
 const KEY = "uxb.r";
 const readIds = (): string[] => { try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch { return []; } };
@@ -24,6 +28,10 @@ export default function NotificationBell() {
   const [rd, setRd] = useState<string[]>([]);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => setRd(readIds()), []);
+  // weekly Search Console alerts (last week compared with the week before), computed by the API
+  const [mon, setMon] = useState<Monitor | null>(null);
+  const gscOn = gsc.connected && user.notifications?.gsc !== false && user.role !== "link";
+  useEffect(() => { if (!gscOn) { setMon(null); return; } api<Monitor>("/gsc/monitor").then(setMon).catch(() => setMon(null)); }, [gscOn]);
   useEffect(() => {
     if (!open) return;
     const d = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
@@ -48,9 +56,13 @@ export default function NotificationBell() {
       const c = A.filter((a) => !checks(a)[i][1]).length;
       if (c) L.push({ id: k + c, k: "seo", t: `${c} ${x}`, d: "SEO", href: `/articles?issue=${k}` });
     });
+    if (on("gsc") && mon?.week) {
+      const wk = "Search Console · week to " + new Date(mon.week.end + "T00:00:00").toLocaleDateString("en", { month: "short", day: "numeric" });
+      mon.alerts.forEach((a) => L.push({ id: "w" + a.id, k: a.tone === "pos" ? "gscUp" : "gscDown", t: a.text, d: wk, href: a.href }));
+    }
     if (on("gsc") && !gsc.connected) L.push({ id: "gsc", k: "gsc", t: "Search Console is not connected — no performance data yet", d: "Search Console", href: "/settings?s=gsc" });
     return L;
-  }, [A, gsc.connected, user.notifications]);
+  }, [A, gsc.connected, user.notifications, mon]);
 
   const unread = list.filter((n) => !rd.includes(n.id));
   const view = tab === "unread" ? unread : list;

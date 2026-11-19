@@ -1,8 +1,9 @@
 "use client";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Tabs, btn } from "@/components/ui";
+import Opportunities from "@/components/Opportunities";
 import { Pager, Sort, Sub, Table, TableCard, Td, Th, Ttl, cmp, pageCls } from "@/components/table";
 import { useData, usePerf } from "@/lib/data";
 import { fmtCtr, fmtN, fmtPos } from "@/lib/seo";
@@ -10,10 +11,13 @@ import { fmtCtr, fmtN, fmtPos } from "@/lib/seo";
 const DAYS = [7, 28, 90];
 const noHost = (u: string) => u.replace(/^https?:\/\/[^/]+/, "");
 
-export default function SearchPage() {
+export default function Page() { return <Suspense><SearchPage /></Suspense>; }
+
+function SearchPage() {
   const { gsc, articles } = useData();
   const router = useRouter();
-  const [days, setDays] = useState(28), [kind, setKind] = useState(0), [page, setPage] = useState(1);
+  const sp = useSearchParams();
+  const [days, setDays] = useState(28), [kind, setKind] = useState(sp.get("tab") === "opportunities" ? 2 : 0), [page, setPage] = useState(1);
   const [sort, setSort] = useState<Sort>({ k: "clicks", d: -1 });
   const { data: p } = usePerf(days);
   const pages = kind === 1;
@@ -39,7 +43,8 @@ export default function SearchPage() {
         {!gsc.connected && <Link href="/settings?s=gsc" className={btn("secondary")}>Connect Search Console</Link>}
       </div>
       <div className="grid grid-cols-4 gap-2 max-[560px]:grid-cols-2">{kp("Clicks", fmtN(T.clicks))}{kp("Impressions", fmtN(T.impressions))}{kp("Avg CTR", fmtCtr(T.impressions ? T.clicks / T.impressions : 0))}{kp("Avg position", fmtPos(T.position))}</div>
-      <TableCard head={<div className="w-[260px] max-w-full"><Tabs items={["Queries", "Pages"]} active={kind} onChange={(i) => { setKind(i); setPage(1); }} /></div>}>
+      <TableCard head={<div className="w-[360px] max-w-full"><Tabs items={["Queries", "Pages", "Opportunities"]} active={kind} onChange={(i) => { setKind(i); setPage(1); router.replace(i === 2 ? "/search?tab=opportunities" : "/search", { scroll: false }); }} /></div>}>
+        {kind === 2 ? <Opportunities days={days === 90 ? 90 : 28} /> : <>
         {gsc.connected ? (
           <Table>
             <thead><tr>{th("k", pages ? "Article" : "Query")}{th("clicks", "Clicks", "", true)}{th("imp", "Impr.", "max-[640px]:hidden", true)}{th("ctr", "CTR", "max-[640px]:hidden", true)}{th("pos", "Position", "", true)}</tr></thead>
@@ -54,6 +59,7 @@ export default function SearchPage() {
           </Table>
         ) : <p className="px-5 py-10 text-center text-xs text-text-3">Connect Search Console in Settings to see real clicks, queries and pages.</p>}
         <Pager total={rows.length} page={page} onPage={setPage} />
+        </>}
       </TableCard>
     </div>
   );

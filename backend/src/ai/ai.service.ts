@@ -9,9 +9,11 @@ import { GscService } from "../gsc/gsc.service";
 import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
-import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto } from "./dto/ai.dto";
+import { AgentStepDto, FixArticleDto, GenerateIdeasDto, ReviewArticleDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto } from "./dto/ai.dto";
 import { AgentCall, agentSystemPrompt, cleanMessages, toAnthropic, toOpenAi, toolsFor } from "./agent";
 import { cleanHtml, words } from "./html";
+import { fixPrompt, parseFix } from "./article-fix";
+import { parseReview, precheck, reviewPrompt } from "./accuracy";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
 import { hfImageModels, hfWhoami } from "./hf";
@@ -485,6 +487,36 @@ ${related.map(a => `${clip(a.title, 80)} — ${a.slug}`).join("\n") || "none"}`;
       return { ...art.toObject(), words: words(html) };
     } finally { this.busy.delete(id); }
   }
+  /* ───────────── « Fix with AI » dans l'éditeur d'article ───────────── */
+  /** Proposes fixes for the failing SEO checks (and an optional proofread) of the article being edited. Nothing is saved: the editor shows the changes for review. */
+  async fixArticle(d: FixArticleDto, actor: Actor) {
+    this.throttle(actor.id ?? "anon");
+    const s = await this.load();
+    const all = await this.articles.find({ slug: { $ne: d.slug } }).select("title slug cat").lean();
+    const related = [...all.filter(a => a.cat === d.cat), ...all.filter(a => a.cat !== d.cat)].slice(0, 25);
+    const p = fixPrompt(d, { brand: BRAND, language: s.language, brief: s.brief, related });
+    if (!p.asks) return { changes: {}, notes: [], issues: [] };
+    const { text, model } = await this.complete(p.system, p.user, { maxTokens: p.maxTokens, feature: d.mode === "refresh" || d.mode === "snippet" ? "Content refresh" : "Article fixes" });
+    const out = parseFix(parseBlocks(text), d, new Set(all.map(a => a.slug)));
+    if (!Object.keys(out.changes).length && !out.notes.length) throw new BadGatewayException("The AI did not return usable fixes. Please try again.");
+    return { ...out, model };
+  }
+
+  /* ───────────── Accuracy review in the editor ───────────── */
+  /** Flags claims that need a source or more care. Rule-based flags always come back; the AI pass is added when a provider is set up. Nothing is changed or saved here. */
+  async reviewArticle(d: ReviewArticleDto, actor: Actor) {
+    const pre = precheck(d.html);
+    let s;
+    try { s = await this.load(); this.throttle(actor.id ?? "anon"); }
+    catch (e: any) { return { flags: pre, ai: false, note: e?.message || "AI review unavailable" }; }
+    const p = reviewPrompt({ title: d.title, html: d.html, brand: BRAND, language: s.language, pre });
+    try {
+      const { text, model } = await this.complete(p.system, p.user, { maxTokens: p.maxTokens, json: true, feature: "Accuracy review" });
+      let j: unknown = null; try { j = parseJson(text); } catch { /* the rule flags below still come back */ }
+      return { flags: parseReview(j, d.html, pre), ai: j !== null, model, ...(j === null && { note: "The AI answer could not be read: only the rule-based checks are shown." }) };
+    } catch (e: any) { return { flags: pre, ai: false, note: e?.message || "AI review unavailable" }; }
+  }
+
   /* ───────────── Style des couvertures + prompt de cover ───────────── */
   /** Analyse les dernières couvertures (vision) et en tire un guide de style réutilisable */
   async analyzeCoverStyle() {

@@ -1,7 +1,7 @@
 import {
   ArrowRight, ArrowUpRight, CalendarPlus, Inbox, ShieldCheck, TrendingDown, TrendingUp, CalendarCheck, FileCheck, FileChartColumn, PenLine, Bell, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleCheck, Clock, Copy, Database, Download,
   ExternalLink, Eye, FileText, Globe, History, Image as ImageIcon, LayoutDashboard, Link2, Lock, LogOut, Mail, Menu, MessageSquare, Monitor, Moon, Palette,
-  Pencil, Plus, Search, Settings, Smartphone, Sparkles, Sun, Tablet, Trash2, TriangleAlert, Upload, User, Users, X, type LucideIcon,
+  Pencil, Plus, ListFilter, PanelRight, Grid2x2, Search, Settings, Smartphone, Sparkles, Sun, Tablet, Trash2, TriangleAlert, Upload, User, Users, X, type LucideIcon,
 } from "lucide-react";
 
 /** Jeu d'icônes SVG unique (Lucide) — toutes les icônes de l'app passent par ici */
@@ -13,6 +13,7 @@ const ICONS = {
   calCheck: CalendarCheck, fileCheck: FileCheck, chart: FileChartColumn, penLine: PenLine,
   calPlus: CalendarPlus, inbox: Inbox, shield: ShieldCheck, trendDown: TrendingDown, trendUp: TrendingUp,
   palette: Palette, database: Database, mail: Mail, clock: Clock, eye: Eye,
+  filter: ListFilter, panelR: PanelRight, tbl: Grid2x2,
 } satisfies Record<string, LucideIcon>;
 
 export type IconKey = keyof typeof ICONS;

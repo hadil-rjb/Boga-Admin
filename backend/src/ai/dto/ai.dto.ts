@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateNested } from "class-validator";
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateNested } from "class-validator";
 
 const MODEL = /^[\w.\-:\/]+$/;
 export class UpdateAiSettingsDto {
@@ -16,6 +16,34 @@ export class UpdateAiSettingsDto {
   @IsOptional() @IsString() @MaxLength(2000) brief?: string;
   @IsOptional() @IsString() @MaxLength(40) language?: string;
   @IsOptional() @IsString() @MaxLength(2500) coverStyle?: string;
+}
+export class FixArticleDto {
+  @IsString() @MinLength(1) @MaxLength(200) title: string;
+  @IsString() @MaxLength(200) slug: string;
+  @IsOptional() @IsString() @MaxLength(400) meta?: string;
+  @IsOptional() @IsString() @MaxLength(400) sub?: string;
+  @IsOptional() @IsString() @MaxLength(300) alt?: string;
+  @IsOptional() @IsString() @MaxLength(3_000_000) img?: string;
+  @IsOptional() @IsString() @MaxLength(80) cat?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(5) @IsString({ each: true }) t?: string[];
+  @IsOptional() @IsString() @MaxLength(60_000) html?: string;
+  @IsOptional() @IsString() @MaxLength(20) status?: string;
+  @IsOptional() @IsBoolean() proofread?: boolean;
+  /** "fix" (default): the failing checks; "refresh": rework title, meta and content around the page's real queries; "snippet": title and meta only, for more clicks */
+  @IsOptional() @IsIn(["fix", "refresh", "snippet"]) mode?: "fix" | "refresh" | "snippet";
+  @IsOptional() @IsString() @MaxLength(120) focus?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => SearchQueryDto) queries?: SearchQueryDto[];
+}
+export class ReviewArticleDto {
+  @IsString() @MinLength(1) @MaxLength(200) title: string;
+  @IsString() @MinLength(1) @MaxLength(60_000) html: string;
+}
+/** One real Search Console query of the page being refreshed */
+export class SearchQueryDto {
+  @IsString() @MinLength(1) @MaxLength(120) query: string;
+  @IsNumber() @Min(0) clicks: number;
+  @IsNumber() @Min(0) impressions: number;
+  @IsNumber() @Min(0) position: number;
 }
 export class CoverPromptDto {
   @IsString() @MinLength(1) @MaxLength(200) title: string;

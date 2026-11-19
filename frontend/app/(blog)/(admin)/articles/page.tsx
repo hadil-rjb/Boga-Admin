@@ -3,6 +3,7 @@ import Select from "@/components/Select";
 import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import ArticleDrawer from "@/components/ArticleDrawer";
+import ImportArticlesDialog from "@/components/ImportArticlesDialog";
 import Icon from "@/components/Icon";
 import { PillBtn } from "@/components/ui";
 import { Pager, Sort, StatusBadge, Sub, Table, TableCard, Td, Th, Ttl, cmp, fieldCls, pageCls } from "@/components/table";
@@ -18,7 +19,9 @@ const IX: Record<string, number> = Object.fromEntries(ISSUES.map(([k, , i]) => [
 const fd = (d: string) => (d ? new Date(d + "T00:00:00").toLocaleDateString("en", { month: "short", day: "2-digit", year: "numeric" }) : "—");
 
 function Articles() {
-  const { articles: A } = useData();
+  const { articles: A, user } = useData();
+  const canEdit = user.role === "admin" || user.role === "editor";
+  const [importing, setImporting] = useState(false);
   const router = useRouter();
   const sp = useSearchParams();
   const [q, setQ] = useState(""), [st, setSt] = useState(sp.get("status") || ""), [cat, setCat] = useState("");
@@ -58,6 +61,7 @@ function Articles() {
           <option value="any">All issues ({anyIssue})</option>
           {ISSUES.map(([k, l, i]) => <option key={k} value={k}>{l} ({issueCount(i)})</option>)}
         </Select>
+        {canEdit && <PillBtn onClick={() => setImporting(true)}><Icon k="upload" />Import</PillBtn>}
         <PillBtn onClick={() => exportArticlesCsv(A)}><Icon k="download" />Export CSV</PillBtn>
       </div>
       <TableCard head={<span className="text-xs text-text-3">{list.length} article{list.length === 1 ? "" : "s"} · sorted by {SL[sort.k]} {sort.d > 0 ? "↑" : "↓"}</span>}>
@@ -83,7 +87,8 @@ function Articles() {
         </Table>
         <Pager total={list.length} page={page} onPage={setPage} />
       </TableCard>
-      {(edit || isNew) && <ArticleDrawer key={edit || "new"} slug={edit} date={nd} onClose={closeDrawer} />}
+      {importing && <ImportArticlesDialog onClose={() => setImporting(false)} />}
+      {(edit || isNew) && <ArticleDrawer key={edit || "new"} slug={edit} date={nd} onClose={closeDrawer} refresh={sp.get("refresh") === "snippet" ? "snippet" : sp.get("refresh") ? "refresh" : undefined} focus={sp.get("q") || undefined} />}
     </div>
   );
 }

@@ -19,7 +19,7 @@ import { useArticleDrawer } from "@/components/ArticleDrawerHost";
 const BT: Record<string, string> = { overview: "Chatbot Overview", conversations: "Conversations", knowledge: "Knowledge base", settings: "Chatbot Settings" };
 const T: Record<string, [string, string]> = {
   "/articles": ["Articles", "Write, optimize and publish your blog content."],
-  "/calendar": ["Editorial Calendar", "Plan what goes live and when."],
+  "/calendar": ["Editorial Calendar", "Plan what goes live and when. Drag an article to another day to reschedule it."],
   "/search": ["Search Console", "How your blog articles perform on Google."],
   "/settings": ["Settings", "Integrations and data."],
   "/profile": ["Profile", "Manage your account and notification preferences."],
