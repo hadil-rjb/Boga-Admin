@@ -2860,12 +2860,28 @@ function tplEditBar() {
  * time), its pictures hosted, and saved to the brand with its category and versions. The agent then finds them.
  */
 const FL_RASTER = /data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+/g;
+/** The server is away (it restarted, often out of memory on a small plan): no answer at all, or a gateway error */
+const serverAway = (e) => !!e && (e.status === 0 || [502, 503, 504].includes(e.status));
+/**
+ * Runs a request again while the server is away: it waits 5, 10, 20, 30 then 45 seconds (onWait says so), and gives up
+ * after that. Any other error is thrown at once. A burst of requests during a restart would only fail and slow it down.
+ */
+async function whenBack(fn, onWait = () => {}, stopped = () => false) {
+  const waits = [5, 10, 20, 30, 45];
+  for (let k = 0; ; k++) {
+    try { return await fn(); }
+    catch (e) {
+      if (!serverAway(e) || k >= waits.length || stopped()) throw e;
+      onWait(waits[k]); await new Promise((r) => setTimeout(r, waits[k] * 1000));
+    }
+  }
+}
 /** Pictures go to the media store before a template is saved: a template with eight photo versions would not fit in one record */
-async function hostTemplateImages(body) {
+async function hostTemplateImages(body, onWait, stopped) {
   let json = JSON.stringify(body);
   const urls = [...new Set(json.match(FL_RASTER) || [])].filter((u) => u.length > 2048);
   for (const u of urls) {
-    const r = await api('/media/assets', { method: 'POST', body: { dataUrl: u } });
+    const r = await whenBack(() => api('/media/assets', { method: 'POST', body: { dataUrl: u } }), onWait, stopped);
     if (r && r.url) json = json.split(u).join(String(r.url));
   }
   return JSON.parse(json);
@@ -2925,13 +2941,14 @@ function openFigmaLibrary() {
         if (st.step === 'importing') {
           const p = st.prog;
           el.innerHTML = `${head('Importing templates…')}<div class="mb"><div class="fl-prog"><div style="width:${Math.round((p.done / Math.max(1, p.total)) * 100)}%"></div></div>
-            <p class="sm-t"><b>${p.done}</b> of ${p.total} frames · ${st.made} template${st.made === 1 ? '' : 's'} saved</p><p class="xs-t muted">Now: ${esc(p.cur || '')}</p></div>
+            <p class="sm-t"><b>${p.done}</b> of ${p.total} frames · ${st.made} template${st.made === 1 ? '' : 's'} saved</p><p class="xs-t muted">Now: ${esc(p.cur || '')}</p>
+            ${p.wait ? `<div class="note warn">${ic('alert', 16)}<span>The server stopped answering (it is probably restarting). Trying again in ${p.wait} s: the import goes on by itself.</span></div>` : ''}</div>
             <div class="mf"><button class="btn secondary" id="flStop" ${st.stop ? 'disabled' : ''}>${st.stop ? 'Stopping after this template…' : 'Stop'}</button></div>`;
           return;
         }
         if (st.step === 'done') {
-          el.innerHTML = `${head(st.made ? 'Templates imported' : 'Nothing was imported')}
-            <div class="mb"><p class="sm-t">${st.made} template${st.made === 1 ? '' : 's'} saved to <b>${esc(b.name)}</b>, filed by category. The agent uses them too: ask it for “a Q&amp;A post in blue”.</p>
+          el.innerHTML = `${head(st.down ? 'Import paused' : st.made ? 'Templates imported' : 'Nothing was imported')}
+            <div class="mb">${st.down ? `<div class="note warn">${ic('alert', 16)}<span>The server stopped answering for over a minute, so the import paused. ${st.made} template${st.made === 1 ? ' was' : 's were'} saved. Import again in a few minutes: the templates already saved start unticked, so it goes on where it stopped.</span></div>` : ''}<p class="sm-t">${st.made} template${st.made === 1 ? '' : 's'} saved to <b>${esc(b.name)}</b>, filed by category. The agent uses them too: ask it for “a Q&amp;A post in blue”.</p>
               ${st.warn.length ? `<details class="fl-warn"><summary>${st.warn.length} note${st.warn.length > 1 ? 's' : ''} about what was simplified or skipped</summary>${st.warn.slice(0, 60).map((w) => `<div class="note warn">${ic('alert', 14)}<span>${esc(w)}</span></div>`).join('')}</details>` : ''}</div>
             <div class="mf"><button class="btn primary" data-close>See the templates</button></div>`;
         }
@@ -2952,7 +2969,8 @@ function openFigmaLibrary() {
 
       const run = async () => {
         const list = picked(); if (!list.length) return;
-        st.step = 'importing'; st.stop = false; st.made = 0; st.warn = [];
+        st.step = 'importing'; st.stop = false; st.down = false; st.made = 0; st.warn = [];
+        const wait = (sec) => { st.prog.wait = sec; paint(); }; // the server is away: the progress says it waits
         st.prog = { done: 0, total: frames(), cur: '' }; paint();
         const fonts = S.set.fonts ? { heading: b.fonts.heading, body: b.fonts.body } : undefined;
         for (const { c, t } of list) {
@@ -2960,14 +2978,16 @@ function openFigmaLibrary() {
           const cat = String(c.name || '').trim().slice(0, 60), name = String(t.name || '').trim().slice(0, 80) || 'Template';
           st.prog.cur = (cat ? cat + ' · ' : '') + name; paint();
           const got = new Map();
-          for (let i = 0; i < t.versions.length; i += 5) {
-            const ids = t.versions.slice(i, i + 5).map((v) => v.id);
+          // two frames a request: each carries its pictures, and a small server must hold a request's all at once
+          for (let i = 0; i < t.versions.length && !st.down; i += 2) {
+            const ids = t.versions.slice(i, i + 2).map((v) => v.id);
             try {
-              const r = await api('/social/figma/import', { method: 'POST', body: { fileKey: st.data.fileKey, ids, fonts, keepFonts: !S.set.fonts } });
+              const r = await whenBack(() => api('/social/figma/import', { method: 'POST', body: { fileKey: st.data.fileKey, ids, fonts, keepFonts: !S.set.fonts } }), wait, () => st.stop);
               r.frames.forEach((x) => { if (x.error) st.warn.push(`${name}: ${x.error}`); else { got.set(x.id, x); (x.warnings || []).forEach((w) => st.warn.push(`${name}: ${w}`)); } });
-            } catch (e) { st.warn.push(`${name}: ${e.message}`); }
-            st.prog.done += ids.length; paint();
+            } catch (e) { if (serverAway(e)) st.down = true; else st.warn.push(`${name}: ${e.message}`); }
+            st.prog.done += ids.length; st.prog.wait = 0; paint();
           }
+          if (st.down) break;
           const vs = t.versions.map((v) => ({ v, x: got.get(v.id) })).filter((y) => y.x);
           if (!vs.length) continue;
           vs.forEach(({ x }) => ensureRatio(x.ratio));
@@ -2977,11 +2997,12 @@ function openFigmaLibrary() {
               id: 't' + uid(), name, ratio: o.x.ratio, bg: o.x.page.bg, layers: o.x.page.layers, ...(cat ? { category: cat } : {}),
               figma: { fileKey: st.data.fileKey, node: o.v.id, file: st.data.file, version: st.data.version },
               ...(rest.length ? { versions: rest.map(({ v, x }) => ({ id: 'v' + uid(), name: String(v.name).slice(0, 80), ratio: x.ratio, bg: x.page.bg, layers: x.page.layers, at })) } : {}),
-            });
-            const saved = await tplApi(b, '', { method: 'POST', body });
+            }, wait, () => st.stop);
+            const saved = await whenBack(() => tplApi(b, '', { method: 'POST', body }), wait, () => st.stop);
             b.templates = [saved || body, ...b.templates.filter((y) => y.id !== body.id)];
             st.made++; rerender();
-          } catch (e) { st.warn.push(`${name}: could not be saved (${e.message})`); }
+          } catch (e) { if (serverAway(e)) { st.down = true; break; } st.warn.push(`${name}: could not be saved (${e.message})`); }
+          st.prog.wait = 0;
         }
         st.step = 'done'; paint();
         if (!bg.isConnected) toast(`${st.made} template${st.made === 1 ? '' : 's'} imported from Figma`);
@@ -3167,7 +3188,15 @@ function openFigma({ into = false, pickDefault = false } = {}) {
         st.busy = true; st.err = ''; syncSel();
         try {
           const b = brand(), ids = st.data.frames.filter((x) => st.sel.has(x.id)).map((x) => x.id);
-          st.res = await api('/social/figma/import', { method: 'POST', body: { fileKey: st.data.fileKey, ids, fonts: S.set.fonts ? { heading: b.fonts.heading, body: b.fonts.body } : undefined, keepFonts: !S.set.fonts } });
+          // two frames a request (a small server holds a request's pictures at once), waiting out a restart
+          const body = (part) => ({ fileKey: st.data.fileKey, ids: part, fonts: S.set.fonts ? { heading: b.fonts.heading, body: b.fonts.body } : undefined, keepFonts: !S.set.fonts });
+          const frames = []; let res = null;
+          for (let i = 0; i < ids.length; i += 2) {
+            const btn = $('#fgImp', bg); if (btn && ids.length > 2) btn.innerHTML = `<i class="spin"></i>Importing ${Math.min(i + 2, ids.length)} of ${ids.length}…`;
+            res = await whenBack(() => api('/social/figma/import', { method: 'POST', body: body(ids.slice(i, i + 2)) }), (sec) => { const n = $('#fgNote', bg); if (n) n.innerHTML = `<div class="note warn">${ic('alert', 16)}<span>The server stopped answering (it is probably restarting). Trying again in ${sec} s…</span></div>`; });
+            frames.push(...(res.frames || []));
+          }
+          st.res = { ...res, frames };
         } catch (e) { st.busy = false; st.err = e.message; return paint(); }
         const ok = st.res.frames.filter((x) => !x.error), failed = st.res.frames.filter((x) => x.error);
         st.warn = [...new Set(ok.flatMap((x) => x.warnings.map((w) => (ok.length > 1 ? x.name + ': ' : '') + w)).concat(failed.map((x) => `${x.id}: ${x.error}`)))];
