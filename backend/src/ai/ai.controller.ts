@@ -8,7 +8,7 @@ import { publicApiBase } from "../common/public-url";
 import { CoverImageService } from "./cover-image.service";
 import { UsageService } from "./usage.service";
 import { validTz } from "../framer/time";
-import { AgentStepDto, CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, MusicDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto, VoiceoverDto } from "./dto/ai.dto";
+import { AgentStepDto, CoverImageDto, CoverPromptDto, FixArticleDto, GenerateArticleDto, ReviewArticleDto, GenerateIdeasDto, MusicDto, SocialCaptionDto, UpdateAiSettingsDto, VoiceScriptDto, VoiceoverDto } from "./dto/ai.dto";
 
 const actor = (r: any) => ({ id: r.user.sub as string, name: r.user.name as string });
 
@@ -26,6 +26,8 @@ export class AiController {
   @Roles("admin") @Get("image-models") imageModels() { return this.s.imageModels(); }
   @Roles("admin", "editor") @Post("cover-image") coverImage(@Req() r: any, @Body() d: CoverImageDto) { return this.img.generate(d, actor(r)); }
   @Roles("admin") @Post("cover-style/analyze") analyzeCover() { return this.s.analyzeCoverStyle(); }
+  @Roles("admin", "editor") @Post("fix-article") @HttpCode(200) fixArticle(@Req() r: any, @Body() d: FixArticleDto) { return this.s.fixArticle(d, actor(r)); }
+  @Roles("admin", "editor") @Post("review-article") @HttpCode(200) reviewArticle(@Req() r: any, @Body() d: ReviewArticleDto) { return this.s.reviewArticle(d, actor(r)); }
   @Roles("admin", "editor") @Post("cover-prompt") cover(@Req() r: any, @Body() d: CoverPromptDto) { return this.s.coverPrompt(d, actor(r)); }
   @Roles("admin", "editor") @Post("social-caption") caption(@Req() r: any, @Body() d: SocialCaptionDto) { return this.s.socialCaption(d, actor(r)); }
   /** Video editor: the voices on offer, a script written from the scenes, a voice-over and music made with AI */

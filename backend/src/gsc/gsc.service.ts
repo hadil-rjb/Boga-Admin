@@ -118,6 +118,48 @@ export class GscService {
     return j.rows ?? [];
   }
 
+  /** One week of data for the weekly monitor: totals, top pages and top queries (3 light requests, no cache) */
+  async week(start: string, end: string) {
+    const c = await this.conn.findOne();
+    if (!c) throw new UnauthorizedException("Search Console n'est pas connecté");
+    const filter = this.cfg.get<string>("GSC_PAGE_FILTER");
+    const base = { startDate: start, endDate: end, ...(filter && { dimensionFilterGroups: [{ filters: [{ dimension: "page", operator: "contains", expression: filter }] }] }) };
+    const [tot, pages, queries] = await Promise.all([
+      this.query(c.site, base),
+      this.query(c.site, { ...base, dimensions: ["page"], rowLimit: 250 }),
+      this.query(c.site, { ...base, dimensions: ["query"], rowLimit: 250 }),
+    ]);
+    const m = (r: Row) => ({ key: r.keys?.[0] ?? "", clicks: r.clicks, impressions: r.impressions, position: Math.round(r.position * 10) / 10 });
+    return { start, end, totals: { clicks: tot[0]?.clicks ?? 0, impressions: tot[0]?.impressions ?? 0, position: tot[0]?.position ?? 0 }, pages: pages.map(m), queries: queries.map(m) };
+  }
+
+  /** SEO opportunities: page × query rows for the period, and page totals for this period and the one before it (3 light requests, cached 10 min) */
+  async pageQueries(days: number) {
+    if (![28, 90].includes(days)) throw new BadRequestException("days doit valoir 28 ou 90");
+    const key = `pq:${days}`; const hit = this.cache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.data;
+    const c = await this.conn.findOne();
+    if (!c) throw new UnauthorizedException("Search Console n'est pas connecté");
+    const end = new Date(Date.now() - 2 * 864e5), start = new Date(end.getTime() - (days - 1) * 864e5);
+    const pEnd = new Date(start.getTime() - 864e5), pStart = new Date(pEnd.getTime() - (days - 1) * 864e5);
+    const filter = this.cfg.get<string>("GSC_PAGE_FILTER");
+    const f = filter ? { dimensionFilterGroups: [{ filters: [{ dimension: "page", operator: "contains", expression: filter }] }] } : {};
+    const [pq, pages, prev] = await Promise.all([
+      this.query(c.site, { startDate: day(start), endDate: day(end), ...f, dimensions: ["page", "query"], rowLimit: 1000 }),
+      this.query(c.site, { startDate: day(start), endDate: day(end), ...f, dimensions: ["page"], rowLimit: 250 }),
+      this.query(c.site, { startDate: day(pStart), endDate: day(pEnd), ...f, dimensions: ["page"], rowLimit: 250 }),
+    ]);
+    const m = (r: Row) => ({ clicks: r.clicks, impressions: r.impressions, ctr: r.ctr, position: r.position });
+    const data = {
+      range: { start: day(start), end: day(end), days }, previous: { start: day(pStart), end: day(pEnd) }, site: c.site,
+      rows: pq.map(r => ({ page: r.keys?.[0] ?? "", query: r.keys?.[1] ?? "", ...m(r) })),
+      pages: pages.map(r => ({ key: r.keys?.[0] ?? "", ...m(r) })),
+      prevPages: prev.map(r => ({ key: r.keys?.[0] ?? "", ...m(r) })),
+    };
+    this.cache.set(key, { exp: Date.now() + 10 * 60_000, data });
+    return data;
+  }
+
   /** Performance sur N jours (les données GSC ont ~2 jours de retard). Cache 10 min. */
   async performance(days: number) {
     if (![7, 28, 90, 365].includes(days)) throw new BadRequestException("days doit valoir 7, 28, 90 ou 365");

@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import Icon from "./Icon";
 import { Cta, IconBtn, PillBtn, btn } from "./ui";
 import { useFeedback } from "./feedback";
+import ArticleFixDialog from "./ArticleFixDialog";
+import SeoRecommendations from "./SeoRecommendations";
+import ArticleReviewDialog from "./ArticleReviewDialog";
 import CoverGen from "./CoverGen";
 import LinkPopover from "./LinkPopover";
 import { useRouter } from "next/navigation";
@@ -24,21 +27,26 @@ const Fr = ({ label, children, hint, hintBad }: { label: string; children: React
     <div>{children}{hint && <p className={`mt-1.5 text-xs ${hintBad ? "text-negative" : "text-text-3"}`}>{hint}</p>}</div>
   </div>
 );
-const blank = (cat: string, d?: string): Article => ({ slug: "", img: "", alt: "", title: "", meta: "", sub: "", cat, t: ["", "", ""], html: "<p></p>", coverPrompt: "", date: d || "", time: "09:00", status: d && d > today() ? "Scheduled" : "Draft", framerState: "", framerNote: "", framerSyncedAt: null });
+const blank = (cat: string, d?: string, tm?: string): Article => ({ slug: "", img: "", alt: "", title: "", meta: "", sub: "", cat, t: ["", "", ""], html: "<p></p>", coverPrompt: "", date: d || "", time: tm || "09:00", status: d && d > today() ? "Scheduled" : "Draft", framerState: "", framerNote: "", framerSyncedAt: null });
 
-export default function ArticleDrawer({ slug, date, onClose }: { slug: string | null; date?: string; onClose: () => void }) {
+export default function ArticleDrawer({ slug, date, time, onClose, refresh, focus }: { slug: string | null; date?: string; time?: string; onClose: () => void; refresh?: "refresh" | "snippet"; focus?: string }) {
   const { articles, user, gsc, reload } = useData();
   const { toast, ask } = useFeedback();
   const can = user.role === "admin" || user.role === "editor";
   const orig = slug ? articles.find((a) => a.slug === slug) : null;
   const cats = [...new Set(articles.map((a) => a.cat).filter(Boolean))].sort();
-  const [E, setE] = useState<Article>(() => (orig ? JSON.parse(JSON.stringify(orig)) : blank(cats[0] || "", date)));
+  const [E, setE] = useState<Article>(() => (orig ? JSON.parse(JSON.stringify(orig)) : blank(cats[0] || "", date, time)));
   const [autoSlug, setAutoSlug] = useState(!orig);
   const [src, setSrc] = useState(false);
   const [blk, setBlk] = useState("p");
   const [srcVal, setSrcVal] = useState("");
   const [imgErr, setImgErr] = useState(false);
   const [gen, setGen] = useState(false);
+  const [fixing, setFixing] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  // opened from a Search Console opportunity: go straight to the refresh, once the article is loaded
+  const autoFix = useRef(!!refresh);
+  useEffect(() => { if (autoFix.current && orig && can) { autoFix.current = false; setFixing(true); } }, [orig, can]);
   const [fr, setFr] = useState<{ enabled: boolean; ready: boolean; timezone?: string } | null>(null);
   const router = useRouter();
   const [lp, setLp] = useState<HTMLAnchorElement | null>(null);
@@ -151,7 +159,21 @@ export default function ArticleDrawer({ slug, date, onClose }: { slug: string | 
           <div className="flex flex-wrap gap-1.5 border-b border-border-soft py-3.5">
             <span className={`rounded-6 px-2 py-1 text-[11px] font-semibold ${sc >= 80 ? "bg-positive-bg text-positive" : "bg-negative-bg text-negative"}`}>SEO {sc}/100</span>
             {checks(E).map(([l, ok]) => <span key={l} className={`rounded-6 px-2 py-1 text-[11px] ${ok ? "bg-positive-bg text-positive" : "bg-negative-bg text-negative"}`}>{ok ? "✓" : "✗"} {l}</span>)}
+            {can && (
+              <button type="button" onClick={() => (E.title.trim() ? setFixing(true) : toast("Add a title first"))}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-6 border border-accent/30 bg-accent/[.06] px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/[.12]">
+                <Icon k="sparkles" size={13} />{sc < 100 ? "Fix with AI" : "Proofread with AI"}
+              </button>
+            )}
+            {can && (
+              <button type="button" onClick={() => (plain(src ? srcVal : E.html).length > 40 ? setReviewing(true) : toast("Write some content first"))}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-6 border border-border px-2 py-1 text-[11px] font-medium text-text-2 hover:bg-icon hover:text-text-1">
+                <Icon k="shield" size={13} />Check accuracy
+              </button>
+            )}
           </div>
+
+          <SeoRecommendations a={src ? { ...E, html: srcVal } : E} saved={!!orig} />
 
           <Fr label="Cover Image" hint="Uploads are stored in this browser. Host the image (e.g. in Framer) before importing the CSV into your CMS.">
             <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); upload(e.dataTransfer.files[0]); }}
@@ -231,6 +253,20 @@ export default function ArticleDrawer({ slug, date, onClose }: { slug: string | 
           </Fr>
         </fieldset>
       </aside>
+      {fixing && <ArticleFixDialog article={src ? { ...E, html: srcVal } : E} saved={!!orig} mode={refresh} focus={focus} onClose={() => setFixing(false)} onApply={(p) => {
+        set(p);
+        if (p.slug) setAutoSlug(false);
+        if (p.html !== undefined) { if (ct.current) ct.current.innerHTML = p.html; if (src) setSrcVal(p.html); }
+        setFixing(false);
+        toast(`${Object.keys(p).length} change${Object.keys(p).length === 1 ? "" : "s"} applied — review, then Save`);
+      }} />}
+      {reviewing && <ArticleReviewDialog article={src ? { ...E, html: srcVal } : E} onClose={() => setReviewing(false)} onApply={(html, n) => {
+        set({ html });
+        if (ct.current) ct.current.innerHTML = html;
+        if (src) setSrcVal(html);
+        setReviewing(false);
+        toast(`${n} rewrite${n === 1 ? "" : "s"} applied — review, then Save`);
+      }} />}
       {lp && <LinkPopover a={lp} articles={articles} base={base} can={can} toast={toast} onClose={() => setLp(null)} onChange={() => set({ html: ct.current!.innerHTML })}
         onView={async (slug) => { setLp(null); const t = articles.find((x) => x.slug === slug); if (!t) return; if (can && !(await ask({ t: `Open “${t.title}”?`, p: "Unsaved changes in the current article will be lost — save first if needed.", ok: "Open article" }))) return; router.push(`/articles?edit=${encodeURIComponent(slug)}`); }} />}
     </>
