@@ -66,7 +66,8 @@ class GuideDto {
 
 export class AnalyzeSystemDto {
   @ValidateNested() @Type(() => KitDto) kit!: KitDto;
-  @IsOptional() @IsArray() @ArrayMaxSize(12) @ValidateNested({ each: true }) @Type(() => ReferenceDto) references?: ReferenceDto[];
+  /** The brand's templates across categories, their versions, and approved designs (design-system.js pickSources) */
+  @IsOptional() @IsArray() @ArrayMaxSize(24) @ValidateNested({ each: true }) @Type(() => ReferenceDto) references?: ReferenceDto[];
   @IsOptional() @IsArray() @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => InspirationDto) inspiration?: InspirationDto[];
   @IsOptional() @ValidateNested() @Type(() => GuideDto) guide?: GuideDto;
 }

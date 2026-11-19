@@ -219,9 +219,40 @@ export function swapLanguage(pg, i, to, tr, fonts = {}) {
     if (!rtl && /arabic|kufi|naskh/i.test(String(l.font || ''))) l.font = (l.size || 16) >= 28 ? fonts.heading || 'Plus Jakarta Sans' : fonts.body || 'Inter';
     if ((l.dir === 'rtl') !== rtl) { l.dir = rtl ? 'rtl' : 'ltr'; l.align = mirror(l.align); if (l.fa0) l.fa0 = mirror(l.fa0); }
     if (l.fd0) l.fd0 = rtl ? 'rtl' : 'ltr';
+    arabicType(l, rtl && AR_RE.test(String(l.text || '')));
   });
   // live data in the new language; the headline picked stays (translated stories keep their ids: the same story shows)
   if (pg.live && pg.live.kind) { pg.live.lang = to; pg.live.events = null; pg.live.at = 0; }
+  return pg;
+}
+
+/**
+ * Arabic letters join: letter spacing breaks the words, and the script needs taller lines than Latin. The Latin
+ * values are kept (ls0, lh0) and come back when the text returns to a Latin language.
+ */
+function arabicType(l, ar) {
+  if (ar) {
+    if (l.ls && l.ls0 == null) { l.ls0 = l.ls; }
+    if (l.ls) l.ls = 0;
+    const min = (l.size || 16) >= 40 ? 1.3 : 1.5;
+    if ((l.lh || 1.2) < min) { if (l.lh0 == null) l.lh0 = l.lh || 1.2; l.lh = min; }
+  } else {
+    if (l.ls0 != null) { l.ls = l.ls0; delete l.ls0; }
+    if (l.lh0 != null) { l.lh = l.lh0; delete l.lh0; }
+  }
+}
+
+/**
+ * Right to left reads from the right: every piece of content changes side (x mirrored across the canvas, rotations
+ * reversed), so the logo, the headline, the card and the footer follow the reading order. The background (skip: its
+ * layer ids) stays as it is. Groups hold absolute positions, so each layer mirrors on its own.
+ */
+export function mirrorLayout(pg, W, skip = new Set()) {
+  (pg.layers || []).forEach((l) => {
+    if (skip.has(l.id) || typeof l.x !== 'number' || typeof l.w !== 'number') return;
+    l.x = Math.round((W - l.x - l.w) * 10) / 10;
+    if (l.rot) l.rot = -l.rot;
+  });
   return pg;
 }
 

@@ -49,8 +49,8 @@ describe('agent modes', () => {
   const DESIGN_ONLY = ['manage_slides', 'resize_canvas', 'apply_brand_template', 'build_live_slide', 'make_video'];
   const ANIMATE_ONLY = ['animate_layers', 'auto_animate', 'manage_scenes', 'set_scene', 'view_frame'];
 
-  it('gives design 22 tools and animate 30', () => {
-    expect(names('design')).toHaveLength(22);
+  it('gives design 23 tools and animate 30', () => {
+    expect(names('design')).toHaveLength(23);
     expect(names('animate')).toHaveLength(30);
     DESIGN_ONLY.forEach((n) => { expect(names('design')).toContain(n); expect(names('animate')).not.toContain(n); });
     ANIMATE_ONLY.forEach((n) => { expect(names('animate')).toContain(n); expect(names('design')).not.toContain(n); });
@@ -91,9 +91,9 @@ describe('agent modes', () => {
     ['{date}', '{weekday}', '{week}', '{headline}', '{price}', '{website}', '{hashtags}'].forEach((f) => expect(JSON.stringify(AGENT_TOOLS.find((x) => x.name === 'propose_automation'))).toContain(f));
     expect(PLAN_PROMPT).toMatch(/Never say that something is scheduled or created/);
   });
-  it('gives video exactly its 11 tools, and leaves the other modes at 22', () => {
+  it('gives video exactly its 11 tools, and leaves the other modes at 23 and 30', () => {
     expect(names('video')).toEqual(['edit_captions', 'propose_automation', 'propose_schedule', 'read_captions', 'read_planner', 'rename_design', 'set_audio', 'set_grade', 'style_captions', 'view_frame', 'write_caption']);
-    expect(names('design')).toHaveLength(22); expect(names('animate')).toHaveLength(30);
+    expect(names('design')).toHaveLength(23); expect(names('animate')).toHaveLength(30);
   });
   it('adds the video section in video mode only, with the plan section, and no make_video hint', () => {
     const v = JSON.stringify({ design: { mode: 'video', kind: 'video' } });

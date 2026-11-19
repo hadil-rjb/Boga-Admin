@@ -102,8 +102,8 @@ const LAYER_TOOLS: Omit<AgentTool, "modes">[] = [
   { name: "rename_design", description: "Rename the design.", parameters: { type: "object", properties: { name: str("New name") }, required: ["name"] } },
   {
     name: "apply_brand_template",
-    description: "Replace the current slide with one of the brand's saved templates (ids in the brand kit).",
-    parameters: { type: "object", properties: { id: str("Template id") }, required: ["id"] },
+    description: "Replace the current slide with one of the brand's saved templates (brand.templates: id, category, versions). Pick the template whose category fits the kind of post asked for, and the version (colour, size) asked for or that fits best; the original when nothing says otherwise.",
+    parameters: { type: "object", properties: { id: str("Template id"), version: str("Name of one of the template's versions (e.g. 'Blue'); omit for the original") }, required: ["id"] },
   },
   {
     name: "build_live_slide",
@@ -130,13 +130,18 @@ const LAYER_TOOLS: Omit<AgentTool, "modes">[] = [
   { name: "view_slide", description: "Look at a picture of a slide as it renders now, to check the result of your changes.", parameters: { type: "object", properties: { index: num("Slide number, 1-based (default: current)") } } },
   {
     name: "view_reference",
-    description: "Look at one of the brand's references (ids in brand.references): the brand's own designs show a picture and their layers; inspiration shows a picture only, for composition.",
+    description: "Look at one of the brand's references: an id from brand.references, any brand template id, or a template version's ref (brand.templates[].versions[].ref). The brand's own work shows a picture and its layers; inspiration shows a picture only, for composition.",
     parameters: { type: "object", properties: { id: str("Reference id") }, required: ["id"] },
   },
   {
     name: "check_design",
     description: "Check a slide against the brand: off-brand fonts, colours and sizes, text in the margins, weak contrast, missing logo.",
     parameters: { type: "object", properties: { page } },
+  },
+  {
+    name: "apply_brand_background",
+    description: "Put one of the brand's own backgrounds (brand.backgrounds: the glows, rings, light streaks and textures of its templates, with their blend modes) behind the current slide, fitted to its size and locked at the bottom. It replaces the background applied before. Use it for every new design instead of drawing a background with shapes.",
+    parameters: { type: "object", properties: { id: str("Background id from brand.backgrounds") }, required: ["id"] },
   },
 ];
 
@@ -150,7 +155,7 @@ const ROLE = ["intro", "body", "outro"];
 const scene = num("Scene number, 1-based. Default: the current scene");
 
 /** Tools that only make sense on a static design, or that the Animate tools replace */
-const DESIGN_ONLY = new Set(["manage_slides", "resize_canvas", "apply_brand_template", "build_live_slide"]);
+const DESIGN_ONLY = new Set(["manage_slides", "resize_canvas", "apply_brand_template", "apply_brand_background", "build_live_slide"]);
 /** Layer tools an uploaded video also gets (it has no layers, so only these) */
 const ALL_MODES = new Set(["rename_design", "write_caption"]);
 
@@ -405,7 +410,13 @@ How to work:
 - Use the layer ids from the context. Canvas coordinates are pixels, origin top-left; keep important content inside the canvas with comfortable margins (about 60–80 px).
 - Respect the brand kit: its colours, fonts and logos, its voice for any copy, and its language. Keep text readable (strong contrast) and the hierarchy clear.
 - Text layers grow in height to fit; set w for the text box width. Keep line lengths reasonable.
-- After visual changes that matter (layout, colours, new elements), call view_slide once to check the result and fix problems you see.
+- After visual changes that matter (layout, colours, new elements), call view_slide once to check the result and fix problems you see. If you change anything after that check, look again: never finish on a change you have not seen.
+- The brand's own templates (brand.templates) are filed by category (News, Q&A, IPO…), each with versions (colours, sizes; a version's ref can be looked at with view_reference). Decide first: reuse or create.
+  - Reuse when a template's category or name fits the request: apply_brand_template with the version that fits (colour, size), then rewrite every text for this request and swap pictures that don't fit. Keep the layout.
+  - Create when none fits, or the user asks for something new or different: look at one or two of the brand's templates first (view_reference) to catch the style. Set the canvas size first, then apply_brand_background with the background whose theme (blue, dark, light) and mood fit the message: it carries the brand's real glows, rings and textures. Then compose a new layout on top that clearly belongs to the brand (its colours and colour pairs, fonts, logo placement, motifs) without copying a template.
+  - Never redraw the brand's background effects (glows, halftone, light streaks, rings) with shapes or gradients, and never cover the applied background with an opaque full-size shape. Add your own shapes only for content (cards, pills, dividers), styled like the brand's.
+- Oversized display text (a big number or word) must stay on one line: make its box wide enough (about 0.6 × font size × characters) and check it did not wrap.
+- Be creative in a new design: one strong idea per slide, a bold focal point (an oversized number, word or picture), clear hierarchy and contrast in scale, purposeful negative space, an unexpected crop or angle when it helps. Avoid generic layouts (a centered title over a flat background) unless asked.
 - Live data slides (calendar, price alert, news) refresh their own texts; restyle them freely but don't rewrite their live texts.
 - If the request is unclear or impossible, say so briefly and suggest what you can do.
 - Finish with one or two short sentences saying what you changed. No markdown headings, no lists unless asked. Answer in the user's language.`;

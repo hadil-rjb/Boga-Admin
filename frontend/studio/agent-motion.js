@@ -27,7 +27,7 @@ export function videoStep(kind, editorMode) {
   if (kind === 'still') return 'convert';
   return kind === 'reel' && editorMode !== 'animate' ? 'switch' : 'none';
 }
-export const DESIGN_ONLY = new Set(['manage_slides', 'resize_canvas', 'apply_brand_template', 'build_live_slide', 'make_video']);
+export const DESIGN_ONLY = new Set(['manage_slides', 'resize_canvas', 'apply_brand_template', 'apply_brand_background', 'build_live_slide', 'make_video']);
 export const ANIMATE_ONLY = new Set(['animate_layers', 'auto_animate', 'manage_scenes', 'set_scene', 'view_frame']);
 export const VIDEO_ONLY = new Set(['set_grade', 'set_audio']);
 /** Captions are edited the same way on uploaded videos and animated designs */

@@ -63,10 +63,19 @@ export const PROMPT_IDEAS = [
 
 export const promptSize = (k) => PROMPT_SIZES.find((s) => s.k === k) || PROMPT_SIZES[0];
 
+/** Where the agent starts: k · label · the menu line · what the agent is told */
+export const PROMPT_STARTS = [
+  { k: 'auto', label: 'Auto', line: 'A brand template when one fits, else a new design', note: 'Decide how to start. If one of the brand\'s templates (brand.templates, filed by category) fits this request, start from it: apply_brand_template with the version that fits, then rewrite every text for this request and swap pictures that do not fit. If none fits, design something new in the brand\'s style.' },
+  { k: 'template', label: 'Brand template', line: 'Start from the template that fits best', note: 'Start from the brand template that fits this request best (brand.templates, by category and name): apply_brand_template with the version that fits, keep its layout, then rewrite every text for this request and swap pictures that do not fit.' },
+  { k: 'new', label: 'New design', line: 'A fresh, creative layout in the brand style', note: 'Design something new: do not apply a template. First look at one or two of the brand\'s templates (view_reference) to catch its style. Once the size is set, put one of the brand\'s own backgrounds behind it (apply_brand_background, a theme that fits the message), then compose a fresh, creative layout on top that clearly belongs to the brand: its colours and colour pairs, fonts, logo placement and motifs, with one bold idea and a strong focal point.' },
+];
+export const promptStart = (k) => PROMPT_STARTS.find((s) => s.k === k) || PROMPT_STARTS[0];
+
 /** What the agent is told besides the user's words (not shown in the chat) */
-export function promptNote(k) {
-  const s = promptSize(k), base = 'This is a new, empty design, created from the prompt box on the Overview for this request. Build it from scratch with the brand kit and its design system, if it has one, then check the result.';
-  if (!s.ratio) return `${base} Choose the canvas size and the number of pages that fit the request best (resize_canvas, manage_slides) before adding layers.`;
+export function promptNote(k, start = 'auto') {
+  const st = promptStart(start);
+  const s = promptSize(k), base = `This is a new, empty design, created from the prompt box on the Overview for this request. Use the brand kit and its design system, if it has one, then check the result. ${st.note}`;
+  if (!s.ratio) return `${base} Choose the canvas size and the number of pages that fit the request best (resize_canvas, manage_slides) before adding layers${st.k === 'new' ? '' : '; when you start from a template, use its format (or the version\'s)'}.`;
   return `${base} The user chose ${s.label} (${s.line})${s.pages > 1 ? `, ${s.pages} pages: design every page` : ''}. Keep this size.`;
 }
 
@@ -78,17 +87,20 @@ export function promptName(text) {
 }
 
 /** The row under the text: size, model, Send. model: null while loading · { none: true } · { name, menu } */
-export function promptBarHTML({ ic, esc }, { text = '', size = 'auto', open = '', model = null, refs = [] }) {
+export function promptBarHTML({ ic, esc }, { text = '', size = 'auto', start = 'auto', open = '', model = null, refs = [] }) {
   const s = promptSize(size);
   const sizeMenu = open !== 'size' ? '' : `<div class="hp-menu" role="menu" aria-label="Choose the size">${PROMPT_SIZES.map((x) => `<button class="hp-mi${x.k === s.k ? ' on' : ''}" role="menuitemradio" data-act="hpPickSize" data-k="${esc(x.k)}" aria-checked="${x.k === s.k}"><span class="grow"><b>${esc(x.label)}</b><small>${esc(x.line)}</small></span>${x.k === s.k ? ic('check', 14) : ''}</button>`).join('')}</div>`;
   const sizeChip = `<span class="hp-w"><button class="hp-chip${open === 'size' ? ' on' : ''}" data-act="hpSize" aria-haspopup="menu" aria-expanded="${open === 'size'}" title="Size of the new design">${ic('layout', 14)}<span>${esc(s.label)}</span>${ic('chevD', 12)}</button>${sizeMenu}</span>`;
+  const t = promptStart(start);
+  const startMenu = open !== 'start' ? '' : `<div class="hp-menu" role="menu" aria-label="How the agent starts">${PROMPT_STARTS.map((x) => `<button class="hp-mi${x.k === t.k ? ' on' : ''}" role="menuitemradio" data-act="hpPickStart" data-k="${esc(x.k)}" aria-checked="${x.k === t.k}"><span class="grow"><b>${esc(x.label)}</b><small>${esc(x.line)}</small></span>${x.k === t.k ? ic('check', 14) : ''}</button>`).join('')}</div>`;
+  const startChip = `<span class="hp-w"><button class="hp-chip${open === 'start' ? ' on' : ''}" data-act="hpStart" aria-haspopup="menu" aria-expanded="${open === 'start'}" title="Start from a brand template, or design something new">${ic(t.k === 'new' ? 'wand' : 'copy', 14)}<span>${esc(t.k === 'auto' ? 'Auto start' : t.label)}</span>${ic('chevD', 12)}</button>${startMenu}</span>`;
   const modelChip = !model || model.none ? '' : `<span class="hp-w hp-mw"><button class="hp-chip ghost${open === 'model' ? ' on' : ''}" data-act="hpModel" aria-haspopup="menu" aria-expanded="${open === 'model'}" title="Model the agent uses">${ic('studio', 14)}<span>${esc(model.name)}</span>${ic('chevD', 12)}</button>${open === 'model' ? model.menu || '' : ''}</span>`;
   const end = model && model.none
     ? `<span class="hp-hint">Add a Claude or Groq key to create with AI</span><button class="btn secondary sm hp-setup" data-act="agModelSetup">${ic('settings', 14)}Set up AI</button>`
     : `<button class="hp-send" id="hpSend" data-act="hpSend" title="Create" aria-label="Create"${String(text).trim() || (refs || []).length ? '' : ' disabled'}>${ic('arrowUp', 18)}</button>`;
   const attach = model && model.none ? '' : `<button class="hp-chip hp-att" data-act="hpAttach" title="Add inspiration pictures (up to ${REFS_MAX}): the agent takes their style" aria-label="Add inspiration pictures">${ic('image', 14)}<span>Inspiration</span></button>`;
   // like Claude's composer: what you make on the left, the model next to Send on the right
-  return `${attach}${sizeChip}<span class="grow"></span>${modelChip}${end}`;
+  return `${attach}${sizeChip}${model && model.none ? '' : startChip}<span class="grow"></span>${modelChip}${end}`;
 }
 
 /** The hero's first line: a greeting by the time of day, with the first name when there is one */

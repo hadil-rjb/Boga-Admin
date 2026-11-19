@@ -34,7 +34,7 @@ describe('Create block', () => {
   });
 });
 
-import { PROMPT_SIZES, PROMPT_IDEAS, PROMPT_MAX, promptSize, promptNote, promptName, promptGreeting, promptBarHTML, promptBlockHTML } from './home.js';
+import { PROMPT_SIZES, PROMPT_IDEAS, PROMPT_MAX, PROMPT_STARTS, promptSize, promptStart, promptNote, promptName, promptGreeting, promptBarHTML, promptBlockHTML } from './home.js';
 
 describe('Prompt box', () => {
   it('offers Auto first, then the fixed sizes and a 3-page carousel', () => {
@@ -50,6 +50,16 @@ describe('Prompt box', () => {
     expect(promptNote('9:16')).toMatch(/Story \/ Reel/);
     expect(promptNote('9:16')).toMatch(/Keep this size/);
     expect(promptNote('carousel')).toMatch(/3 pages/);
+  });
+  it('tells the agent how to start: a template when one fits, a template, or a new design', () => {
+    expect(PROMPT_STARTS.map((x) => x.k)).toEqual(['auto', 'template', 'new']);
+    expect(promptStart('nope').k).toBe('auto');
+    expect(promptNote('auto')).toMatch(/apply_brand_template/);
+    expect(promptNote('auto')).toMatch(/If none fits, design something new/);
+    expect(promptNote('auto')).toMatch(/use its format/);
+    expect(promptNote('4:5', 'template')).toMatch(/keep its layout/);
+    expect(promptNote('4:5', 'new')).toMatch(/do not apply a template/);
+    expect(promptNote('auto', 'new')).not.toMatch(/use its format/);
   });
   it('names the design from the prompt, cut at a word', () => {
     expect(promptName('  Launch   post for our new app ')).toBe('Launch post for our new app');
@@ -89,6 +99,10 @@ describe('Prompt box', () => {
     expect(promptBarHTML(h, { text: '', size: 'auto', open: 'model', model: { name: 'M', menu: '<div class="ag-mm"></div>' } })).toContain('ag-mm');
   });
   it('without an AI model, Send becomes a way to set one up; while models load, neither shows a model', () => {
+    const st = promptBarHTML(h, { text: '', size: 'auto', start: 'new', open: 'start', model: { name: 'M', menu: '' } });
+    expect(st).toContain('data-act="hpStart"');
+    expect(st).toContain('New design');
+    expect((st.match(/data-act="hpPickStart"/g) || []).length).toBe(3);
     const none = promptBarHTML(h, { text: 'x', size: 'auto', model: { none: true } });
     expect(none).toContain('data-act="agModelSetup"');
     expect(none).not.toContain('id="hpSend"');
