@@ -1,9 +1,9 @@
-import { Body, Controller, Get, Param, Post, Put, Req } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Req } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model } from "mongoose";
 import { Roles } from "../common/roles.decorator";
 import { Article, ArticleDocument } from "../articles/article.schema";
-import { UpdateFramerSettingsDto } from "./dto/framer.dto";
+import { PullFramerDto, UpdateFramerSettingsDto } from "./dto/framer.dto";
 import { FramerService } from "./framer.service";
 
 const actor = (r: any) => ({ id: r.user.sub as string, name: r.user.name as string });
@@ -17,6 +17,9 @@ export class FramerController {
   @Roles("admin") @Get("collections") collections() { return this.s.collections(); }
   @Roles("admin") @Get("fields") fields() { return this.s.fields(); }
   /** « Publish to Framer now » : envoie l'article tout de suite (passe en Live) */
+  /** « Get from Framer » : aperçu puis import des articles publiés dans la collection CMS */
+  @Roles("admin", "editor") @Get("pull") pullPreview() { return this.s.pullPreview(); }
+  @Roles("admin", "editor") @Post("pull") @HttpCode(200) pull(@Body() d: PullFramerDto, @Req() r: any) { return this.s.pullApply(d.slugs, actor(r)); }
   @Roles("admin", "editor") @Post("publish/:slug") publish(@Param("slug") slug: string, @Req() r: any) { return this.s.runFor(slug, actor(r)); }
   /** « Retry » : remet le compteur d'essais à zéro, le scheduler reprend l'article */
   @Roles("admin", "editor") @Post("retry/:slug") async retry(@Param("slug") slug: string) {

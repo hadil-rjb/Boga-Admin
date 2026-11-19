@@ -4,6 +4,7 @@ import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import ArticleDrawer from "@/components/ArticleDrawer";
 import ImportArticlesDialog from "@/components/ImportArticlesDialog";
+import FramerPullDialog from "@/components/FramerPullDialog";
 import Icon from "@/components/Icon";
 import { PillBtn } from "@/components/ui";
 import { Pager, Sort, StatusBadge, Sub, Table, TableCard, Td, Th, Ttl, cmp, fieldCls, pageCls } from "@/components/table";
@@ -22,6 +23,7 @@ function Articles() {
   const { articles: A, user } = useData();
   const canEdit = user.role === "admin" || user.role === "editor";
   const [importing, setImporting] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const router = useRouter();
   const sp = useSearchParams();
   const [q, setQ] = useState(""), [st, setSt] = useState(sp.get("status") || ""), [cat, setCat] = useState("");
@@ -61,6 +63,7 @@ function Articles() {
           <option value="any">All issues ({anyIssue})</option>
           {ISSUES.map(([k, l, i]) => <option key={k} value={k}>{l} ({issueCount(i)})</option>)}
         </Select>
+        {canEdit && <PillBtn onClick={() => setPulling(true)}><Icon k="download" />Get from Framer</PillBtn>}
         {canEdit && <PillBtn onClick={() => setImporting(true)}><Icon k="upload" />Import</PillBtn>}
         <PillBtn onClick={() => exportArticlesCsv(A)}><Icon k="download" />Export CSV</PillBtn>
       </div>
@@ -87,6 +90,7 @@ function Articles() {
         </Table>
         <Pager total={list.length} page={page} onPage={setPage} />
       </TableCard>
+      {pulling && <FramerPullDialog onClose={() => setPulling(false)} />}
       {importing && <ImportArticlesDialog onClose={() => setImporting(false)} />}
       {(edit || isNew) && <ArticleDrawer key={edit || "new"} slug={edit} date={nd} onClose={closeDrawer} refresh={sp.get("refresh") === "snippet" ? "snippet" : sp.get("refresh") ? "refresh" : undefined} focus={sp.get("q") || undefined} />}
     </div>

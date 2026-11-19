@@ -1,4 +1,4 @@
-import { IsBoolean, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsObject, IsOptional, IsString, Matches, MaxLength } from "class-validator";
 
 export class UpdateFramerSettingsDto {
   @IsOptional() @IsBoolean() enabled?: boolean;
@@ -10,4 +10,9 @@ export class UpdateFramerSettingsDto {
   @IsOptional() @IsBoolean() publish?: boolean;
   @IsOptional() @IsBoolean() deploy?: boolean;
   @IsOptional() @IsString() @MaxLength(80) timezone?: string;
+}
+
+/** « Get from Framer » : slugs des articles à importer (relus dans Framer côté serveur) */
+export class PullFramerDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @IsString({ each: true }) @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, { each: true }) slugs: string[];
 }
