@@ -2,13 +2,17 @@
    Brand design system: the shape of a system, and choosing the references it is learned from.
    - Templates first, newest first, then designs that were approved or published, newest first. Drafts are never used.
    - Sources also include the brand's inspiration pictures and the design reading of its brand guide; gatheredSig covers all three.
-   - At most MAX_SOURCES references per analysis, and the first page of each only.
+   - At most MAX_SOURCES references per analysis (templates across categories, with their versions), and the first page of each only.
    - sourceSig (and gatheredSig for everything gathered) tells when the sources changed, so a saved system can be marked out of date.
    - tidySystem applies every limit to what the model returns or the user edits; a value that fails is dropped, never guessed.
    Pure: no DOM, no imports from engine.js.
    ============================================================ */
 
-export const MAX_SOURCES = 12;
+export const MAX_SOURCES = 24;
+/** Designs (approved or published) keep at least this many of the places when the brand has many templates */
+const DESIGN_SLOTS = 4;
+/** A template version's reference id: "<template id>__<version id>" */
+export const VERSION_SEP = '__';
 export const MAX_INSPIRATION = 8;
 export const MAX_INSPIRATION_PATTERNS = 3;
 /** What a stored picture's src must look like: only data URLs of these types are shown or sent. */
@@ -30,10 +34,31 @@ export function sourceRev(page) {
 }
 
 /** The references to learn from: { kind, id, name, ratio, at, live, rev }. `at` orders them; `rev` follows their content. */
+/**
+ * What the analysis studies, at most MAX_SOURCES: every category of templates first (its newest template), then a
+ * version of each (another colour or size, so the system sees how the brand varies a layout), then the other
+ * templates and versions, newest first across categories; approved or published designs keep DESIGN_SLOTS places.
+ */
 export function pickSources(brand, designs, posts) {
-  const templates = ((brand && brand.templates) || []).slice().sort(byNewest).map((t) => ({
-    kind: 'template', id: t.id, name: t.name, ratio: t.ratio, at: t.at || 0, live: !!t.live, rev: sourceRev(t),
-  }));
+  const tpls = ((brand && brand.templates) || []).slice().sort(byNewest);
+  const cat = (t) => String(t.category || '').trim();
+  const orig = (t) => ({ kind: 'template', id: t.id, name: t.name, ratio: t.ratio, at: t.at || 0, live: !!t.live, rev: sourceRev(t), ...(cat(t) ? { category: cat(t) } : {}) });
+  const ver = (t, v) => ({ kind: 'template', id: t.id + VERSION_SEP + v.id, tpl: t.id, ver: v.id, name: `${t.name} · ${v.name}`, ratio: v.ratio || t.ratio, at: t.at || 0, live: !!(v.live || t.live), rev: sourceRev(v), ...(cat(t) ? { category: cat(t) } : {}) });
+  // the version that teaches most: another size first, else the first one
+  const pickVer = (t) => { const vs = (t.versions || []).filter((v) => v && v.id); return vs.find((v) => v.ratio && v.ratio !== t.ratio) || vs[0]; };
+  // templates in rounds: the newest of each category, then the next of each…
+  const groups = new Map();
+  tpls.forEach((t) => { const k = cat(t).toLowerCase(); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); });
+  const lists = [...groups.values()], rounds = [];
+  for (let k = 0; lists.some((l) => l[k]); k++) rounds.push(lists.map((l) => l[k]).filter(Boolean));
+  const ordered = [];
+  const first = rounds[0] || [], rest = rounds.slice(1).flat();
+  first.forEach((t) => ordered.push(orig(t)));
+  first.forEach((t) => { const v = pickVer(t); if (v) ordered.push(ver(t, v)); });
+  rest.forEach((t) => { ordered.push(orig(t)); });
+  rest.forEach((t) => { const v = pickVer(t); if (v) ordered.push(ver(t, v)); });
+  // then the other versions of every template
+  tpls.forEach((t) => { const pv = pickVer(t); (t.versions || []).filter((v) => v && v.id && v !== pv).forEach((v) => ordered.push(ver(t, v))); });
   const published = new Set((posts || []).filter((p) => p.status === 'Published').map((p) => p.d));
   const picked = (designs || [])
     .filter((d) => d.status === 'Approved' || published.has(d.id))
@@ -42,7 +67,8 @@ export function pickSources(brand, designs, posts) {
       kind: 'design', id: d.id, name: d.name, ratio: d.ratio, at: d.at || 0, live: !!(d.pages && d.pages[0] && d.pages[0].live),
       rev: sourceRev(d.pages && d.pages[0] ? d.pages[0] : d),
     }));
-  return templates.concat(picked).slice(0, MAX_SOURCES);
+  const room = MAX_SOURCES - Math.min(picked.length, DESIGN_SLOTS);
+  return ordered.slice(0, room).concat(picked).slice(0, MAX_SOURCES);
 }
 
 /** A string that changes when a reference's content is edited, or a reference is added or removed; not when it is only saved again. */

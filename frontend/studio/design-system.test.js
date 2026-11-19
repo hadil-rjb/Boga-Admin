@@ -14,8 +14,22 @@ describe('pickSources', () => {
     const posts = [{ d: 'd4', status: 'Published' }, { d: 'd3', status: 'Scheduled' }];
     expect(pickSources(brand, designs, posts).map((s) => s.id)).toEqual(['t2', 't1', 'd4', 'd2']);
   });
-  it('caps at 12 and returns [] for a brand with nothing to learn from', () => {
-    const brand = { templates: Array.from({ length: 20 }, (_, i) => tpl('t' + i, i)) };
+  it('covers every category first, then a version of each (another size first), then the rest', () => {
+    const t = (id, at, category, versions) => ({ ...tpl(id, at), category, versions });
+    const v = (id, ratio) => ({ id, name: 'V ' + id, ratio, bg: '#fff', layers: [] });
+    const brand = { templates: [t('n1', 9, 'News', [v('a', '4:5'), v('b', '9:16')]), t('n2', 8, 'News'), t('q1', 5, 'Q&A', [v('c', '4:5')])] };
+    expect(pickSources(brand, [], []).map((s) => s.id)).toEqual(['n1', 'q1', 'n1__b', 'q1__c', 'n2', 'n1__a']);
+    const s = pickSources(brand, [], [])[2];
+    expect(s).toMatchObject({ kind: 'template', tpl: 'n1', ver: 'b', name: 'T n1 · V b', ratio: '9:16', category: 'News' });
+  });
+  it('keeps room for approved designs when templates are many', () => {
+    const brand = { templates: Array.from({ length: 30 }, (_, i) => tpl('t' + i, i)) };
+    const ids = pickSources(brand, [des('d1', 'Approved', 1), des('d2', 'Approved', 2)], []).map((s) => s.id);
+    expect(ids).toHaveLength(MAX_SOURCES);
+    expect(ids.slice(-2)).toEqual(['d2', 'd1']);
+  });
+  it('caps at MAX_SOURCES and returns [] for a brand with nothing to learn from', () => {
+    const brand = { templates: Array.from({ length: 30 }, (_, i) => tpl('t' + i, i)) };
     expect(pickSources(brand, [], [])).toHaveLength(MAX_SOURCES);
     expect(pickSources({ templates: [] }, [des('d1', 'Draft', 1)], [])).toEqual([]);
     expect(pickSources({}, undefined, undefined)).toEqual([]);

@@ -65,10 +65,11 @@ const ref = (o = {}) => ({ kind: 'template', id: 't1', name: 'T', ratio: '4:5', 
 const check = async (body: any) => (await validate(plainToInstance(AnalyzeSystemDto, body))).length;
 const kit = { name: 'Boga', colors: [{ name: 'Red', hex: '#E8343F' }], fonts: { heading: 'Inter' } };
 describe('AnalyzeSystemDto', () => {
-  it('accepts up to 12 references and rejects 13, a bad id and a non-image', async () => {
+  it('accepts up to 24 references and rejects 25, a bad id and a non-image', async () => {
     expect(await check({ kit, references: [ref()] })).toBe(0);
     expect(await check({ kit, references: [] })).toBe(0);
-    expect(await check({ kit, references: Array.from({ length: 13 }, (_, i) => ref({ id: 't' + i })) })).toBeGreaterThan(0);
+    expect(await check({ kit, references: Array.from({ length: 25 }, (_, i) => ref({ id: 't' + i })) })).toBeGreaterThan(0);
+    expect(await check({ kit, references: Array.from({ length: 24 }, (_, i) => ref({ id: 't' + i + '__v' + i })) })).toBe(0);
     expect(await check({ kit, references: [ref({ id: '../x' })] })).toBeGreaterThan(0);
     expect(await check({ kit, references: [ref({ image: 'https://x/y.png' })] })).toBeGreaterThan(0);
   });

@@ -351,7 +351,7 @@ K  pause
   /** History next to the comments in the top bar; both light while their list is open */
   /* ---- the top bar: three zones (the design; the mode; actions). Zoom sits on the canvas, the view toggles share one menu ---- */
   /** The view toggles the editor adds to the bar, shown as one "View" menu: [selector of the original button, label] */
-  const VIEW = [['#edSafe', 'Safe zones'], ['#edGrid', 'Grid overlay'], ['#edRulers', 'Rulers'], ['#edAll34', 'All pages side by side']];
+  const VIEW = [['#edSafe', 'Safe zones'], ['#edGrid', 'Grid overlay'], ['#edRulers', 'Rulers'], ['#edAll34', 'All pages side by side'], ['#edVers35', 'All versions side by side']];
   function arrangeTop() {
     const top = $('.ed-top'); if (!top) return;
     top.classList.add('vs-top');
@@ -474,9 +474,11 @@ K  pause
   const _tab = ACT.edTab;
   /* the comment button (top bar) also opens the comment list while comment mode is on */
   const _cm = ACT.cm36Mode;
-  if (_cm) ACT.cm36Mode = function () {
+  if (_cm) ACT.cm36Mode = function (a) {
     const r = _cm.apply(this, arguments), b = $('#edCm36');
     if (ED.d && b && b.classList.contains('on') && ED.rtab !== 'comments') { ED.rtab = 'comments'; ed.props(); }
+    // the top bar's button is the comments' on/off: off also closes the list, and the pins go with it
+    else if (ED.d && a && a.id === 'edCm36' && b && !b.classList.contains('on') && ED.rtab === 'comments') ACT.edRTab({ dataset: { k: 'design' } }); // as its ✕ does (the pins go too)
     return r;
   };
   Object.assign(ACT, {

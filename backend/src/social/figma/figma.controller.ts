@@ -53,6 +53,8 @@ export class FigmaController {
 
   /* ---------- frames, versions, import ---------- */
   @Get("frames") frames(@Query("url") url?: string, @Query("fileKey") fileKey?: string, @Query("nodeId") nodeId?: string) { return this.figma.frames({ url, fileKey, nodeId }); }
+  /** A page (or file) read as a template library: categories → templates → versions */
+  @Get("library") library(@Query("url") url?: string, @Query("fileKey") fileKey?: string) { return this.figma.library({ url, fileKey }); }
   @Get("version") version(@Query("fileKey") fileKey: string) { return this.figma.version(fileKey); }
   @Roles(...EDIT) @Post("import") import(@Body() d: FigmaImportDto) { return this.figma.import(d.fileKey, d.ids, { fonts: d.fonts, keepFonts: d.keepFonts }); }
 }

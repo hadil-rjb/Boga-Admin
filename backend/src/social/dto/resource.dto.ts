@@ -64,14 +64,22 @@ export class CreateTemplateDto {
   @IsOptional() @IsObject() live?: Record<string, unknown>;
   /** Other versions of the template (copied with a brand) */
   @IsOptional() @IsArray() versions?: Record<string, unknown>[];
+  /** Where it is filed in the brand kit ("News", "Q&A"…): templates are listed by category */
+  @IsOptional() @IsString() @MaxLength(60) category?: string;
+  /** The Figma frame it was imported from: { fileKey, node } */
+  @IsOptional() @IsObject() figma?: Record<string, unknown>;
 }
 
 export class UpdateTemplateDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) name?: string;
+  /** Its size, when its design was edited at another size */
+  @IsOptional() @Matches(RATIO_RE) ratio?: string;
   @IsOptional() @IsString() bg?: string;
   @IsOptional() @IsArray() layers?: Record<string, unknown>[];
   @IsOptional() @IsObject() live?: Record<string, unknown>;
   @IsOptional() @IsArray() versions?: Record<string, unknown>[];
+  /** Its category; an empty string files it under no category */
+  @IsOptional() @IsString() @MaxLength(60) category?: string;
 }
 
 export class CreatePostDto {

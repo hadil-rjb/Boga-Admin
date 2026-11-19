@@ -10,7 +10,8 @@
 
 /* ---------- Shared by every workspace ---------- */
 @layer base.foundation {
-  html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+  /* clip, not hidden: hidden turns body into the scroll box and every position:sticky stops sticking */
+  html, body { margin: 0; max-width: 100%; overflow-x: hidden; overflow-x: clip; }
   body { background: var(--bg); color: var(--text-1); }
 }
 

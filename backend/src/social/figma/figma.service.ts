@@ -10,6 +10,7 @@ import { ApiError, download, request } from "../publishing/http";
 import { newId } from "../social.util";
 import { canvasOf, convertFrame, defaultFont, parseFigmaUrl, STUDIO_FONTS } from "./convert";
 import { publicApiBase } from "../../common/public-url";
+import { organize, type OrgFrame, type OrgLabel } from "./organize";
 
 /** Workspace connection (encrypted credentials) and picker preferences (default file, recent files, teams) */
 const ID = "figma", PREFS = "figma:prefs";
@@ -17,6 +18,8 @@ const FRAME_TYPES = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
 /** A group with frames inside is browsed; any other group is imported like a frame */
 const holdsFrames = (n: any): boolean => (n.children || []).some((c: any) => FRAME_TYPES.has(c.type) || (c.type === "GROUP" && holdsFrames(c)));
 const MAX_FRAMES = 60, MAX_RECENT = 12;
+/** Frames a library read (Brand kit → Templates → Import from Figma) takes at most */
+const MAX_LIBRARY = 400;
 /**
  * Memory, for a small server (Render's free plan: 512 MB, the API itself taking about 200): decoding one 4000 px picture
  * and resizing it costs about 60 MB with one libvips thread at 2160 px, 140 MB with eight threads at 3200 px. Several at
@@ -318,6 +321,56 @@ export class FigmaService {
         return { id: f.id, name: f.name, page: f.page, kind: f.type === "GROUP" ? "group" : "frame", width: c.W, height: c.H, ratio: c.key, thumb: thumbs.images?.[f.id] || null };
       }),
     };
+  }
+
+  /**
+   * A whole page (or file) read as a template library: every frame, with the text labels and sections that name its
+   * rows, organized into categories → templates → versions (organize.ts). Up to MAX_LIBRARY frames.
+   */
+  async library(input: { url?: string; fileKey?: string }) {
+    const ref = input.fileKey ? { fileKey: input.fileKey, nodeId: undefined as string | undefined } : parseFigmaUrl(input.url || "");
+    if (!ref) throw new BadRequestException("That isn't a Figma file link (figma.com/design/…)");
+    const frames: OrgFrame[] = [], labels: OrgLabel[] = [], raw: any[] = [];
+    let more = false;
+    const box = (n: any) => n.absoluteBoundingBox || { x: 0, y: 0, width: 0, height: 0 };
+    const walk = (n: any, page: string, section?: string) => {
+      if (!n || n.visible === false) return;
+      if (FRAME_TYPES.has(n.type) || (n.type === "GROUP" && !holdsFrames(n))) {
+        if (frames.length >= MAX_LIBRARY) { more = true; return; }
+        const b = box(n), c = canvasOf(b.width || 1080, b.height || 1080);
+        frames.push({ id: n.id, name: String(n.name || ""), page, section, x: b.x, y: b.y, w: b.width, h: b.height, ratio: c.key, width: c.W, height: c.H });
+        raw.push(n);
+      } else if (n.type === "TEXT") {
+        const t = String(n.characters || n.name || "").trim(), b = box(n);
+        if (t && t.length <= 60) labels.push({ text: t, page, section, x: b.x, y: b.y, w: b.width, h: b.height });
+      } else if (n.type === "CANVAS") (n.children || []).forEach((c: any) => walk(c, n.name));
+      else if (n.type === "SECTION") (n.children || []).forEach((c: any) => walk(c, page, n.name));
+      else if (["COMPONENT_SET", "GROUP"].includes(n.type)) (n.children || []).forEach((c: any) => walk(c, page, section));
+    };
+    let file: any;
+    if (ref.nodeId) {
+      file = await this.get(`/v1/files/${ref.fileKey}/nodes?ids=${encodeURIComponent(ref.nodeId)}&depth=3`);
+      const node = file.nodes?.[ref.nodeId]?.document;
+      if (!node) throw new BadRequestException("That page or frame wasn't found in the file");
+      if (node.type === "DOCUMENT") (node.children || []).forEach((p: any) => walk(p, p.name));
+      else walk(node, node.type === "CANVAS" ? node.name : "");
+      if (!file.name) file = { ...file, ...(await this.get(`/v1/files/${ref.fileKey}?depth=1`)) };
+    } else {
+      file = await this.get(`/v1/files/${ref.fileKey}?depth=3`); // pages, what is on them, what is in their sections
+      (file.document?.children || []).forEach((p: any) => walk(p, p.name));
+    }
+    await this.remember({ key: ref.fileKey, name: file.name, thumb: file.thumbnailUrl ?? null, lastModified: file.lastModified ?? null }).catch(() => undefined);
+    if (!frames.length) throw new BadRequestException("No frames found there. Link to a page of the file (or the whole file).");
+    // thumbnails, 100 per request (Figma renders them; a missing one only shows an empty preview)
+    const thumbs: Record<string, string> = {}, scale = this.thumbScale(raw);
+    const chunks: string[] = [];
+    for (let i = 0; i < frames.length; i += 50) chunks.push(frames.slice(i, i + 50).map((f) => f.id).join(","));
+    for (let i = 0; i < chunks.length; i += 4) { // four renders at a time: a 250-frame page reads in seconds, not minutes
+      const rs = await Promise.all(chunks.slice(i, i + 4).map((ids) => this.get(`/v1/images/${ref.fileKey}?ids=${encodeURIComponent(ids)}&format=png&scale=${scale}`).catch(() => ({ images: {} }))));
+      rs.forEach((r: any) => Object.assign(thumbs, r.images || {}));
+    }
+    frames.forEach((f) => { f.thumb = thumbs[f.id] || null; });
+    return { fileKey: ref.fileKey, file: file.name, thumb: file.thumbnailUrl ?? null, version: file.version, lastModified: file.lastModified, more, frames: frames.length, categories: organize(frames, labels) };
   }
 
   private thumbScale(list: any[]) {

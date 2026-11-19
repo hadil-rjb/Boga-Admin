@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SIZES, lumOf, parseColor, swapColor, langOf, themeOf, resizePage, swapTheme, textsToTranslate, swapLanguage, versionName, mergeLook } from './variants.js';
+import { SIZES, lumOf, parseColor, swapColor, langOf, themeOf, resizePage, swapTheme, textsToTranslate, swapLanguage, versionName, mergeLook, mirrorLayout } from './variants.js';
 
 const PAL = { dark: '#0B1220', light: '#F8FAFC' };
 /** A dark news story: background photo, a glass card with a picture and two texts in it, a white logo, a footer */
@@ -100,6 +100,20 @@ describe('language', () => {
     expect(byId(pg, 'title')).toMatchObject({ text: 'الذهب يسجل رقما قياسيا', dir: 'rtl', align: 'right', font: 'Tajawal' });
     expect(byId(pg, 'foot').align).toBe('right');
     expect(pg.live).toMatchObject({ lang: 'ar', pick: ['n1'] }); // the same story, translated
+  });
+  it('sets Arabic text without letter spacing and with taller lines, and gives the Latin values back', () => {
+    const pg = { layers: [{ id: 't', type: 'text', text: 'Big headline', size: 70, ls: -2.1, lh: 1.05, align: 'left' }] };
+    swapLanguage(pg, 0, 'ar', new Map([['0:t', 'عنوان كبير']]), {});
+    expect(pg.layers[0]).toMatchObject({ ls: 0, lh: 1.3 });
+    swapLanguage(pg, 0, 'en', new Map([['0:t', 'Big headline']]), {});
+    expect(pg.layers[0]).toMatchObject({ ls: -2.1, lh: 1.05 });
+    expect(pg.layers[0].ls0).toBeUndefined();
+  });
+  it('mirrors content across the canvas and leaves the background', () => {
+    const pg = { layers: [{ id: 'bg', x: -100, y: 0, w: 1300, h: 1350 }, { id: 'logo', x: 79, y: 99, w: 294, h: 57 }, { id: 'r', x: 100, y: 0, w: 200, h: 50, rot: 10 }] };
+    mirrorLayout(pg, 1080, new Set(['bg']));
+    expect(pg.layers.map((l) => l.x)).toEqual([-100, 707, 780]);
+    expect(pg.layers[2].rot).toBe(-10);
   });
 });
 
