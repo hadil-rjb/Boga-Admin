@@ -10,6 +10,7 @@ import { UpdateFramerSettingsDto } from "./dto/framer.dto";
 import { parseFramerProject, withFramer } from "./framer.client";
 import { validTz, zonedToUtc } from "./time";
 import { publicOrigin } from "../common/public-url";
+import { diff, itemToArticle, type DiffField, type Fld, type Item, type Pulled, type Resolved } from "./pull";
 
 /** Champs de l'article → noms de champs Framer reconnus automatiquement (insensible à la casse). */
 export const MAP_KEYS = ["title", "meta", "sub", "cat", "tags", "html", "img", "alt", "date"] as const;
@@ -211,6 +212,67 @@ export class FramerService {
       bytes = new Uint8Array(await r.arrayBuffer());
     }
     return f.uploadImage({ image: { bytes, mimeType }, altText: alt || undefined });
+  }
+
+  /* ───────────── « Get from Framer » : lecture de la collection (rien n'est envoyé à Framer) ───────────── */
+  /** The collection's published items mapped to article fields, with the same field matching as publishing */
+  private async readCollection(): Promise<{ items: (Pulled & { itemId: string })[]; drafts: number }> {
+    const s = await this.load(), { url, key } = this.creds(s);
+    if (!url || !key || !s.collectionId) throw new BadRequestException("Framer is not configured (Settings → Framer)");
+    if (this.running) throw new BadRequestException("A Framer sync is in progress — try again in a moment");
+    this.running = true;
+    try {
+      return await withFramer(url, key, async f => {
+        const col = await f.getCollection(s.collectionId);
+        if (!col) throw new BadRequestException("The CMS collection no longer exists in Framer");
+        const fields: Fld[] = await col.getFields();
+        const pick = (k: (typeof MAP_KEYS)[number]) => { const p = s.fieldMap?.[k]; return p === "-" ? undefined : p ? fields.find(x => x.id === p) : this.autoField(k, fields); };
+        const r: Resolved = { tagFields: s.fieldMap?.tags ? [] : this.tagFields(fields) };
+        for (const k of MAP_KEYS) (r as any)[k] = pick(k);
+        const all: Item[] = await col.getItems();
+        const live = all.filter(i => !i.draft && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(i.slug ?? ""));
+        return { items: live.map(i => ({ ...itemToArticle(i, r, s.timezone), itemId: String(i.id ?? "") })), drafts: all.length - live.length };
+      });
+    } finally { this.running = false; }
+  }
+
+  /** Preview: what is new on Framer, what differs from the admin, what is the same. Nothing is saved. */
+  async pullPreview() {
+    const { items, drafts } = await this.readCollection();
+    const have = new Map((await this.articles.find({ slug: { $in: items.map(i => i.slug) } }).select("slug title meta sub cat t html img alt date status").lean()).map(a => [a.slug, a]));
+    const rows = items.map(i => {
+      const a = have.get(i.slug);
+      const changes: DiffField[] = a ? diff(a as any, i) : [];
+      return { slug: i.slug, title: i.title || i.slug, date: i.date ?? "", img: i.img ?? "", state: !a ? "new" : changes.length ? "changed" : "same", changes, status: a?.status ?? null };
+    });
+    const order = { new: 0, changed: 1, same: 2 } as const;
+    rows.sort((x, y) => order[x.state as keyof typeof order] - order[y.state as keyof typeof order] || (y.date || "").localeCompare(x.date || ""));
+    return { items: rows, drafts };
+  }
+
+  /** Imports the chosen articles: new ones are created as Live, existing ones take Framer's version of the fields that differ. The collection is read again here, never taken from the browser. */
+  async pullApply(slugs: string[], actor: Actor) {
+    const want = new Set(slugs);
+    const { items } = await this.readCollection();
+    let created = 0, updated = 0;
+    for (const i of items.filter(x => want.has(x.slug))) {
+      const { itemId, slug, ...fields } = i;
+      const a = await this.articles.findOne({ slug }).lean();
+      const sync = { status: "Live", framerState: "synced", framerItemId: itemId, framerSyncedAt: new Date(), framerNote: "", framerTries: 0 };
+      if (!a) {
+        await this.articles.create({ slug, ...fields, title: fields.title || slug, t: fields.t ?? [], ...sync });
+        created++;
+      } else {
+        const ch = diff(a as any, fields);
+        const set: Record<string, unknown> = { ...sync };
+        for (const k of ch) set[k] = (fields as any)[k];
+        if (ch.includes("date") && fields.time) set.time = fields.time;
+        await this.articles.updateOne({ slug }, { $set: set });
+        updated++;
+      }
+      await this.act.record({ kind: "article", action: a ? "framer-pull-update" : "framer-pull-create", actorId: actor.id ?? undefined, actorName: actor.name, target: fields.title || slug, slug });
+    }
+    return { created, updated };
   }
 
   /* ───────────── Résultat enregistré sur l'article ───────────── */
