@@ -4466,6 +4466,7 @@ Object.assign(IC, {
   net_fb: '<path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3Z"/>',
   net_tt: '<path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"/>',
   net_tg: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  net_yt: '<path d="M2.5 17a24.1 24.1 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.6 49.6 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.1 24.1 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.6 49.6 0 0 1-16.2 0A2 2 0 0 1 2.5 17"/><path d="m10 15 5-3-5-3z"/>',
   heart: '<path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/>',
   comment: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16Z"/>',
@@ -4851,7 +4852,7 @@ Object.assign(IC, {
 (function () {
   const clone = (o) => JSON.parse(JSON.stringify(o)), pad = (n) => String(n).padStart(2, '0');
   const conn = () => Object.keys(PLATFORMS).filter((k) => S.platforms[k]);
-  const LIM = { ig: 2200, li: 3000, x: 280, fb: 63206, tt: 2200, tg: 4096 };
+  const LIM = { ig: 2200, li: 3000, x: 280, fb: 63206, tt: 2200, tg: 4096, yt: 5000 };
   const hm = (t) => pad(Math.floor(t)) + ':' + pad(Math.round((t % 1) * 60));
   const tmin = (s) => { const [h, m] = String(s || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
   const dparse = (k) => new Date(k + 'T00:00');
@@ -4862,8 +4863,8 @@ Object.assign(IC, {
   const refresh = () => { if (/^#\/(planner|overview|studio)?$/.test(location.hash) || !location.hash) route(); };
 
   /* ---------- best time model (engagement patterns, not your analytics) ---------- */
-  const PEAK = { ig: [[12.5, .9], [18.5, 1], [21, .8]], li: [[8.5, .9], [12, 1], [17.5, .8]], x: [[9, .8], [13, .9], [19, 1]], fb: [[13, 1], [19.5, .85]], tt: [[19, 1], [21.5, .9]], tg: [[10, .8], [20, 1]] };
-  const DOW = { ig: [.9, .8, .95, 1, .95, .85, .9], li: [.3, 1, 1, .95, .9, .6, .25], x: [.7, .95, 1, 1, .9, .8, .65], fb: [.8, .9, .95, 1, .95, .9, .85], tt: [.85, .85, .9, .95, 1, 1, 1], tg: [.8, .9, .95, .95, 1, .95, .85] };
+  const PEAK = { ig: [[12.5, .9], [18.5, 1], [21, .8]], li: [[8.5, .9], [12, 1], [17.5, .8]], x: [[9, .8], [13, .9], [19, 1]], fb: [[13, 1], [19.5, .85]], tt: [[19, 1], [21.5, .9]], tg: [[10, .8], [20, 1]], yt: [[15, .85], [18, 1], [21, .9]] };
+  const DOW = { ig: [.9, .8, .95, 1, .95, .85, .9], li: [.3, 1, 1, .95, .9, .6, .25], x: [.7, .95, 1, 1, .9, .8, .65], fb: [.8, .9, .95, 1, .95, .9, .85], tt: [.85, .85, .9, .95, 1, 1, 1], tg: [.8, .9, .95, .95, 1, .95, .85], yt: [1, .85, .85, .9, .95, 1, 1] };
   function score(net, dow, t) { let s = 0; (PEAK[net] || PEAK.ig).forEach(([c, w]) => { s = Math.max(s, w * Math.exp(-(((t - c) / 2.4) ** 2))); }); return Math.min(1, s * (DOW[net] || DOW.ig)[dow] * (0.92 + 0.08 * hash(net + dow + t))); }
   const nsc = (nets, dow, t) => { const a = nets.length ? nets : conn(); return a.reduce((s, n) => s + score(n, dow, t), 0) / Math.max(1, a.length); };
   function bestTimes(nets, key, n = 3) {
@@ -5149,6 +5150,7 @@ Object.assign(IC, {
     if (net === 'x') { const a = [...String(cap || '')], head = a.slice(0, 280).join(''), over = a.slice(280).join(''); return `<div class="pv7 n-x"><div class="pvx">${av}<div class="bd"><div><b>${nm}</b> <span class="mu">@${hd} · now</span></div><div class="pvt" style="padding:0"><p>${hl(head)}${over ? `<span class="ovr">${esc(over)}</span>` : ''}</p>${lk}</div>${n > 1 ? pvGrid(d, 244) : pvImg(d, pi, 244, 1.25)}<div class="pva act">${[['comment', 17], ['repeat', 17], ['heart', 17], ['bars', 17]].map(([i, s]) => `<span>${ic(i, s)}</span>`).join('')}</div></div></div></div>`; }
     if (net === 'fb') { const c = cut(cap, 200); return `<div class="pv7 n-fb"><div class="pvh">${av}<div class="who"><b>${nm}</b><small>${globe}</small></div><span class="mo">${ic('more', 16)}</span></div><div class="pvt"><p>${hl(c.t)}${c.more ? '… <span class="mu">See more</span>' : ''}</p>${lk}</div>${pvCar(d, pi, W, 1.25, true)}<div class="pva act"><span>${ic('thumb', 16)}Like</span><span>${ic('comment', 16)}Comment</span><span>${ic('share', 16)}Share</span></div></div>`; }
     if (net === 'tt') { const c = cut(cap, 90); return `<div class="pv7 n-tt">${pvCar(d, pi, W, 1.6, false)}${n > 1 ? `<div class="car-d seg">${[...Array(n)].map((_, i) => `<button data-c="pvg" data-i="${i}" class="${i === pi ? 'on' : ''}" aria-label="Slide ${i + 1}"></button>`).join('')}</div>` : ''}<div class="cap"><b>@${hd}</b><br>${hl(c.t)}${c.more ? '…' : ''}</div></div>`; }
+    if (net === 'yt') { const t = String(cap || '').trim().split('\n')[0].replace(/[<>]/g, '').slice(0, 100) || 'New video'; return `<div class="pv7 n-yt">${pvImg(d, pi, W, d.ratio === '9:16' ? 1.78 : 1)}<div class="pvyt">${av}<div class="grow"><b>${esc(t)}</b><small>${nm} · 0 views · now</small></div><span class="mo">${ic('more', 16)}</span></div></div>`; }
     const c = cut(cap, 260); return `<div class="pv7 n-tg"><div class="bub">${n > 1 ? pvGrid(d, 280) : pvImg(d, pi, 280, 1.25)}<p>${hl(c.t)}${c.more ? '…' : ''}</p>${lk}</div></div>`;
   }
   window.postPreview = postPreview;
@@ -5249,6 +5251,8 @@ Object.assign(IC, {
         if (st.pf.has('ig') && capFor('ig').trim() && !tagsOf(capFor('ig') + ' ' + st.fc).length) out.push(['warn', 'Instagram: add 3 to 5 hashtags to be found']);
         if (st.d && st.d.ratio === '9:16' && ns.some((n) => ['li', 'x', 'fb'].includes(n))) out.push(['warn', '9:16 is cropped in LinkedIn, X and Facebook feeds']);
         const vid = isVideoPost(st.d);
+        if (st.d && !vid && st.pf.has('yt')) out.push(['err', 'YouTube only publishes videos: animate this design or use a clip']);
+        if (st.d && vid && st.pf.has('yt')) out.push(['ok', st.d.ratio === '9:16' ? 'YouTube: posts as a Short if it’s 3 min or less' : 'YouTube: the first caption line becomes the title']);
         if (st.d && !vid && st.pf.has('ig') && st.d.ratio !== '9:16') { const [rw, rh] = RATIOS[st.d.ratio], a = rw / rh; if (a < 0.8 - 1e-3 || a > 1.91 + 1e-3) out.push(['err', 'Instagram only accepts images from 4:5 (portrait) to 1.91:1 (landscape)']); }
         if (st.d && !vid && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
         if (vid) {
@@ -6837,24 +6841,130 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     });
   }
 
-  function telegramDialog(c) {
-    modal(`<div class="mh"><h2>Connect Telegram</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-      <div class="mb"><div class="how"><b>Before you start</b><ol>${c.setup.map(li).join('')}</ol></div>
-      <label class="lab">Bot token<input class="field" id="tgTok" type="password" autocomplete="off" placeholder="123456789:AA…"></label>
-      <label class="lab">Channel or group<input class="field" id="tgChat" placeholder="@yourchannel or -100…"></label>
-      <div class="note warn" id="tgErr" hidden></div></div>
-      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="tgGo">Connect</button></div>`, {
-      onMount: (bg, close) => {
-        const go = async () => {
-          const btn = $('#tgGo', bg); if (btn.disabled) return; btn.disabled = true; btn.textContent = 'Checking…';
-          try {
-            const r = await api(`${brandPath()}/connections/tg`, { method: 'POST', body: { botToken: $('#tgTok', bg).value, chat: $('#tgChat', bg).value } });
-            close(); connected('tg', r.account.handle || r.account.name);
-          } catch (e) { const er = $('#tgErr', bg); er.hidden = false; er.innerHTML = ic('alert', 16) + `<span>${esc(e.message)}</span>`; btn.disabled = false; btn.textContent = 'Connect'; }
-        };
-        bg.addEventListener('click', (e) => { if (e.target.closest('#tgGo')) go(); });
-        bg.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList.contains('field')) { e.preventDefault(); go(); } });
+  /* Telegram: 2 short steps (Bot → Channel). Each is checked on the server (POST …/connections/tg/check);
+     Connect re-verifies the channel (admin + "Post messages") and only then saves. The token stays in this dialog. */
+  Object.assign(IC, {
+    tgBot: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+    tgKey: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+    tgPaste: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+    tgPlus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  });
+  function telegramDialog() {
+    const W = { step: 1, token: '', bot: null, chats: [], pick: '', manual: false, typed: '', res: {}, err: '', busy: false, poll: 0, polls: 0 };
+    const TOKEN_RE = /^\d+:[\w-]{30,}$/, MAX_POLLS = 30;
+    const check = (chat) => api(`${brandPath()}/connections/tg/check`, { method: 'POST', body: { botToken: W.token, chat: chat || '' } });
+    const spin = '<i class="tgw-spin" aria-hidden="true"></i>';
+    const errLine = (m) => (m ? `<p class="tgw-err" role="alert">${ic('alert', 14)}<span>${esc(m)}</span></p>` : '');
+    const target = () => (W.manual ? W.typed : W.pick);
+    let bg, close;
+
+    function stepOne() {
+      return `
+        <a class="tgw-card" href="https://t.me/BotFather" target="_blank" rel="noopener">
+          <span class="tgw-ico">${ic('tgBot', 20)}</span>
+          <span class="grow"><b>Create a bot</b><small>@BotFather → <code>/newbot</code></small></span>${ic('ext', 16)}</a>
+        <div class="tgw-field">${ic('tgKey', 16)}
+          <input id="tgTok" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the bot token" aria-label="Bot token" value="${esc(W.token)}">
+          <button type="button" class="btn ghost icon sm" data-tg="paste" title="Paste" aria-label="Paste">${ic('tgPaste', 16)}</button>
+          <button type="button" class="btn ghost icon sm" data-tg="eye" title="Show" aria-label="Show token">${ic('eye', 16)}</button></div>
+        ${W.busy ? `<p class="tgw-hint">${spin}Checking…</p>` : errLine(W.err)}`;
+    }
+    function chatRow(x) {
+      const r = W.res[x.id], st = r === 'busy' ? 'busy' : r ? (r.problem ? 'bad' : 'ok') : x.canPost === false ? 'bad' : '';
+      const badge = st === 'busy' ? spin : st === 'ok' ? `<span class="tgw-badge ok">${ic('check', 12)}Ready</span>` : st === 'bad' ? `<span class="tgw-badge bad">${ic('alert', 12)}Can't post</span>` : '';
+      return `<label class="tgw-chat ${W.pick === x.id && !W.manual ? 'on' : ''}"><input type="radio" name="tgPick" value="${esc(x.id)}" ${W.pick === x.id && !W.manual ? 'checked' : ''}>
+        <span class="tgw-ico sm">${ic(x.type === 'channel' ? 'net_tg' : 'users', 16)}</span>
+        <span class="grow"><b>${esc(x.title)}</b>${x.username ? `<small>@${esc(x.username)}</small>` : ''}</span>${badge}</label>
+        ${W.pick === x.id && !W.manual && r && r !== 'busy' && r.problem ? errLine(r.problem) : ''}`;
+    }
+    function stepTwo() {
+      const b = W.bot, typed = W.res['@typed'];
+      return `
+        <div class="tgw-botchip"><span class="tgw-ico sm ok">${ic('tgBot', 16)}</span><span class="grow"><b>@${esc(b.username)}</b></span><button type="button" class="btn ghost sm" data-tg="back">Change</button></div>
+        <a class="btn ${W.chats.length ? 'secondary' : 'primary'} tgw-add" href="${esc(b.addToChannel)}" target="_blank" rel="noopener">${ic('tgPlus', 16)}Add bot to my channel</a>
+        <div class="tgw-list" aria-live="polite">
+          ${W.chats.length ? W.chats.map(chatRow).join('') : `<p class="tgw-hint tgw-empty">${W.polls < MAX_POLLS ? spin + 'Waiting for your channel…' : ic('alert', 14) + 'No channel yet'}<button type="button" class="btn ghost sm" data-tg="refresh">${ic('refresh', 14)}</button></p>`}
+        </div>
+        ${W.manual ? `<div class="tgw-field">${ic('link', 16)}<input id="tgChat" placeholder="@channel or t.me/channel" aria-label="Channel" value="${esc(W.typed)}"></div>${typed && typed !== 'busy' && typed.problem ? errLine(typed.problem) : ''}`
+          : `<button type="button" class="tgw-link" data-tg="manual">Enter channel manually</button>`}
+        ${errLine(W.err)}`;
+    }
+    function foot() {
+      if (W.step === 1) return `<button class="btn secondary" data-close>Cancel</button><button class="btn primary" data-tg="s1" ${W.busy ? 'disabled' : ''}>Continue</button>`;
+      return `<button class="btn secondary" data-tg="back" ${W.busy ? 'disabled' : ''}>Back</button><button class="btn primary" data-tg="go" ${target() && !W.busy ? '' : 'disabled'}>${W.busy ? spin + 'Connecting…' : ic('check', 16) + 'Connect'}</button>`;
+    }
+    function render(focus) {
+      if (!bg || !bg.isConnected) return;
+      $('.tgw-dots', bg).innerHTML = [1, 2].map((n) => `<i class="${n === W.step ? 'on' : n < W.step ? 'done' : ''}"></i>`).join('');
+      $('.tgw-dots', bg).setAttribute('aria-label', `Step ${W.step} of 2`);
+      $('.mb', bg).innerHTML = W.step === 1 ? stepOne() : stepTwo(); $('.mf', bg).innerHTML = foot();
+      const f = focus && $(focus, bg); if (f) { f.focus(); if (f.value) f.setSelectionRange(f.value.length, f.value.length); }
+    }
+    const firstReady = () => (W.chats.find((x) => x.canPost !== false) || W.chats[0] || {}).id || '';
+    const stopPoll = () => { clearTimeout(W.poll); W.poll = 0; };
+    // step 2: watch for the bot being added (getUpdates) for about two minutes, so the channel shows up by itself
+    function poll() {
+      stopPoll();
+      if (W.step !== 2 || W.polls >= MAX_POLLS || !bg.isConnected) return;
+      W.poll = setTimeout(async () => {
+        W.polls++;
+        try { const r = await check(); if (W.step !== 2) return; W.chats = r.chats || []; if (!W.pick) W.pick = firstReady(); } catch (e) {}
+        if (W.step !== 2) return;
+        if (W.chats.length || W.polls >= MAX_POLLS) render(document.activeElement && document.activeElement.id === 'tgChat' ? '#tgChat' : null); else poll();
+      }, 4000);
+    }
+    async function refresh() {
+      stopPoll(); W.err = ''; W.polls = 0; render();
+      try { const r = await check(); W.chats = r.chats || []; if (!W.pick) W.pick = firstReady(); } catch (e) { W.err = e.message; }
+      if (W.step !== 2) return; render(); if (!W.chats.length) poll();
+    }
+    async function s1() {
+      W.token = ($('#tgTok', bg).value || '').trim(); W.err = '';
+      if (!TOKEN_RE.test(W.token)) { W.err = W.token ? 'This is not a bot token (123456789:AAE…)' : 'Paste the token from @BotFather'; return render('#tgTok'); }
+      W.busy = true; render();
+      try { const r = await check(); W.bot = r.bot; W.chats = r.chats || []; W.pick = firstReady(); W.step = 2; W.polls = 0; }
+      catch (e) { W.err = e.message; }
+      W.busy = false; render(W.step === 1 ? '#tgTok' : null); if (W.step === 2 && !W.chats.length) poll();
+    }
+    // Connect: verify the chosen channel (admin + can post), then save. A problem shows on the channel's row.
+    async function go() {
+      const key = W.manual ? '@typed' : W.pick, chat = target(); if (!chat || W.busy) return;
+      stopPoll(); W.busy = true; W.err = ''; W.res[key] = 'busy'; render();
+      try {
+        const r = await check(chat); W.res[key] = r;
+        if (!r.problem) {
+          const c = await api(`${brandPath()}/connections/tg`, { method: 'POST', body: { botToken: W.token, chat: r.chat.id } });
+          W.token = ''; close(); connected('tg', c.account.handle || c.account.name); return;
+        }
+      } catch (e) { W.res[key] = { problem: e.message }; }
+      W.busy = false; render();
+    }
+
+    close = modal(`<div class="mh"><span class="tgw-logo">${ic('net_tg', 18)}</span><h2>Connect Telegram</h2><span class="tgw-dots" role="img"></span><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb tgw"></div><div class="mf"></div>`, {
+      onClose: () => { stopPoll(); W.token = ''; },
+      onMount: (el) => {
+        bg = el; bg.querySelector('.modal').classList.add('tgw-modal'); render();
         setTimeout(() => { const t = $('#tgTok', bg); t && t.focus(); }, 30);
+        bg.addEventListener('click', async (e) => {
+          const a = e.target.closest('[data-tg]'); if (!a || a.disabled) return;
+          const k = a.dataset.tg;
+          if (k === 'eye') { const t = $('#tgTok', bg); t.type = t.type === 'password' ? 'text' : 'password'; a.innerHTML = ic(t.type === 'password' ? 'eye' : 'eyeOff', 16); }
+          else if (k === 'paste') { try { const v = (await navigator.clipboard.readText()).trim(); $('#tgTok', bg).value = v; if (v) s1(); } catch (er) { $('#tgTok', bg).focus(); } }
+          else if (k === 's1') s1();
+          else if (k === 'go') go();
+          else if (k === 'refresh') refresh();
+          else if (k === 'manual') { W.manual = true; render('#tgChat'); }
+          else if (k === 'back') { stopPoll(); W.err = ''; W.step = 1; W.busy = false; render('#tgTok'); }
+        });
+        bg.addEventListener('change', (e) => { if (e.target.name === 'tgPick') { W.pick = e.target.value; W.manual = false; render(); } });
+        bg.addEventListener('input', (e) => { if (e.target.id === 'tgChat') { W.typed = e.target.value.trim(); delete W.res['@typed']; $('.mf', bg).innerHTML = foot(); } });
+        // pasting a whole token checks it right away
+        bg.addEventListener('paste', (e) => { if (e.target.id === 'tgTok') setTimeout(() => { if (TOKEN_RE.test(e.target.value.trim()) && !W.busy) s1(); }, 0); });
+        bg.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'radio') return; e.preventDefault();
+          if (W.step === 1) s1(); else go();
+        });
       },
     });
   }

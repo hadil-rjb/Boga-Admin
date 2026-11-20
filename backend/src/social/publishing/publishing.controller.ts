@@ -55,6 +55,12 @@ export class PublishingController {
     return this.conns.connectWithToken(brandId, net, { botToken: d.botToken ?? "", chat: d.chat ?? "" }, r.user.sub);
   }
 
+  /** Connect wizard: checks the bot token (and the chat, when given) without saving anything */
+  @Roles(...EDIT) @Post("brands/:brandId/connections/:net/check")
+  check(@Param("net") net: string, @Body() d: TokenConnectDto) {
+    return this.conns.checkToken(net, { botToken: d.botToken ?? "", chat: d.chat ?? "" });
+  }
+
   @Roles(...EDIT) @Delete("brands/:brandId/connections/:net")
   disconnect(@Param("brandId") brandId: string, @Param("net") net: string) { return this.conns.disconnect(brandId, net); }
 

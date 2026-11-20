@@ -16,6 +16,7 @@ export const VIDEO_LIMITS = {
   li: { minMs: 3_000, maxMs: 30 * 60_000, maxBytes: 5 * GB, name: 'LinkedIn' },
   x: { minMs: 500, maxMs: 140_000, maxBytes: 512 * MB, name: 'X' },
   tg: { minMs: 0, maxMs: Infinity, maxBytes: 50 * MB, name: 'Telegram' },
+  yt: { minMs: 1_000, maxMs: 12 * 3600_000, maxBytes: 256 * GB, name: 'YouTube' },
 };
 const secs = (ms) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 const mb = (b) => (b >= GB ? `${Math.round(b / GB)} GB` : `${Math.round(b / MB)} MB`);

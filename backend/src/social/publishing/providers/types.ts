@@ -1,5 +1,5 @@
 /** Contract every social network implements. */
-export type Net = "ig" | "li" | "x" | "fb" | "tt" | "tg";
+export type Net = "ig" | "li" | "x" | "fb" | "tt" | "tg" | "yt";
 
 export interface TokenSet {
   accessToken: string;
@@ -87,6 +87,8 @@ export interface OAuthProvider extends Base {
 export interface TokenProvider extends Base {
   kind: "token";
   connect(input: Record<string, string>): Promise<Linked>;
+  /** Validates the connect form step by step without saving anything (Telegram's Connect wizard) */
+  check?(input: Record<string, string>): Promise<Record<string, unknown>>;
 }
 
 export type Provider = OAuthProvider | TokenProvider;

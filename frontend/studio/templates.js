@@ -5,6 +5,7 @@ export const PLATFORMS = {
   ig: { n: 'Instagram', c: '#e1306c', s: 'IG' }, li: { n: 'LinkedIn', c: '#0a66c2', s: 'in' },
   x: { n: 'X', c: '#64748b', s: 'X' }, fb: { n: 'Facebook', c: '#1877f2', s: 'f' },
   tt: { n: 'TikTok', c: '#14b8a6', s: 'Tk' }, tg: { n: 'Telegram', c: '#229ed9', s: 'Tg' },
+  yt: { n: 'YouTube', c: '#ff0033', s: 'YT' },
 };
 export const FONTS = ['Poppins', 'Cairo', 'Inter', 'Plus Jakarta Sans', 'Montserrat', 'DM Sans', 'Space Grotesk', 'Playfair Display', 'Tajawal', 'Georgia'];
 export const uid = () => Math.random().toString(36).slice(2, 9);

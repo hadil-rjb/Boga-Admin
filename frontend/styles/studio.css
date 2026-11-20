@@ -1075,6 +1075,7 @@ select option{background:var(--surface);color:var(--text-1)}
 .pv7.n-x .pva.act{padding:2px 0;border:0}
 .pv7.n-tg{background:transparent;border:0;box-shadow:none!important}
 .pv7.n-tg .bub{background:var(--pill);border-radius:14px 14px 14px 4px;padding:6px;display:flex;flex-direction:column;gap:6px}
+.pv7.n-yt .pvi{border-radius:12px}.pv7.n-yt{background:transparent;border:0;box-shadow:none!important}.pvyt{display:flex;align-items:flex-start;gap:10px;padding:10px 2px 0}.pvyt b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;font-weight:600;line-height:1.3}.pvyt small{display:block;margin-top:2px;font-size:12px;color:var(--text-3)}
 .pv7.n-tg .pvi{border-radius:10px}.pv7.n-tg .bub p{padding:0 6px;white-space:pre-wrap;word-break:break-word}
 .pv7.n-tt{background:#000;color:#fff;border:0;position:relative}
 .pv7.n-tt .cap{position:absolute;left:0;right:0;bottom:0;padding:44px 12px 12px;background:linear-gradient(transparent,rgba(0,0,0,.8));font-size:12px}
@@ -4266,3 +4267,39 @@ textarea.ds-sum{min-height:84px;max-width:none}
 .c37-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:22px 12px;border:1px dashed var(--border);border-radius:12px;text-align:center;color:var(--text-3)}
 .c37-empty b{font-size:13px;color:var(--text-1)}.c37-empty p{margin:0;font-size:12px;line-height:1.45;color:var(--text-2)}
 @container (max-width:320px){.c37-tb .kbd{display:none}}
+
+/* ---------- Connect Telegram: 2 short steps ---------- */
+@layer components {
+:where([data-ws="social"]){
+.tgw-modal{width:min(440px,100%)}
+.tgw-logo{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;border-radius:50%;background:#229ED9;color:#fff}
+.tgw-dots{display:flex;gap:4px}.tgw-dots i{width:18px;height:4px;border-radius:2px;background:var(--border)}.tgw-dots i.on{background:var(--accent)}.tgw-dots i.done{background:var(--pos)}
+.modal .mb.tgw{gap:12px}
+.tgw-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;color:var(--text-2);text-decoration:none;transition:border-color .15s,background-color .15s}
+.tgw-card:hover{border-color:var(--text-3);background:var(--icon)}
+.tgw-card b,.tgw-chat b,.tgw-botchip b{display:block;font-size:14px;font-weight:500;color:var(--text-1)}
+.tgw-card small,.tgw-chat small{display:block;font-size:12px;color:var(--text-3)}
+.tgw-card code{font-size:12px;padding:0 5px;border-radius:5px;background:var(--pill)}
+.tgw-ico{display:inline-grid;place-items:center;flex:none;width:40px;height:40px;border-radius:10px;background:rgba(34,158,217,.14);color:#229ED9}
+.tgw-ico.sm{width:32px;height:32px;border-radius:8px}.tgw-ico.ok{background:var(--pos-bg);color:var(--pos)}
+.tgw-field{display:flex;align-items:center;gap:4px;height:44px;padding:0 4px 0 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-3)}
+.tgw-field:focus-within{border-color:var(--accent)}
+.tgw-field input{flex:1;height:100%;padding:0 6px;border:0;outline:0;background:none;font-size:14px;color:var(--text-1)}
+.tgw-hint,.tgw-err{display:flex;align-items:center;gap:8px;margin:0;font-size:13px;color:var(--text-3)}
+.tgw-err{color:var(--neg)}
+.tgw-botchip{display:flex;align-items:center;gap:10px}
+.tgw-add{width:100%;height:44px}
+.tgw-list{display:flex;flex-direction:column;gap:6px}
+.tgw-chat{display:flex;align-items:center;gap:10px;padding:8px 12px 8px 8px;border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:border-color .15s}
+.tgw-chat:hover{border-color:var(--text-3)}.tgw-chat.on{border-color:var(--accent);background:rgba(253,14,53,.05)}
+.tgw-chat input{position:absolute;opacity:0;pointer-events:none}
+.tgw-chat:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.tgw-chat+.tgw-err{padding:0 4px}
+.tgw-badge{display:inline-flex;align-items:center;gap:4px;flex:none;padding:3px 8px;border-radius:999px;font-size:11.5px;font-weight:500}
+.tgw-badge.ok{background:var(--pos-bg);color:var(--pos)}.tgw-badge.bad{background:var(--neg-bg);color:var(--neg)}
+.tgw-empty{justify-content:center;min-height:56px;border:1px dashed var(--border);border-radius:12px}
+.tgw-link{align-self:center;font-size:13px;color:var(--text-3);text-decoration:underline;text-underline-offset:3px}.tgw-link:hover{color:var(--text-1)}
+.tgw-spin{display:inline-block;flex:none;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:agspin .8s linear infinite}
+.btn.primary .tgw-spin{border-color:rgba(255,255,255,.35);border-top-color:#fff}
+}
+}

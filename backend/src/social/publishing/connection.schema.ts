@@ -5,7 +5,7 @@ import { HydratedDocument, Schema as MongooseSchema } from "mongoose";
 @Schema({ collection: "social_connections", timestamps: true, versionKey: false })
 export class SocialConnection {
   @Prop({ required: true, index: true }) brandId!: string;
-  /** ig · li · x · fb · tt · tg */
+  /** ig · li · x · fb · tt · tg · yt */
   @Prop({ required: true }) net!: string;
   /** { id, name, handle?, avatar?, url? } */
   @Prop({ type: MongooseSchema.Types.Mixed, required: true }) account!: Record<string, any>;

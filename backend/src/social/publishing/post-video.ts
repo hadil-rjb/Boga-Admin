@@ -1,7 +1,8 @@
 /**
  * Video posts: what each network accepts, checked in the studio before scheduling (same rules) and by the publisher.
  * Sources: Instagram Reels (3 s – 15 min, ≤ 300 MB via URL), Facebook Page video, TikTok (≤ 10 min, ≤ 4 GB),
- * LinkedIn (3 s – 30 min, ≤ 5 GB), X (≤ 140 s for standard accounts, ≤ 512 MB), Telegram bots (≤ 50 MB upload).
+ * LinkedIn (3 s – 30 min, ≤ 5 GB), X (≤ 140 s for standard accounts, ≤ 512 MB), Telegram bots (≤ 50 MB upload),
+ * YouTube (≤ 12 h and 256 GB; 15 min until the channel is verified).
  */
 import type { Net } from "./providers/types";
 
@@ -14,6 +15,7 @@ export const VIDEO_LIMITS: Record<Net, { minMs: number; maxMs: number; maxBytes:
   li: { minMs: 3_000, maxMs: 30 * 60_000, maxBytes: 5 * 1024 ** 3, name: "LinkedIn" },
   x: { minMs: 500, maxMs: 140_000, maxBytes: 512 * 1024 ** 2, name: "X" },
   tg: { minMs: 0, maxMs: Infinity, maxBytes: 50 * 1024 ** 2, name: "Telegram" },
+  yt: { minMs: 1_000, maxMs: 12 * 3600_000, maxBytes: 256 * 1024 ** 3, name: "YouTube" },
 };
 
 const secs = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);

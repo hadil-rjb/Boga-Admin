@@ -14,7 +14,7 @@ export class SocialPost {
   @Prop({ index: true }) date?: string;
   /** HH:mm */
   @Prop() time?: string;
-  /** Platform keys: ig, li, x, fb, tt, tg */
+  /** Platform keys: ig, li, x, fb, tt, tg, yt */
   @Prop({ type: [String], default: undefined }) pf?: string[];
   @Prop() status?: string;
 }

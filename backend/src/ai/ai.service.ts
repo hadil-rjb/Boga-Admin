@@ -240,7 +240,7 @@ export class AiService {
   /** Caption for a social post, in the brand's voice, with the provider chosen in Settings → AI */
   async socialCaption(d: SocialCaptionDto, actor: Actor) {
     this.throttle(actor.id ?? "anon");
-    const NET: Record<string, string> = { ig: "Instagram", li: "LinkedIn", x: "X (280 characters max)", fb: "Facebook", tt: "TikTok", tg: "Telegram" };
+    const NET: Record<string, string> = { ig: "Instagram", li: "LinkedIn", x: "X (280 characters max)", fb: "Facebook", tt: "TikTok", tg: "Telegram", yt: "YouTube (video only: first line is the title, max 100 characters)" };
     const lang = d.language || "English";
     const system = `You write social media captions for the brand "${clip(d.brand, 120)}". Write in ${lang}. ${d.tone && d.tone !== "Auto" ? `Tone: ${d.tone}.` : ""}
 Brand voice: ${clip(d.voice, 2000) || "clear, friendly and expert"}.

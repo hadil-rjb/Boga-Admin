@@ -7,7 +7,7 @@
    needs no Date in that zone. Pure, unit-tested (agent-plan.test.js).
    ============================================================ */
 
-export const NETWORKS = ['ig', 'li', 'x', 'fb', 'tt', 'tg'];
+export const NETWORKS = ['ig', 'li', 'x', 'fb', 'tt', 'tg', 'yt'];
 export const NO_NETWORK = 'No network is connected. Connect one in Settings → Connected accounts.';
 export const VIDEO_AUTOMATION = 'Automations publish still designs only';
 const CADENCES = ['daily', 'weekdays', 'weekly'];
