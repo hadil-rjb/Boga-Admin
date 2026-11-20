@@ -96,6 +96,17 @@ export class ConnectionsService {
     }
   }
 
+  /** Checks a token connection's details without saving them (each step of the Connect wizard). */
+  async checkToken(net: string, input: Record<string, string>) {
+    const p = this.provider(net);
+    if (p.kind !== "token" || !p.check) throw new BadRequestException(`${p.name} has nothing to check`);
+    try {
+      return await p.check(input);
+    } catch (e: any) {
+      throw new BadRequestException(e.message || "Check failed");
+    }
+  }
+
   async disconnect(brandId: string, net: string) {
     await this.conns.deleteOne({ brandId, net });
     return { ok: true };

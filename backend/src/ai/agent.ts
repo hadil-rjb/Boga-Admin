@@ -234,8 +234,8 @@ const MOTION_TOOLS: AgentTool[] = [
 ];
 
 /* ---------- publishing: the agent reads the planner and proposes; the user confirms in the studio's own dialogs ---------- */
-const NETWORKS = ["ig", "li", "x", "fb", "tt", "tg"];
-const networks = { type: "array", items: { type: "string", enum: NETWORKS }, description: "Networks: ig Instagram, li LinkedIn, x X, fb Facebook, tt TikTok, tg Telegram. Only connected ones (read_planner lists them)" };
+const NETWORKS = ["ig", "li", "x", "fb", "tt", "tg", "yt"];
+const networks = { type: "array", items: { type: "string", enum: NETWORKS }, description: "Networks: ig Instagram, li LinkedIn, x X, fb Facebook, tt TikTok, tg Telegram, yt YouTube (video posts only). Only connected ones (read_planner lists them)" };
 const PLAN_TOOLS: AgentTool[] = [
   {
     name: "read_planner", modes: ["design", "animate", "video"],

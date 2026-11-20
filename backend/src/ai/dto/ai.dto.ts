@@ -72,7 +72,7 @@ export class SocialCaptionDto {
   @IsString() @MaxLength(120) design: string;
   /** Texts on the slides, top to bottom */
   @IsOptional() @IsArray() @ArrayMaxSize(80) @IsString({ each: true }) @MaxLength(400, { each: true }) texts?: string[];
-  @IsOptional() @IsArray() @ArrayMaxSize(6) @IsIn(["ig", "li", "x", "fb", "tt", "tg"], { each: true }) networks?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(7) @IsIn(["ig", "li", "x", "fb", "tt", "tg", "yt"], { each: true }) networks?: string[];
   /** First slide as a JPEG/PNG data URL, so the model sees the visual */
   @IsOptional() @IsString() @Matches(/^data:image\/(png|jpeg|webp);base64,/) @MaxLength(4_000_000) image?: string;
 }

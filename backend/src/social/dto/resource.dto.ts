@@ -3,7 +3,7 @@ import { IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsObject, IsOptional, IsSt
 export const RATIOS = ["1:1", "4:5", "9:16"];
 /** Standard ratios, or a custom canvas named "<w>x<h>" (designs imported from Figma keep their own size) */
 export const RATIO_RE = /^(1:1|4:5|9:16|\d{1,4}x\d{1,4})$/;
-export const PLATFORM_KEYS = ["ig", "li", "x", "fb", "tt", "tg"];
+export const PLATFORM_KEYS = ["ig", "li", "x", "fb", "tt", "tg", "yt"];
 export const POST_STATUSES = ["Draft", "Scheduled", "Published"];
 export const DESIGN_STATUSES = ["Draft", "Approved", "Scheduled", "Published"];
 export const TEMPLATES = ["blank", "calendar", "article", "quote", "stat", "launch", "event", "testimonial", "features"];

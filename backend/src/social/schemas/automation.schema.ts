@@ -17,7 +17,7 @@ export class SocialAutomation {
   /** { kind: daily | weekdays | weekly, days: [1..7], time: "HH:mm" } */
   @Prop({ type: MongooseSchema.Types.Mixed, required: true }) cadence!: { kind: "daily" | "weekdays" | "weekly"; days: number[]; time: string };
   @Prop({ required: true }) tz!: string;
-  /** Networks: ig, li, x, fb, tt, tg */
+  /** Networks: ig, li, x, fb, tt, tg, yt */
   @Prop({ type: [String], default: [] }) pf!: string[];
   /** { mode: fixed | ai, text, fc } — text may hold {date} {weekday} {week} {headline} {price} {brand} {website} {hashtags} */
   @Prop({ type: MongooseSchema.Types.Mixed, default: { mode: "fixed", text: "" } }) caption!: { mode: "fixed" | "ai"; text: string; fc?: string };

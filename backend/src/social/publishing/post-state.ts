@@ -49,7 +49,7 @@ export function mergePost(existing: Record<string, any> | null | undefined, item
   return out;
 }
 
-const NAMES: Record<string, string> = { ig: "instagram", li: "linkedin", x: "x", fb: "facebook", tt: "tiktok", tg: "telegram" };
+const NAMES: Record<string, string> = { ig: "instagram", li: "linkedin", x: "x", fb: "facebook", tt: "tiktok", tg: "telegram", yt: "youtube" };
 const slug = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** Same tracking parameters the studio previews */

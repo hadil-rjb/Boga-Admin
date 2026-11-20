@@ -35,7 +35,7 @@ export const SocialNotionPageSchema = SchemaFactory.createForClass(SocialNotionP
 SocialNotionPageSchema.index({ brandId: 1, postId: 1 }, { unique: true });
 
 const ID = "notion";
-const NETS: Record<string, [string, string]> = { ig: ["Instagram", "pink"], li: ["LinkedIn", "blue"], x: ["X", "gray"], fb: ["Facebook", "blue"], tt: ["TikTok", "default"], tg: ["Telegram", "blue"] };
+const NETS: Record<string, [string, string]> = { ig: ["Instagram", "pink"], li: ["LinkedIn", "blue"], x: ["X", "gray"], fb: ["Facebook", "blue"], tt: ["TikTok", "default"], tg: ["Telegram", "blue"], yt: ["YouTube", "red"] };
 const STATUSES: [string, string][] = [["Scheduled", "blue"], ["Ready", "yellow"], ["Published", "green"], ["Failed", "red"], ["In Review", "orange"], ["Approved", "purple"], ["Rejected", "pink"]];
 /** What a Status set by the team in Notion means for a run waiting for approval */
 const DECISIONS: Record<string, ReviewState> = { "In Review": "pending", Approved: "approved", Rejected: "rejected" };
