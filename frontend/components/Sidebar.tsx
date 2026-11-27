@@ -17,11 +17,12 @@ const BOT: { label: string; icon: IconKey; href: string }[] = [
   { label: "Overview", icon: "grid", href: "/bot/overview" },
   { label: "Conversations", icon: "chat", href: "/bot/conversations" },
   { label: "Knowledge base", icon: "book", href: "/bot/knowledge" },
+  { label: "Leads", icon: "users", href: "/bot/leads" },
   { label: "Settings", icon: "settings", href: "/bot/settings" },
 ];
 const WORKSPACES: { name: string; sub: string; icon: IconKey; href: string; soon?: boolean }[] = [
   { name: "Blog Admin", sub: "Content & Articles", icon: "doc", href: "/" },
-  { name: "Chatbot Admin", sub: "AI & Conversations", icon: "chat", href: "/bot/overview", soon: true },
+  { name: "Chatbot Admin", sub: "AI & Conversations", icon: "chat", href: "/bot/overview" },
   { name: "Social Media Admin", sub: "Social & Publishing", icon: "globe", href: "/social-media" },
 ];
 
@@ -32,7 +33,7 @@ export default function Sidebar({ open, onClose, user }: { open: boolean; onClos
   const pathname = usePathname();
   const inBot = pathname.startsWith("/bot");
   const ws = inBot ? "Chatbot Admin" : "Blog Admin";
-  const active = inBot ? pathname : "/" + (pathname.split("/")[1] || "");
+  const active = inBot ? "/bot/" + (pathname.split("/")[2] || "overview") : "/" + (pathname.split("/")[1] || "");
   const initial = (user.name || "?").charAt(0).toUpperCase();
   const logout = () => { localStorage.removeItem("uxb.token"); router.replace("/login"); };
 
