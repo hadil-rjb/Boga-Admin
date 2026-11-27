@@ -12,6 +12,7 @@ import { MediaModule } from "./media/media.module";
 import { SocialModule } from "./social/social.module";
 import { FootageModule } from "./footage/footage.module";
 import { CanvasModule } from "./canvas/canvas.module";
+import { ChatbotModule } from "./chatbot/chatbot.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 
 @Module({
@@ -31,6 +32,7 @@ import { JwtAuthGuard } from "./auth/jwt-auth.guard";
     SocialModule,
     FootageModule,
     CanvasModule,
+    ChatbotModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }], // tout est protégé sauf @Public()
 })

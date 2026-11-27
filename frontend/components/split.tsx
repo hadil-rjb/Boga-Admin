@@ -12,7 +12,7 @@ export function Split({ items, cur, onSelect, children }: { items: [string, stri
       <div className="flex rounded-[20px] border border-border bg-surface p-4 max-[900px]:static max-[900px]:overflow-x-auto max-[900px]:p-2 min-[901px]:sticky min-[901px]:top-[88px] min-[901px]:flex-col min-[901px]:gap-1">
         <div className="px-3 pb-2.5 pt-1 text-xs font-medium uppercase tracking-[0.08em] text-text-3 max-[900px]:hidden">Select menu</div>
         {items.map(([k, l, i]) => (
-          <button key={k} onClick={() => onSelect(k)} className={`flex cursor-pointer items-center gap-3 whitespace-nowrap rounded-12 p-3 text-left text-sm font-medium min-[901px]:w-full ${k === cur ? "bg-pill text-text-1" : "text-text-2 hover:bg-icon"}`}>
+          <button key={k} onClick={() => onSelect(k)} className={`flex shrink-0 cursor-pointer items-center gap-3 whitespace-nowrap rounded-12 p-3 text-left text-sm font-medium min-[901px]:w-full ${k === cur ? "bg-pill text-text-1" : "text-text-2 hover:bg-icon"}`}>
             <Icon k={i} size={20} className={k === cur ? "text-accent" : ""} /><span>{l}</span>
           </button>
         ))}

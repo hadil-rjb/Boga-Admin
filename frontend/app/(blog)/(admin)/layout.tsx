@@ -16,7 +16,13 @@ import { toggleTheme } from "@/lib/theme";
 import { usePathname, useRouter } from "next/navigation";
 import { useArticleDrawer } from "@/components/ArticleDrawerHost";
 
-const BT: Record<string, string> = { overview: "Chatbot Overview", conversations: "Conversations", knowledge: "Knowledge base", settings: "Chatbot Settings" };
+const BT: Record<string, [string, string]> = {
+  overview: ["Chatbot Overview", "How your website assistant is doing with visitors."],
+  conversations: ["Conversations", "Read what visitors asked and how the assistant answered."],
+  knowledge: ["Knowledge base", "What the assistant knows, and the questions it couldn't answer."],
+  leads: ["Leads", "Visitors who asked to be contacted through the assistant."],
+  settings: ["Chatbot Settings", "Connect the chatbot server and get the website widget code."],
+};
 const T: Record<string, [string, string]> = {
   "/articles": ["Articles", "Write, optimize and publish your blog content."],
   "/calendar": ["Editorial Calendar", "Plan what goes live and when. Drag an article to another day to reschedule it."],
@@ -47,7 +53,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const inBot = path === "/bot";
   const workspacePage = pn.split("/")[2];
   const [h, sub] = inBot
-    ? [BT[workspacePage] || "Chatbot Admin", "Chatbot Admin workspace."]
+    ? BT[workspacePage] || ["Chatbot Admin", "Chatbot Admin workspace."]
     : T[path] || [`Welcome back, ${user.name.split(" ")[0]}`, "Here’s how your content and SEO performance are doing."];
   const can = user.role === "admin" || user.role === "editor";
   const others = viewers.filter((v) => !v.you);
