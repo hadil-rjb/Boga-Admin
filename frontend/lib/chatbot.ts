@@ -12,7 +12,9 @@ export type BotLead = { name: string; email: string; company: string; message: s
 export type BotKnowledge = { vectors: number; empty: boolean; ingestionRunning: boolean };
 export type QuickAction = { label: string; prompt: string; icon?: string };
 export type WidgetConfig = { title: string; subtitle: string; welcomeMessage: string; suggestedQuestions: string[]; quickActions: QuickAction[]; theme: "auto" | "light" | "dark"; position: "right" | "left"; accentColor: string };
-export type BotSettings = { connected: boolean; apiUrl: string; hasKey: boolean; last4: string; connectedAt: string | null; widget: Partial<WidgetConfig> };
+/** website : site où le widget est installé ; source : serveur trouvé sur le site ou fourni par l'environnement de l'API */
+export type BotSettings = { connected: boolean; website: string; apiUrl: string; source: "site" | "env" | ""; keyConfigured: boolean; envUrl: boolean; connectedAt: string | null; widget: Partial<WidgetConfig> };
+export const hostOf = (u: string) => { try { return new URL(/^https?:\/\//.test(u) ? u : "https://" + u).host.replace(/^www\./, ""); } catch { return u; } };
 
 /** Icônes reconnues par le widget pour les actions rapides */
 export const WIDGET_ICONS: [string, string][] = [["services", "Services"], ["portfolio", "Portfolio"], ["chart", "Chart"], ["phone", "Phone"], ["design", "Design"], ["growth", "Growth"], ["strategy", "Strategy"]];

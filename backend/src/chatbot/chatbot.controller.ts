@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Query, Res }
 import { Public } from "../common/public.decorator";
 import { Roles } from "../common/roles.decorator";
 import { previewPage } from "./preview.page";
-import { IngestDto, UpdateChatbotSettingsDto, UpdateWidgetDto } from "./chatbot.dto";
+import { ConnectChatbotDto, IngestDto, UpdateWidgetDto } from "./chatbot.dto";
 import { ChatbotService } from "./chatbot.service";
 
 const FILES: Record<string, [string, string]> = {
@@ -16,7 +16,7 @@ const FILES: Record<string, [string, string]> = {
 export class ChatbotController {
   constructor(private s: ChatbotService) {}
   @Get("settings") settings() { return this.s.view(); }
-  @Roles("admin") @Put("settings") save(@Body() d: UpdateChatbotSettingsDto) { return this.s.update(d); }
+  @Roles("admin") @Post("connect") @HttpCode(200) connect(@Body() d: ConnectChatbotDto) { return this.s.connect(d.website); }
   @Roles("admin") @Put("widget") widget(@Body() d: UpdateWidgetDto) { return this.s.saveWidget(d); }
   @Roles("admin") @Delete("settings") disconnect() { return this.s.disconnect(); }
 

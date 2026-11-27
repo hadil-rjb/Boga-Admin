@@ -1,10 +1,9 @@
 import { Type } from "class-transformer";
 import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, IsUrl, Matches, MaxLength, ValidateNested } from "class-validator";
 
-export class UpdateChatbotSettingsDto {
-  @IsString() @MaxLength(300) @IsUrl({ require_tld: false, require_protocol: true, protocols: ["http", "https"] }, { message: "Server URL must start with http:// or https://" }) apiUrl: string;
-  /** Vide = garder la clé déjà enregistrée */
-  @IsOptional() @IsString() @MaxLength(300) apiKey?: string;
+export class ConnectChatbotDto {
+  /** Le site où le widget est installé, ex. « uxboga.com » */
+  @IsString() @MaxLength(300) website: string;
 }
 
 export class IngestDto {

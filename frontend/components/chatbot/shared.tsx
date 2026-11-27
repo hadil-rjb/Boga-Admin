@@ -44,17 +44,17 @@ export function NotConnected({ own }: { own: boolean }) {
         <div className="flex size-[52px] items-center justify-center rounded-12 bg-accent/[.08] text-accent"><Icon k="chat" size={24} /></div>
         <div className="space-y-1.5">
           <p className="font-jakarta text-lg font-semibold">Connect your website assistant</p>
-          <p className="mx-auto max-w-[460px] text-[13px] leading-relaxed text-text-2">Link the UX Boğa chatbot server to see what visitors ask, which answers miss, and the leads it captures, all inside this admin.</p>
+          <p className="mx-auto max-w-[460px] text-[13px] leading-relaxed text-text-2">Enter your website and the admin connects to the assistant on it: see what visitors ask, which answers miss, and the leads it captures.</p>
         </div>
         <ol className="grid w-full max-w-[640px] grid-cols-3 gap-2.5 text-left max-sm:grid-cols-1">
-          {[["globe", "Server URL", "Where the chatbot API runs, e.g. on Render."], ["lock", "Admin key", "The ADMIN_API_KEY from its .env. Stored encrypted."], ["chart", "Insights", "Conversations, gaps and leads appear here."]].map(([i, t, d], n) => (
+          {[["upload", "Publish the widget", "Paste its code on your site (Chatbot Settings → Install)."], ["globe", "Enter your website", "Just your address, like uxboga.com."], ["chart", "See insights", "Conversations, gaps and leads appear here."]].map(([i, t, d], n) => (
             <li key={t} className="flex gap-3 rounded-12 bg-icon p-3.5">
               <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface text-[11px] font-semibold text-text-1 shadow-xs">{n + 1}</span>
               <div><p className="flex items-center gap-1.5 text-[13px] font-medium"><Icon k={i as IconKey} size={14} className="text-text-2" />{t}</p><p className="mt-0.5 text-xs text-text-2">{d}</p></div>
             </li>
           ))}
         </ol>
-        {own ? <LinkBtn href="/bot/settings" variant="primary"><Icon k="link" />Connect chatbot</LinkBtn> : <p className="text-xs text-text-3">Ask the workspace owner to connect the chatbot.</p>}
+        {own ? <LinkBtn href="/bot/settings" variant="primary"><Icon k="globe" />Connect your website</LinkBtn> : <p className="text-xs text-text-3">Ask the workspace owner to connect the chatbot.</p>}
       </Widget>
     </div>
   );

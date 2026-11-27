@@ -8,7 +8,7 @@ import { useFeedback } from "../feedback";
 import { api } from "@/lib/api";
 import { useData } from "@/lib/data";
 import { since } from "@/lib/seo";
-import { BotSettings as S, WIDGET_DEFAULTS, WIDGET_ICONS, WidgetConfig, downloadExport, embedCode, widgetOf } from "@/lib/chatbot";
+import { BotSettings as S, hostOf, WIDGET_DEFAULTS, WIDGET_ICONS, WidgetConfig, downloadExport, embedCode, widgetOf } from "@/lib/chatbot";
 import WidgetPreview from "./WidgetPreview";
 
 const Badge = ({ on, a = "Connected", b = "Not connected" }: { on: boolean; a?: string; b?: string }) => <span className={`shrink-0 rounded-6 px-[7px] py-1 text-[10px] font-medium ${on ? "bg-positive-bg text-positive" : "bg-pill text-text-2"}`}>{on ? a : b}</span>;
@@ -16,41 +16,80 @@ const Hint = ({ children, bad }: { children: React.ReactNode; bad?: boolean }) =
 const Sub = ({ children }: { children: React.ReactNode }) => <h3 className="-mb-2 border-t border-border-soft pt-5 text-[11px] font-medium uppercase tracking-[0.06em] text-text-3">{children}</h3>;
 const SWATCHES = ["#fd0e35", "#ff3b3b", "#2563eb", "#7c3aed", "#059669", "#0f172a"];
 
-// ───────── Connection ─────────
-function Connection({ s, onChange }: { s: S; onChange: (s: S) => void }) {
-  const { user } = useData();
+// ───────── Connection : le site suffit ─────────
+const STEPS = ["Opening your website", "Finding the chat widget", "Checking the assistant"];
+function Connection({ s, onChange, go }: { s: S; onChange: (s: S) => void; go: (k: string) => void }) {
+  const { user, gsc } = useData();
   const { toast, ask } = useFeedback();
   const own = user.role === "admin";
-  const [url, setUrl] = useState(s.apiUrl), [key, setKey] = useState(""), [show, setShow] = useState(false), [busy, setBusy] = useState(false), [err, setErr] = useState("");
-  const dirty = url.trim().replace(/\/+$/, "") !== s.apiUrl || !!key.trim();
-  const save = async () => {
-    if (!url.trim()) return setErr("Add the chatbot server URL.");
+  const [site, setSite] = useState(hostOf(s.website || gsc.domain || "")), [busy, setBusy] = useState(false), [step, setStep] = useState(0), [err, setErr] = useState(""), [edit, setEdit] = useState(!s.connected);
+  // étapes affichées pendant la recherche (la vraie recherche se fait côté serveur)
+  useEffect(() => { if (!busy) return; setStep(0); const t = setInterval(() => setStep((x) => Math.min(x + 1, STEPS.length - 1)), 1400); return () => clearInterval(t); }, [busy]);
+  const connect = async () => {
+    if (!site.trim()) return setErr("Enter your website, e.g. uxboga.com");
     setBusy(true); setErr("");
-    try { const r = await api<S>("/chatbot/settings", { method: "PUT", body: { apiUrl: url.trim(), apiKey: key.trim() || undefined } }); onChange(r); setUrl(r.apiUrl); setKey(""); toast("Chatbot connected"); }
+    try { const r = await api<S>("/chatbot/connect", { method: "POST", body: { website: site.trim() } }); onChange(r); setSite(hostOf(r.website)); setEdit(false); toast(`Connected to ${hostOf(r.website)}`); }
     catch (e: any) { setErr(e.message); }
     setBusy(false);
   };
   const disc = async () => {
-    if (!(await ask({ t: "Disconnect the chatbot?", p: "The widget on your site keeps working. This admin just stops showing its data until you reconnect.", ok: "Disconnect", danger: true }))) return;
-    try { onChange(await api<S>("/chatbot/settings", { method: "DELETE" })); setUrl(""); toast("Chatbot disconnected"); } catch (e: any) { toast(e.message); }
+    if (!(await ask({ t: "Disconnect the chatbot?", p: "The widget on your site keeps working. This admin just stops showing its data until you connect again.", ok: "Disconnect", danger: true }))) return;
+    try { onChange(await api<S>("/chatbot/settings", { method: "DELETE" })); setEdit(true); toast("Chatbot disconnected"); } catch (e: any) { toast(e.message); }
   };
+  const notOnSite = /isn't on|couldn't open/.test(err);
+
   return <>
-    <PanelHead title="Chatbot server" desc="The admin reads conversations, leads and knowledge from your chatbot server. The admin key is stored encrypted and never shown again." right={<Badge on={s.connected} />} />
-    <FieldGrid>
-      <Field full label="Server URL" hint="The base URL of the chatbot API, without /api.">
-        <input className={inpCls} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://uxboga-chatbot.onrender.com" disabled={!own} inputMode="url" autoComplete="off" />
-      </Field>
-      <Field full label="Admin key" hint={s.hasKey ? <>Saved key ends in <b className="font-medium text-text-2">…{s.last4}</b>. Leave empty to keep it.</> : "ADMIN_API_KEY from the chatbot server's .env."}>
-        <div className="relative">
-          <input className={`${inpCls} pr-10`} type={show ? "text" : "password"} value={key} onChange={(e) => setKey(e.target.value)} placeholder={s.hasKey ? "••••••••••••" + s.last4 : "Paste the admin key"} disabled={!own} autoComplete="new-password" onKeyDown={(e) => e.key === "Enter" && dirty && save()} />
-          <button type="button" onClick={() => setShow(!show)} aria-label={show ? "Hide key" : "Show key"} className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 cursor-pointer items-center justify-center rounded-8 text-text-3 hover:bg-icon hover:text-text-1"><Icon k={show ? "lock" : "eye"} size={16} /></button>
+    <PanelHead title="Website" desc="Enter your website. The admin finds the assistant installed on it and connects by itself: no server address or key to copy." right={<Badge on={s.connected} />} />
+
+    {s.connected && !edit ? (
+      <div className="flex flex-wrap items-center gap-3 rounded-12 border border-border p-4">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-10 bg-positive-bg text-positive"><Icon k="globe" size={20} /></span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{s.website ? hostOf(s.website) : "Your website"}</p>
+          <p className="truncate text-xs text-text-2">{s.source === "site" ? "Assistant found on your website" : "Assistant set on the server"} · {hostOf(s.apiUrl)}</p>
+        </div>
+        <span className="flex items-center gap-1.5 text-xs text-text-3"><Icon k="checkCircle" size={14} className="text-positive" />{s.connectedAt ? `Connected ${since(s.connectedAt)}` : "Connected automatically"}</span>
+      </div>
+    ) : (
+      <Field label="Website address" hint="The site where your chat bubble is published.">
+        <div className={`flex items-center rounded-10 border bg-pill focus-within:border-accent ${err ? "border-negative/50" : "border-transparent"}`}>
+          <span className="select-none pl-3 text-sm text-text-3">https://</span>
+          <input className="min-w-0 flex-1 bg-transparent px-1 py-[9px] text-sm text-text-1 outline-0 max-[700px]:min-h-10" value={site} onChange={(e) => { setSite(e.target.value.replace(/^https?:\/\//, "")); setErr(""); }} placeholder="uxboga.com" disabled={!own || busy} inputMode="url" autoComplete="url" autoFocus={!s.connected} onKeyDown={(e) => e.key === "Enter" && connect()} aria-invalid={!!err} />
+          {site && !busy && <button type="button" onClick={() => setSite("")} aria-label="Clear" className="mr-1.5 flex size-7 cursor-pointer items-center justify-center rounded-8 text-text-3 hover:bg-icon hover:text-text-1"><Icon k="x" size={15} /></button>}
         </div>
       </Field>
-    </FieldGrid>
-    {err && <p role="alert" className="flex items-start gap-2 rounded-10 bg-negative-bg px-3 py-2.5 text-[13px] text-negative"><Icon k="alert" size={16} className="mt-px" />{err}</p>}
-    {s.connected && !err && <p className="flex items-center gap-1.5 text-xs text-text-3"><Icon k="checkCircle" size={14} className="text-positive" />Verified {since(s.connectedAt)}</p>}
-    {own ? <Acts one={!s.connected}>{s.connected && <PillBtn onClick={disc}>Disconnect</PillBtn>}<Cta onClick={save} disabled={busy || (!dirty && s.connected)}>{busy ? "Testing connection…" : s.connected ? "Save & test" : "Connect chatbot"}</Cta></Acts> : <Hint>Only the workspace owner can change the connection.</Hint>}
-    <div className="rounded-12 bg-icon p-4 text-[13px] text-text-2"><b className="text-text-1">Where to find them</b><ol className="mt-2 list-decimal space-y-1 pl-5"><li>Open your chatbot service (e.g. on Render) and copy its public URL.</li><li>In its environment variables, copy the value of <b>ADMIN_API_KEY</b>.</li><li>Paste both here and click Connect. The admin checks them before saving.</li></ol></div>
+    )}
+
+    {busy && (
+      <ol className="flex flex-col gap-2 rounded-12 bg-icon p-4" aria-live="polite">
+        {STEPS.map((t, i) => (
+          <li key={t} className={`flex items-center gap-2.5 text-[13px] ${i <= step ? "text-text-1" : "text-text-3"}`}>
+            {i < step ? <Icon k="checkCircle" size={16} className="text-positive" /> : i === step ? <span className="size-4 animate-spin rounded-full border-2 border-accent border-t-transparent" /> : <span className="size-4 rounded-full border-2 border-border" />}
+            {i === 0 ? `Opening ${hostOf(site)}` : t}
+          </li>
+        ))}
+      </ol>
+    )}
+
+    {err && (
+      <div role="alert" className="flex flex-col gap-2.5 rounded-12 bg-negative-bg px-4 py-3 text-[13px] text-negative">
+        <p className="flex items-start gap-2"><Icon k="alert" size={16} className="mt-px shrink-0" />{err}</p>
+        {notOnSite && <button onClick={() => go("install")} className="inline-flex w-fit cursor-pointer items-center gap-1.5 pl-6 font-medium underline-offset-2 hover:underline">Get the widget code<Icon k="arrowR" size={14} /></button>}
+      </div>
+    )}
+
+    {!s.keyConfigured && (
+      <div className="flex gap-3 rounded-12 border border-border p-4 text-[13px] text-text-2">
+        <Icon k="lock" size={18} className="mt-0.5 shrink-0 text-text-3" />
+        <div><b className="text-text-1">One-time server setup</b><p className="mt-1">The admin API needs the chatbot&apos;s admin key in its environment: add <code className="rounded-6 bg-pill px-1.5 py-0.5 text-[12px]">CHATBOT_ADMIN_KEY</code> with the same value as <code className="rounded-6 bg-pill px-1.5 py-0.5 text-[12px]">ADMIN_API_KEY</code> on the chatbot server, then restart. Nobody has to type it here.</p></div>
+      </div>
+    )}
+
+    {own ? (
+      s.connected && !edit
+        ? <Acts><PillBtn onClick={disc}>Disconnect</PillBtn><PillBtn onClick={() => { setEdit(true); setErr(""); }}>Change website</PillBtn></Acts>
+        : <Acts one={!s.connected}>{s.connected && <PillBtn onClick={() => { setEdit(false); setErr(""); setSite(hostOf(s.website)); }} disabled={busy}>Cancel</PillBtn>}<Cta onClick={connect} disabled={busy || !s.keyConfigured}>{busy ? "Connecting…" : "Connect"}</Cta></Acts>
+    ) : <Hint>Only the workspace owner can change the connection.</Hint>}
   </>;
 }
 
@@ -76,7 +115,7 @@ function Widget({ s, onChange }: { s: S; onChange: (s: S) => void }) {
 
   return <>
     <PanelHead title="Website widget" desc="How the chat bubble looks and greets visitors. Try it in the live preview: it talks to your real chatbot." right={<Badge on={!dirty} a="Saved" b="Unsaved changes" />} />
-    {s.connected ? <WidgetPreview apiUrl={s.apiUrl} config={w} /> : <Hint bad>Connect the chatbot server first to see the live preview.</Hint>}
+    {s.connected ? <WidgetPreview apiUrl={s.apiUrl} config={w} /> : <Hint bad>Connect your website first (Website tab) to see the live preview.</Hint>}
     {s.connected && <Hint>Messages you send in the preview are real conversations: they show up in Conversations.</Hint>}
 
     <Sub>Header</Sub>
@@ -151,7 +190,7 @@ function Install({ s }: { s: S }) {
       <pre className="max-h-[360px] overflow-auto p-4 pr-24 font-mono text-[12px] leading-relaxed text-text-1">{code}</pre>
       <button onClick={() => navigator.clipboard.writeText(code).then(() => toast("Embed code copied"))} className="absolute right-2.5 top-2.5 inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-10 border border-border bg-surface px-3 text-[13px] font-medium shadow-xs hover:bg-pill"><Icon k="copy" size={15} />Copy</button>
     </div>
-    {!s.connected && <Hint bad>Connect the chatbot server first so the code points to the right URL.</Hint>}
+    {!s.connected && <Hint bad>Connect your website first (Website tab) so the code points to your assistant.</Hint>}
     <Hint>The code includes your saved widget settings. After changing the widget, copy it again and republish.</Hint>
   </>;
 }
@@ -172,7 +211,7 @@ function Data({ s }: { s: S }) {
         </button>
       ))}
     </div>
-    {!s.connected && <Hint bad>Connect the chatbot server to export its data.</Hint>}
+    {!s.connected && <Hint bad>Connect your website (Website tab) to export the assistant&apos;s data.</Hint>}
   </>;
 }
 
@@ -181,8 +220,8 @@ export default function BotSettings({ s, onChange }: { s: S; onChange: (s: S) =>
   useEffect(() => { const k = new URLSearchParams(location.search).get("s"); if (k) setSec(k); }, []);
   const pick = (k: string) => { setSec(k); history.replaceState(null, "", `?s=${k}`); };
   return (
-    <Split items={[["connection", "Connection", "link"], ["widget", "Widget", "chat"], ["install", "Install on website", "globe"], ["data", "Data & export", "database"]]} cur={sec} onSelect={pick}>
-      {sec === "connection" && <Connection s={s} onChange={onChange} />}
+    <Split items={[["connection", "Website", "globe"], ["widget", "Widget", "chat"], ["install", "Install on website", "upload"], ["data", "Data & export", "database"]]} cur={sec} onSelect={pick}>
+      {sec === "connection" && <Connection s={s} onChange={onChange} go={pick} />}
       {sec === "widget" && <Widget s={s} onChange={onChange} />}
       {sec === "install" && <Install s={s} />}
       {sec === "data" && <Data s={s} />}

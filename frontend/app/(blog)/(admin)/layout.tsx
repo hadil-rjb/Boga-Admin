@@ -21,7 +21,7 @@ const BT: Record<string, [string, string]> = {
   conversations: ["Conversations", "Read what visitors asked and how the assistant answered."],
   knowledge: ["Knowledge base", "What the assistant knows, and the questions it couldn't answer."],
   leads: ["Leads", "Visitors who asked to be contacted through the assistant."],
-  settings: ["Chatbot Settings", "Connect the chatbot server and get the website widget code."],
+  settings: ["Chatbot Settings", "Customize the website widget and get its install code."],
 };
 const T: Record<string, [string, string]> = {
   "/articles": ["Articles", "Write, optimize and publish your blog content."],
